@@ -41,7 +41,7 @@ description: >-
 
 | 用户意图 | 功能分支 | 执行流程 |
 | --- | --- | --- |
-| 需要集成支付产品（接入、集成、收款、加支付功能等） | **功能一** | 步骤 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6 |
+| 需要集成支付产品（接入、集成、收款、加支付功能等） | **功能一** | 步骤 1.1 → 1.2a/1.2b → 1.3 → 1.4 → 1.5 → 1.6 |
 | 集成过程中遇到报错或问题 | **功能二** | 步骤 2.1 → 2.2/2.3 |
 
 ---
@@ -60,8 +60,9 @@ description: >-
 | 步骤 | 标记 | 完成条件数量 |
 |------|------|--------------|
 | 步骤 1.1 产品决策 | [M-01] | 3 项 |
-| 步骤 1.2 沙箱环境初始化 | [M-02] | 5 项 |
-| 步骤 1.3 集成前置步骤 | [M-03] | 5 项 |
+| 步骤 1.2a 传统收单产品沙箱环境初始化 | [M-02] | 5 项 |
+| 步骤 1.2b AI 收配置初始化 | [M-02b] | 7 项 |
+| 步骤 1.3 集成前置步骤 | [M-03] | 6 项 |
 | 步骤 1.4 集成代码 | [M-04] | 2 项 |
 | 步骤 1.5 集成后说明 | [M-05] | 2 项 |
 | 步骤 1.6 集成校验 | [M-06] | 1 项 |
@@ -115,7 +116,9 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 
 </BLOCKING_CONFIRMATION>
 
-### 步骤 1.2 沙箱环境初始化
+### 步骤 1.2a 传统收单产品沙箱环境初始化
+
+**注意事项**：AI 收产品暂不支持沙箱，跳过该步骤，进入1.2b。
 
 **前置条件**：已完成步骤 1.1 产品决策，**并获得用户同意进入集成流程**。
 
@@ -155,9 +158,109 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 4. **输出环境提醒**
    - 按 [沙箱环境初始化](references/alipay-sandbox/sandbox-setup-guide.md) 中「成功创建快速沙箱后提示」的完整文案，向用户展示环境说明、必做操作及安全提醒，并告知密钥格式选择。
 
+### 步骤 1.2b AI 收配置初始化
+
+**前置条件**：已完成步骤 1.1 产品决策，**并获得用户同意进入AI 收集成流程**。当且仅当用户集成AI 收产品时走到本步骤。
+
+**注意事项**：AI 收产品暂不支持沙箱，必须引导用户使用入驻后取得的正式配置完成初始化。严禁编造、猜测、生成或用示例值冒充真实配置。
+
+**完成条件**：
+- [M-02b] 已明确告知用户 AI 收暂不支持沙箱，需要使用入驻后取得的正式配置
+- [M-02b] 已引导用户完成商户入驻：智能收产品需先在[商户一站式入驻平台](https://b.alipay.com/page/home/open-ai-pay)上架产品，再接入功能
+- [M-02b] 已要求用户提供「入驻后取得」配置：应用私钥（JAVA 语言选用 PKCS#8 格式，非 JAVA 语言选用 PKCS#1 格式）、支付宝公钥、应用ID、商户ID、商户服务ID、商户名称
+- [M-02b] 已要求用户确认或提供「自定义」配置：收费金额（单位：元）、支付截止时间（分钟）
+- [M-02b] 已明确告知「默认配置」不由用户指定，代码中必须保持默认值：签名类型 `RSA2`、字符集 `UTF-8`、格式 `json`、货币类型 `CNY`
+- [M-02b] 已提醒用户不要在大模型对话或公网环境中直接粘贴应用私钥，建议写入本地配置文件、环境变量或密钥管理服务
+- [M-02b] 已对配置完整性做自检：缺少必填项时暂停并要求用户补齐，禁止继续生成集成代码
+
+**AI 收配置来源**：
+
+1. **商户入驻**
+    - **智能收产品开通上架**：先在[商户一站式入驻平台](https://b.alipay.com/page/home/open-ai-pay)上架产品，再接入功能。
+
+2. **入驻后取得**
+    - **应用私钥**：用于生成 AI 收协议中的商家签名和服务端调用签名。JAVA 语言选用 PKCS#8 格式，非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 PKCS#1 格式该字段属于敏感信息，必须提醒用户不要直接粘贴到对话中。
+    - **支付宝公钥**：用于支付宝响应或通知验签。
+    - **应用ID**：配置键为 `app-id`。
+    - **商户ID**：配置键为 `seller-id`。
+    - **商户服务ID**：配置键为 `service-id`。
+    - **商户名称**：配置键为 `seller-name`。
+
+3. **自定义**
+    - **收费金额（单位：元）**：配置键为 `amount`，默认建议值为 `"0.01"`。
+    - **支付截止时间（分钟）**：配置键为 `pay-before-minutes`，默认建议值为 `30`。
+
+4. **默认配置（不由用户指定，代码中必须保持默认）**
+    - **签名类型**：配置键为 `sign-type`，固定为 `RSA2`。
+    - **字符集**：配置键为 `charset`，固定为 `UTF-8`。
+    - **格式**：配置键为 `format`，固定为 `json`。
+    - **货币类型**：配置键为 `currency`，固定为 `CNY`。
+
+**必须向用户输出的配置引导**：
+
+在进入 AI 收集成代码前，必须要求用户先准备并确认以下配置。输出时保留字段名，不得替用户填入假数据：
+
+```yaml
+# AI 收配置
+alipay-ai-pay:
+  # 入驻后取得
+  # 应用私钥。JAVA 语言选用 PKCS#8 格式，非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 PKCS#1 格式
+  # 敏感信息，请写入本地配置/环境变量/密钥管理服务，不要直接粘贴到对话中。
+  app-private-key: ""
+
+  # 支付宝公钥
+  alipay-public-key: ""
+
+  # 应用ID
+  app-id: ""
+
+  # 商户ID
+  seller-id: ""
+
+  # 商户服务ID
+  service-id: ""
+
+  # 商户名称
+  seller-name: ""
+
+  # 收费金额（单位：元）
+  amount: ""（需要与入驻时的service-id对应）
+
+  # 自定义
+  # 支付截止时间（分钟）
+  pay-before-minutes: (如果不指定则默认30分钟）
+
+  # 默认配置（不由用户指定，代码中必须保持默认）
+  # 签名类型
+  sign-type: RSA2
+
+  # 字符集
+  charset: UTF-8
+
+  # 格式
+  format: json
+
+  # 货币类型
+  currency: CNY
+```
+
+**必须询问用户的确认话术**：
+
+> AI 收暂不支持沙箱，请先使用入驻后取得的正式配置完成初始化。请确认你已经准备好：应用私钥（JAVA 语言选用 PKCS#8 格式，非 JAVA 语言选用 PKCS#1 格式）、支付宝公钥、应用ID、商户ID、商户服务ID、商户名称；并确认收费金额和支付截止时间。应用私钥请写入本地配置/环境变量/密钥管理服务，不要直接粘贴到对话中。配置补齐后请回复“已配置”或提供非敏感字段，我再继续生成 AI 收集成代码。
+
+**配置完整性校验规则**：
+
+- `app-private-key`、`alipay-public-key`、`app-id`、`seller-id`、`service-id`、`seller-name`、`amount`、`pay-before-minutes` 均为必填项。
+- `app-private-key` 必须按运行平台选择格式：JAVA 语言选用 PKCS#8 格式，非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 PKCS#1 格式。
+- `amount` 必须为字符串形式的合法金额，单位为元，例如 `"0.01"`。
+- `pay-before-minutes` 必须为正整数，表示当前时间后多少分钟截止支付。
+- `sign-type`、`charset`、`format`、`currency` 必须保持默认值，分别为 `RSA2`、`UTF-8`、`json`、`CNY`，不得要求用户指定或在代码中改写。
+- 若用户尚未补齐必填配置，必须暂停在本步骤，禁止进入步骤 1.3 或生成代码。
+
+
 ### 步骤 1.3 集成前置步骤
 
-**前置条件**：已完成步骤 1.2 沙箱环境初始化。
+**前置条件**：传统收单产品已完成步骤 1.2a 沙箱环境初始化；AI 收产品已完成步骤 1.2b AI 收配置初始化。
 
 **完成条件**：
 - [M-03] 已使用 Read 工具读取 `references/main/alipay-sdk-reminder.md` 完整内容，包含私钥格式、引入方式、页面跳转方法、前端表单处理、验签排查、时间戳格式等
@@ -179,7 +282,7 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
   | Python | [PyPI 项目依赖](https://pypi.org/project/alipay-sdk-python/) | 适用于 Python 2.7 及以上版本 |
   | Node.js | [NPM 项目依赖](https://www.npmjs.com/package/alipay-sdk) | 适用于 Node.js v8.0.0 及以上版本 |
 
-- **加签方式**：签名要使用 RSA2，应用私钥以沙箱创建返回结果为准，按语言选择字段：JAVA 语言选用 `appPrivateKey` 字段（PKCS#8 格式），非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 `appPrivatePkcsKey` 字段（PKCS#1 格式）。[加签说明](https://ideservice.alipay.com/cms/site/0j3u72)
+- **加签方式**：签名要使用 RSA2。传统收单产品的应用私钥以沙箱创建返回结果为准，按语言选择字段：JAVA 语言选用 `appPrivateKey` 字段（PKCS#8 格式），非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 `appPrivatePkcsKey` 字段（PKCS#1 格式）；AI 收产品不支持沙箱，应用私钥以入驻后取得的正式配置为准。[加签说明](https://ideservice.alipay.com/cms/site/0j3u72)
 
 **🚫 SDK 集成致命错误**：
 > ⚠️ **严禁**在未读取下列完整内容的情况下生成代码或给出建议，违反将导致集成失败
@@ -197,9 +300,10 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 - **产品文档**：通过 curl 访问 **产品文档路由** 中对应的产品在线文档，并递归阅读其中的快速接入、接口列表、异步通知、注意事项等部分，了解产品特有逻辑。
 - **代码示例**：`references/code-examples/` 目录下包含 5 种语言（Java、Python、Node.js、PHP、C#）的完整代码示例，**必须**按 `{语言}/{产品类别}` 精准读取，**禁止**全量扫描。
   - 语言目录：`java`、`python`、`nodejs`、`php`、`csharp`
-  - 产品类别目录：`1_通用接口`、`2_当面付`、`3_订单码支付`、`4_手机网站支付`、`5_电脑网站支付`、`6_JSAPI支付`、`7_APP支付`、`8_预授权支付`、`9_商家扣款`
+  - 产品类别目录：`1_通用接口`、`2_当面付`、`3_订单码支付`、`4_手机网站支付`、`5_电脑网站支付`、`6_JSAPI支付`、`7_APP支付`、`8_预授权支付`、`9_商家扣款`、`10_AI 收`
   - **读取路径格式**：`references/code-examples/{语言}/{产品类别}/`
   - **重要**：`1_通用接口` 是产品无关的通用能力（交易查询、退款、退款查询、撤销、对账单下载等），**每个产品类别都需要同时参考**，例如用户使用 Java + 当面付 → 读取 `references/code-examples/java/2_当面付/` **和** `references/code-examples/java/1_通用接口/`
+  - **AI 收产品**：AI 收产品的示例代码包含接口调用外的功能实现逻辑，在实现AI 收功能时，必须不重不漏地实现。
 
 ### 步骤 1.4 集成代码
 
@@ -211,15 +315,16 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 
 #### 代码生成前自检
 
-**⛔ 输出任何代码之前，必须逐条自检以下 7 项**，全部通过方可输出代码，任何一项不通过必须返回对应步骤重读，**禁止**跳过自检直接输出代码：
+**⛔ 输出任何代码之前，必须逐条自检以下 8 项**，全部通过方可输出代码，任何一项不通过必须返回对应步骤重读，**禁止**跳过自检直接输出代码：
 
 1. 我使用的私钥字段正确吗？（JAVA 使用 `appPrivateKey`，非 JAVA 使用 `appPrivatePkcsKey`）→ 是 → 继续
 2. 我确定的 SDK 引入方式是通过查阅对应语言的 SDK 文档或类型定义得出的吗？→ 是 → 继续
 3. 页面跳转类 API（支付接口）我使用的是 `pageExecute()`（或对应语言的页面跳转方法）而非 `exec()` 吗？→ 是 → 继续
-4. 时间戳格式是 `yyyy-MM-dd HH:mm:ss` 吗？→ 是 → 继续
+4. 时间戳格式是否符合当前产品要求？传统支付接口使用 `yyyy-MM-dd HH:mm:ss`；AI 收产品 402 `Payment-Needed` Header 中的 `payBefore` 使用 [AI 收接入指南](https://ideservice.alipay.com/cms/site/0j7svz) 要求的 ISO 8601 带时区格式 → 是 → 继续
 5. 前端是否正确处理了支付表单（渲染 HTML 表单并自动提交，而非直接跳转 URL）？→ 是 → 继续
-6. 沙箱配置中没有任何编造、假数据，且占位符仅用于用户选择自行申领的场景并已明确标注待填字段吗？→ 是 → 继续
+6. 配置信息是否没有任何编造、假数据？传统收单产品需检查沙箱配置真实完整；AI 收产品需检查入驻后正式配置真实完整；占位符仅用于用户选择自行申领/自行配置的场景并已明确标注待填字段 → 是 → 继续
 7. 我是否已查阅当前编程语言对应的代码示例目录（当前产品类别 + `1_通用接口`）？→ 是 → 继续
+8. AI 收产品的 402 Payment-Needed Header 内容是否严格按照[接入指南](https://ideservice.alipay.com/cms/site/0j7svz)中的字段、格式，分层构造，不遗漏任何参数，最后进行 Base64URL 编码？→ 是 → 继续
 
 ### 步骤 1.5 集成后说明
 
@@ -244,7 +349,9 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 
 **第二部分：后续指引**
 
-当前配置为沙箱测试环境，仅用于开发调试（**特别说明**：沙箱环境无法测试异步通知，请在生产环境进行检查）。上线前请将 appId、私钥、公钥等配置替换为线上正式环境的配置信息，并认真进行人工代码审查。
+传统收单产品：当前配置为沙箱测试环境，仅用于开发调试（**特别说明**：沙箱环境无法测试异步通知，请在生产环境进行检查）。上线前请将 appId、私钥、公钥等配置替换为线上正式环境的配置信息，并认真进行人工代码审查。
+
+AI 收产品：AI 收暂不支持沙箱，当前应使用入驻后取得的正式配置。上线或发布前请重点确认应用私钥、支付宝公钥、应用ID、商户ID、商户服务ID、商户名称、收费金额、支付截止时间均来自真实配置且未泄露到客户端、日志或公共仓库，并认真进行人工代码审查。
 
 ### 步骤 1.6 集成校验
 
@@ -275,7 +382,7 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 
 执行下述问题排查步骤之前，**必须明确用户当前集成的支付产品**，否则暂停输出并要求用户澄清，**严禁**在支付产品信息缺失时尝试查阅文档或猜测支付产品。
 
-**仅支持的产品**：当面付、订单码支付、App 支付、JSAPI 支付、手机网站支付、电脑网站支付、预授权支付、商家扣款。其他产品请引导用户查阅开放平台在线文档：https://open.alipay.com?form=payskill
+**仅支持的产品**：当面付、订单码支付、App 支付、JSAPI 支付、手机网站支付、电脑网站支付、预授权支付、商家扣款、AI 收。其他产品请引导用户查阅开放平台在线文档：https://open.alipay.com?form=payskill
 
 ### 步骤 2.1 问题识别与分流
 
@@ -349,6 +456,7 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 | 商家扣款 | [商家扣款常见问题](https://ideservice.alipay.com/cms/site/0j3j51) |
 | 预授权支付 | [预授权支付常见问题](https://ideservice.alipay.com/cms/site/0j3qcq) |
 | JSAPI 支付 | [JSAPI 支付常见问题](https://ideservice.alipay.com/cms/site/0j3pii) |
+| AI 收 | [AI 收常见问题](https://ideservice.alipay.com/cms/site/0j7uos) |
 
 ---
 
@@ -366,3 +474,4 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
 | App 支付 | `alipay.trade.app.pay` | [App 支付文档](https://ideservice.alipay.com/cms/site/0izsn4) |
 | 预授权支付 | `alipay.fund.auth.order.app.freeze` | [预授权支付文档](https://ideservice.alipay.com/cms/site/0j0lyx) |
 | 商家扣款 | `alipay.trade.app.pay`（支付并签约）+ `alipay.trade.pay`（后续扣款） | [商家扣款文档](https://ideservice.alipay.com/cms/site/0j0g6k) |
+| AI 收 | `alipay.aipay.agent.payment.verify`（支付凭证验证）+ `alipay.aipay.agent.fulfillment.confirm`（商家履约回执确认） | [AI 收文档](https://ideservice.alipay.com/cms/site/0jaqax) |
