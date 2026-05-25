@@ -179,7 +179,7 @@ curl -sL "https://ideservice.alipay.com/cms/site/{文档ID}"
     - **智能收产品开通上架**：先在[商户一站式入驻平台](https://b.alipay.com/page/home/open-ai-pay)上架产品，再接入功能。
 
 2. **入驻后取得**
-    - **应用私钥**：用于生成 AI 收协议中的商家签名和服务端调用签名。JAVA 语言选用 PKCS#8 格式，非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 PKCS#1 格式该字段属于敏感信息，必须提醒用户不要直接粘贴到对话中。
+    - **应用私钥**：用于生成 AI 收协议中的商家签名和服务端调用签名。JAVA 语言选用 PKCS#8 格式，非 JAVA 语言（Python、Node.js、PHP、.NET 等）选用 PKCS#1 格式。该字段属于敏感信息，必须提醒用户不要直接粘贴到对话中。
     - **支付宝公钥**：用于支付宝响应或通知验签。
     - **应用ID**：配置键为 `app-id`。
     - **商户ID**：配置键为 `seller-id`。
