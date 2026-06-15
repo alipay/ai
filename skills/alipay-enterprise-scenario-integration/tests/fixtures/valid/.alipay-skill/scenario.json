@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "status": "CONFIRMED",
+  "businessScene": "差旅票务",
+  "expenseType": "TICKET",
+  "expenseTypeSubCategory": "TICKET",
+  "sceneType": "TRAVEL",
+  "requiredRuleFactors": ["MERCHANT"],
+  "ruleFactorValues": {
+    "MERCHANT": {
+      "2088011519249952": ["-1"]
+    }
+  },
+  "businessPriority": {
+    "enabled": false,
+    "merchantRestrictionFactors": []
+  },
+  "billIdentifiers": {
+    "expenseType": "TICKET",
+    "expenseTypeSubCategory": "TICKET",
+    "orderType": "TICKET"
+  },
+  "modules": {
+    "ec": ["enterprise-onboarding", "employee-signing", "enterprise-management", "employee-management"],
+    "expenseControl": ["institution-management"],
+    "bill": ["bill-management"]
+  }
+}

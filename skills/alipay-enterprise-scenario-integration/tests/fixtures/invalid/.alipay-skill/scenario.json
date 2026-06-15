@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "status": "CONFIRMED",
+  "businessScene": "差旅票务",
+  "expenseType": "TICKET",
+  "expenseTypeSubCategory": "TICKET",
+  "sceneType": "TRAVEL",
+  "requiredRuleFactors": ["MERCHANT"],
+  "ruleFactorValues": {
+    "MERCHANT": {
+      "9999999999999999": ["-1"]
+    }
+  },
+  "businessPriority": {
+    "enabled": false,
+    "merchantRestrictionFactors": []
+  }
+}
