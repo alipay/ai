@@ -2,7 +2,7 @@
 
 ## 事实来源
 
-场景决策必须实时读取以下子 Skill 文档，不维护另一份字段白名单：
+开始场景决策前必须已通过 `tools/install_subskills.js` 安装并验证三个平级子 Skill。场景决策随后实时读取以下子 Skill 文档，不维护另一份字段白名单：
 
 - 费控 `references/common/expense-type-enum.md`
 - 费控 `references/common/expense-type-constraints.md`
@@ -21,6 +21,7 @@
 - `constraintVariant`（约束文档存在多个商户范围分支时）
 - `requiredRuleFactors`
 - 每个必用规则因子的已确认业务值
+- 费控模式；内部费控时还必须包含制度额度/发放来源
 - 是否启用因公优先
 - 账单识别字段
 - 三域模块范围
@@ -31,26 +32,44 @@
 
 例如地铁场景可以从文档确定 `METRO/METRO` 和必用 `CARD_TYPE`，但不能凭空选择城市卡编码。必须根据用户城市或明确卡编码生成。
 
+## 内部费控制度额度/发放来源
+
+如果费控模式为内部费控，代码生成前必须确认制度额度/发放来源，不能只生成商户、时间、位置等使用限制。该决策来自费控子 Skill 的字段和接口生成规则，必须三选一：
+
+1. `ISSUE_RULE`：配置 `issue_rule_info_list` 发放规则。
+2. `QUOTA_LIMIT`：配置制度可用额度的限额条件。可用因子仅包括 `QUOTA_DAY`、`QUOTA_WEEK`、`QUOTA_MONTH`、`QUOTA_SEASON`、`QUOTA_YEAR`、`QUOTA_TOTAL`，并且必须确认业务值。
+3. `MANUAL_ISSUE`：选择并实现手工发放接口 `alipay.ebpp.invoice.expensecontrol.quota.create`。
+
+上下文可唯一推断时展示推断结果后继续；不能推断时必须询问用户选择上述三种来源之一。不得把“内部费控制度必须有额度来源”简化成“必须选择限额因子”，因为发放规则和手工发放也是合法来源。
+
 ## 因公优先
 
-因公优先是多数费用场景的可选能力，但不是所有支付渠道都支持。
+因公优先是多数费用场景的可选能力，但不是所有支付渠道都支持。判断是否支持时，先读取费控子 Skill 的 `expense-type-constraints.md`，看当前费用类型/子类及已选约束分支是否能配置有效商户限制因子。
 
-当场景使用 `ALI_PLATFORM_TYPE` 并选择 `TAOTIAN`、`1688` 等淘系平台时，不支持因公优先：
+以下场景不支持因公优先：
+
+- 费用场景约束中没有任何有效商户限制因子。
+- 场景使用 `ALI_PLATFORM_TYPE` 并选择 `TAOTIAN`、`1688` 等淘系平台值。
+
+不支持时：
 
 - 不询问用户是否启用因公优先。
 - `scenario.json` 直接写入 `businessPriority.enabled=false` 和空的 `merchantRestrictionFactors`。
 - 不为因公优先额外生成 `ALARM_CLOCK_TIME` 与商户限制规则组合。
 
-其他支持因公优先的场景启用时：
+有效商户限制因子仅包括：
+
+- `MEAL_MERCHANT`
+- `MERCHANT`
+- `COMPOSITE_MERCHANT`
+- `SHOP_GROUP`
+- `SHOP`
+- `RECEIPT_IDENTITY_WHITE_LIST`
+
+支持因公优先的场景启用时：
 
 1. 必须配置 `ALARM_CLOCK_TIME`。
-2. 必须至少配置一个有效商户限制因子：
-   - `MEAL_MERCHANT`
-   - `MERCHANT`
-   - `COMPOSITE_MERCHANT`
-   - `SHOP_GROUP`
-   - `SHOP`
-   - `RECEIPT_IDENTITY_WHITE_LIST`
+2. 必须至少配置一个当前费用场景约束中允许的有效商户限制因子。
 3. `COMPOSITE_MERCHANT` 只有同时配置 `receiptIdentityWhiteList`、`shopIdList` 或 `shopGroupIdList` 中至少一个非空列表时，才能计为有效商户限制。
 4. 因公优先不能替代场景自身的必用规则因子。
 
@@ -71,6 +90,11 @@
   "requiredRuleFactors": ["CARD_TYPE"],
   "ruleFactorValues": {
     "CARD_TYPE": ["S0110000"]
+  },
+  "expenseControlMode": "internal",
+  "internalFundingSource": {
+    "type": "QUOTA_LIMIT",
+    "quotaLimitFactors": ["QUOTA_TOTAL"]
   },
   "businessPriority": {
     "enabled": false,

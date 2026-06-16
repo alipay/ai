@@ -1,24 +1,23 @@
 {
   "schemaVersion": 1,
   "status": "CONFIRMED",
-  "businessScene": "差旅票务",
-  "expenseType": "TICKET",
-  "expenseTypeSubCategory": "TICKET",
+  "businessScene": "差旅地铁",
+  "expenseType": "METRO",
+  "expenseTypeSubCategory": "METRO",
   "sceneType": "TRAVEL",
-  "requiredRuleFactors": ["MERCHANT"],
+  "requiredRuleFactors": ["CARD_TYPE"],
   "ruleFactorValues": {
-    "MERCHANT": {
-      "2088011519249952": ["-1"]
-    }
+    "CARD_TYPE": ["S0110000"]
   },
   "businessPriority": {
     "enabled": false,
     "merchantRestrictionFactors": []
   },
   "billIdentifiers": {
-    "expenseType": "TICKET",
-    "expenseTypeSubCategory": "TICKET",
-    "orderType": "TICKET"
+    "expenseType": "METRO",
+    "expenseTypeSubCategory": "METRO",
+    "sceneCode": "METRO",
+    "orderType": "METRO"
   },
   "modules": {
     "ec": ["enterprise-onboarding", "employee-signing", "enterprise-management", "employee-management"],

@@ -1,15 +1,13 @@
 {
   "schemaVersion": 1,
   "status": "CONFIRMED",
-  "businessScene": "差旅票务",
-  "expenseType": "TICKET",
-  "expenseTypeSubCategory": "TICKET",
+  "businessScene": "差旅地铁",
+  "expenseType": "METRO",
+  "expenseTypeSubCategory": "METRO",
   "sceneType": "TRAVEL",
-  "requiredRuleFactors": ["MERCHANT"],
+  "requiredRuleFactors": ["CARD_TYPE"],
   "ruleFactorValues": {
-    "MERCHANT": {
-      "9999999999999999": ["-1"]
-    }
+    "CARD_TYPE": []
   },
   "businessPriority": {
     "enabled": false,

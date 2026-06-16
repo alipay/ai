@@ -38,7 +38,9 @@
 
 ## 启动闸门
 
-主 Agent 在读取任何子 Skill 或接口文档前，必须先检查当前会话是否暴露 sub Agent/Task 工具。
+主 Agent 在任务入口已经执行 `node alipay-enterprise-scenario-integration/tools/install_subskills.js`。进入代码生成编排前必须再次确认三个平级子 Skill 均存在且完整；安装器返回非零或任一子 Skill 缺失时必须停止，不得进入 Agent 启动或接口文档读取阶段。
+
+子 Skill 安装通过后，再检查当前会话是否暴露 sub Agent/Task 工具。
 
 多域代码生成时：
 

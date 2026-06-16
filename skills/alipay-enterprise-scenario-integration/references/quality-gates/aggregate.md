@@ -43,10 +43,12 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 2. 每个字段只描述一个场景，不允许数组化的多场景输入。
 3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，`sceneType` 必须来自制度接口文档。
 4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorValues` 必须为每个必用因子提供已确认的非空值。
-5. `TICKET/TICKET` 必须把 `MERCHANT` 绑定到 12306 PID；该约束由费控子 Skill 和主聚合层共同验证。
-6. 启用因公优先时，必须配置 `ALARM_CLOCK_TIME` 和至少一个有效商户限制因子；`COMPOSITE_MERCHANT` 只有配置规定的非空商户列表时才有效。
-7. 使用 `ALI_PLATFORM_TYPE=TAOTIAN/1688` 等淘系平台值时不支持因公优先，`businessPriority.enabled` 必须为 `false`。
-8. 账单识别字段必须来自账单文档；不适用的字段可省略，不得用猜测值补齐。
+5. 具体费用场景的必用因子、特殊业务值及绑定关系由费控子 Skill 的约束文档和本域 validator 校验；主聚合层不重复硬编码单一场景规则。
+6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源：`ISSUE_RULE`、`QUOTA_LIMIT` 或 `MANUAL_ISSUE`。选择 `QUOTA_LIMIT` 时，限额因子只能是 `QUOTA_DAY/WEEK/MONTH/SEASON/YEAR/TOTAL`，且必须有已确认业务值。
+7. 费用场景约束中没有任何有效商户限制因子时不支持因公优先，`businessPriority.enabled` 必须为 `false`。
+8. 启用因公优先时，必须配置 `ALARM_CLOCK_TIME` 和至少一个当前费用场景约束中允许的有效商户限制因子；`COMPOSITE_MERCHANT` 只有配置规定的非空商户列表时才有效。
+9. 使用 `ALI_PLATFORM_TYPE=TAOTIAN/1688` 等淘系平台值时不支持因公优先，`businessPriority.enabled` 必须为 `false`。
+10. 账单识别字段必须来自账单文档；不适用的字段可省略，不得用猜测值补齐。
 
 已有项目如果接入前全量构建或测试已失败，必须先记录失败 baseline。接入后优先运行本域 validator、主聚合 validator 和可执行的 scoped build/test；不能把既有无关失败当成本次生成完成的阻塞，也不能忽略本次改动引入的新失败。
 

@@ -26,6 +26,8 @@ testBillSceneIdentification();
 testIfElseRouterGates();
 testMessageClientStartupFailurePolicy();
 testIntegrationContract();
+testSubskillInstaller();
+testSubskillBootstrapOrdering();
 testSubskillsInSync();
 testSyncRejectsUnknownArgs();
 testSyncBuildIsAtomicOnFailure();
@@ -33,6 +35,39 @@ testSyncBuildIsTransactional();
 testSyncCorruptZipLeavesNoResidue();
 testSyncCommitRollbackOnReplaceFailure();
 console.log("[alipay-enterprise-scenario-integration tests] OK");
+
+function testSubskillInstaller() {
+  const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-subskill-install-"));
+  const installer = path.join(skillDir, "tools", "install_subskills.js");
+  const first = runNode([installer, "--skills-root", skillsRoot]);
+  assert.strictEqual(first.status, 0, output(first));
+  for (const domain of ["alipay-enterprise-ec", "alipay-enterprise-expense-control", "alipay-enterprise-bill"]) {
+    assert.ok(fs.existsSync(path.join(skillsRoot, domain, "SKILL.md")), `${domain} must be installed beside the solution skill`);
+    assert.ok(fs.existsSync(path.join(skillsRoot, domain, "scripts", "validate_codegen.js")), `${domain} validator must be installed`);
+  }
+  const check = runNode([installer, "--check", "--skills-root", skillsRoot]);
+  assert.strictEqual(check.status, 0, output(check));
+  const second = runNode([installer, "--skills-root", skillsRoot]);
+  assert.strictEqual(second.status, 0, output(second));
+  assert.match(output(second), /already installed/);
+}
+
+function testSubskillBootstrapOrdering() {
+  const skillText = fs.readFileSync(path.join(skillDir, "SKILL.md"), "utf8");
+  const installIndex = skillText.indexOf("node alipay-enterprise-scenario-integration/tools/install_subskills.js");
+  const sceneGateIndex = skillText.indexOf("## 场景闸门");
+  const executionIndex = skillText.indexOf("## 执行阶段");
+  assert.ok(installIndex >= 0, "SKILL.md must declare the subskill installer");
+  assert.ok(installIndex < sceneGateIndex, "subskills must be installed before scenario decisions");
+  assert.ok(/方案设计和代码生成都依赖该安装步骤/.test(skillText),
+    "the dependency gate must apply to both plan design and code generation");
+  assert.ok(skillText.slice(executionIndex).includes("1. 依赖准备"),
+    "execution stages must begin with dependency preparation");
+
+  const decisionRules = fs.readFileSync(
+    path.join(skillDir, "references", "scenario-decision-rules.md"), "utf8");
+  assert.match(decisionRules, /开始场景决策前必须已通过 `tools\/install_subskills\.js`/);
+}
 
 function testRuntime() {
   assert.deepStrictEqual(runtime.classifySpawnResult({ status: 0 }), { state: "OK", code: 0 });
@@ -58,11 +93,11 @@ function testMissingSupportIsBroken() {
 
 function testValueResolver() {
   const text = [
-    "const EXPENSE_TYPE_TICKET = \"TICKET\";",
-    "const RULE_VALUE_MERCHANT_12306 = \"{\\\"2088011519249952\\\":[\\\"-1\\\"]}\";",
+    "const EXPENSE_TYPE_METRO = \"METRO\";",
+    "const RULE_VALUE_CARD_TYPE = \"[\\\"S0110000\\\"]\";",
   ].join("\n");
-  const tokens = resolver.valueTokens(text, "2088011519249952");
-  assert.deepStrictEqual(tokens, ["2088011519249952", "RULE_VALUE_MERCHANT_12306"]);
+  const tokens = resolver.valueTokens(text, "S0110000");
+  assert.deepStrictEqual(tokens, ["S0110000", "RULE_VALUE_CARD_TYPE"]);
 }
 
 function testFixtures() {
@@ -115,7 +150,9 @@ function testScenarioDecisionGates() {
     expenseTypeSubCategory: "METRO",
     sceneType: "TRAVEL",
     requiredRuleFactors: ["CARD_TYPE"],
-    ruleFactorValues: { CARD_TYPE: ["S0110000"] },
+    ruleFactorValues: { CARD_TYPE: ["S0110000"], QUOTA_TOTAL: ["1000"] },
+    expenseControlMode: "internal",
+    internalFundingSource: { type: "QUOTA_LIMIT", quotaLimitFactors: ["QUOTA_TOTAL"] },
     businessPriority: { enabled: false, merchantRestrictionFactors: [] },
     billIdentifiers: { expenseType: "METRO", expenseTypeSubCategory: "METRO" },
   });
@@ -130,10 +167,28 @@ function testScenarioDecisionGates() {
 
   missingValue.ruleFactorValues.CARD_TYPE = ["S0110000"];
   missingValue.businessPriority = { enabled: true, merchantRestrictionFactors: ["MERCHANT"] };
+  missingValue.ruleFactorValues.ALARM_CLOCK_TIME = { all: true };
+  missingValue.ruleFactorValues.MERCHANT = ["merchant"];
   writeScenario(metro, missingValue);
   const priorityResult = runNode([validator, metro]);
   assert.strictEqual(priorityResult.status, 1, output(priorityResult));
-  assert.match(output(priorityResult), /businessPriority\.enabled requires ALARM_CLOCK_TIME/);
+  assert.match(output(priorityResult), /does not define any effective merchant restriction factor/);
+  assert.match(output(priorityResult), /MERCHANT is not an effective merchant restriction factor/);
+
+  const missingFunding = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  delete missingFunding.internalFundingSource;
+  writeScenario(metro, missingFunding);
+  const missingFundingResult = runNode([validator, metro]);
+  assert.strictEqual(missingFundingResult.status, 1, output(missingFundingResult));
+  assert.match(output(missingFundingResult), /must confirm internalFundingSource/);
+
+  const nonLimitFunding = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  nonLimitFunding.internalFundingSource = { type: "QUOTA_LIMIT", quotaLimitFactors: ["QUOTA_ONCE"] };
+  nonLimitFunding.ruleFactorValues.QUOTA_ONCE = ["100"];
+  writeScenario(metro, nonLimitFunding);
+  const nonLimitFundingResult = runNode([validator, metro]);
+  assert.strictEqual(nonLimitFundingResult.status, 1, output(nonLimitFundingResult));
+  assert.match(output(nonLimitFundingResult), /non-limit factor: QUOTA_ONCE/);
 
   const taotian = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
   taotian.expenseType = "DEFAULT";
@@ -163,13 +218,13 @@ function writeScenario(dir, scenario) {
 // expenseTypeSubCategory 时，凡用 expense_type 做相等判定识别的账单文件，
 // 必须同时核对 expense_type_sub_category，否则同大类的兄弟子类会被误判。
 function testBillSceneIdentification() {
-  // invalid：只用 expense_type == "TICKET" 识别，缺子类核对 -> 必须报错。
+  // invalid：只用 expense_type == "HOTEL" 识别，缺子类核对 -> 必须报错。
   const invalidDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-bill-scene-"));
   copyDir(path.join(__dirname, "fixtures", "valid"), invalidDir);
   fs.writeFileSync(path.join(invalidDir, "bill_scene.py"), [
-    "def is_train_ticket(notify):",
+    "def is_hotel(notify):",
     "    expense_type = notify.get(\"expense_type\")",
-    "    return expense_type == \"TICKET\"",
+    "    return expense_type == \"HOTEL\"",
   ].join("\n"));
   const invalid = runNode([validator, invalidDir]);
   assert.strictEqual(invalid.status, 1, output(invalid));
@@ -179,10 +234,10 @@ function testBillSceneIdentification() {
   const validDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-bill-scene-"));
   copyDir(path.join(__dirname, "fixtures", "valid"), validDir);
   fs.writeFileSync(path.join(validDir, "bill_scene.py"), [
-    "def is_train_ticket(notify):",
+    "def is_hotel(notify):",
     "    expense_type = notify.get(\"expense_type\")",
     "    expense_type_sub_category = notify.get(\"expense_type_sub_category\")",
-    "    return expense_type == \"TICKET\" and expense_type_sub_category == \"TICKET\"",
+    "    return expense_type == \"HOTEL\" and expense_type_sub_category == \"HOTEL\"",
   ].join("\n"));
   const valid = runNode([validator, validDir]);
   assert.doesNotMatch(output(valid), /also check expense_type_sub_category so sibling subtypes are not misclassified/);

@@ -42,6 +42,15 @@ const childScripts = [
   "alipay-enterprise-expense-control/scripts/validate_codegen.js",
   "alipay-enterprise-bill/scripts/validate_codegen.js",
 ];
+const merchantRestrictionFactors = new Set([
+  "MEAL_MERCHANT",
+  "MERCHANT",
+  "COMPOSITE_MERCHANT",
+  "SHOP_GROUP",
+  "SHOP",
+  "RECEIPT_IDENTITY_WHITE_LIST",
+]);
+const quotaLimitFactors = new Set(["QUOTA_DAY", "QUOTA_WEEK", "QUOTA_MONTH", "QUOTA_SEASON", "QUOTA_YEAR", "QUOTA_TOTAL"]);
 
 runGuarded("alipay-enterprise-scenario-integration", main);
 
@@ -210,15 +219,40 @@ function checkSelectedScenario(errors) {
     }
   }
 
-  if (scenario.expenseType === "TICKET" && scenario.expenseTypeSubCategory === "TICKET"
-      && !hasMerchantPidBinding(scenarioText, allText)) {
-    errors.push("TICKET/TICKET must bind 12306 merchant pid 2088011519249952 to MERCHANT in institution create/modify code");
-  }
-
   if (scenario.businessPriority && scenario.businessPriority.enabled) {
     checkBusinessPriorityScenario(scenario, scenarioText, allText, errors);
   }
+  checkInternalFundingSourceImplementation(scenario, scenarioText, allText, errors);
   checkBillScenarioIdentifiers(scenario, files, allText, errors);
+}
+
+function checkInternalFundingSourceImplementation(scenario, scenarioText, allText, errors) {
+  if (!isInternalExpenseControlScenario(scenario) || !scenario.internalFundingSource) return;
+  const source = scenario.internalFundingSource;
+  if (source.type === "ISSUE_RULE") {
+    if (!/issue_rule_info_list|issueRuleInfoList|IssueRuleInfo|setIssueRuleInfoList/.test(scenarioText)) {
+      errors.push("internalFundingSource.type=ISSUE_RULE requires issue_rule_info_list in institution create/modify code");
+    }
+    return;
+  }
+  if (source.type === "MANUAL_ISSUE") {
+    if (!/alipay\.ebpp\.invoice\.expensecontrol\.quota\.create|AlipayEbppInvoiceExpensecontrolQuotaCreate/.test(allText)) {
+      errors.push("internalFundingSource.type=MANUAL_ISSUE requires implemented manual issue quota.create interface");
+    }
+    return;
+  }
+  if (source.type === "QUOTA_LIMIT") {
+    const factors = Array.isArray(source.quotaLimitFactors) ? source.quotaLimitFactors : [];
+    for (const factor of factors) {
+      if (!hasFieldValue(scenarioText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], factor)) {
+        errors.push(`internalFundingSource.type=QUOTA_LIMIT requires quota limit rule_factor=${factor} in institution create/modify code`);
+      }
+      const values = scalarScenarioValues(scenario.ruleFactorValues[factor]);
+      if (values.length && !values.some((value) => hasFactorValueBinding(scenarioText, allText, factor, value))) {
+        errors.push(`quota limit rule_factor=${factor} is not bound to its confirmed internalFundingSource value in institution create/modify code`);
+      }
+    }
+  }
 }
 
 function readScenarioFile(errors) {
@@ -313,13 +347,6 @@ function validateScenarioDecision(scenario, facts, errors) {
     }
   }
 
-  if (pair === "TICKET/TICKET") {
-    if (!scenario.requiredRuleFactors.includes("MERCHANT")) errors.push("TICKET/TICKET requiredRuleFactors must include MERCHANT");
-    if (!scalarScenarioValues(scenario.ruleFactorValues.MERCHANT).some((value) => String(value).includes("2088011519249952"))) {
-      errors.push("TICKET/TICKET ruleFactorValues.MERCHANT must contain 12306 merchant pid 2088011519249952");
-    }
-  }
-
   if (isTaotianPlatformScenario(scenario)
       && scenario.businessPriority && scenario.businessPriority.enabled) {
     errors.push("ALI_PLATFORM_TYPE=TAOTIAN/1688 scenarios do not support business priority; set businessPriority.enabled=false and do not generate the business-priority rule combination");
@@ -336,18 +363,59 @@ function validateScenarioDecision(scenario, facts, errors) {
   }
 
   if (scenario.businessPriority && scenario.businessPriority.enabled) {
+    if (constraintRule && constraintRule.selected && constraintRule.businessPriorityFactors.length === 0) {
+      errors.push(`${pair} does not define any effective merchant restriction factor in expense-type-constraints.md; businessPriority.enabled must be false`);
+    }
     if (!hasConfirmedScenarioValue(scenario.ruleFactorValues.ALARM_CLOCK_TIME)) {
       errors.push("businessPriority.enabled requires ruleFactorValues.ALARM_CLOCK_TIME");
     }
     const selected = scenario.businessPriority.merchantRestrictionFactors;
     if (Array.isArray(selected)) {
       for (const factor of selected) {
+        if (!merchantRestrictionFactors.has(factor)) {
+          errors.push(`businessPriority merchantRestrictionFactors contains unsupported factor: ${factor}`);
+        } else if (constraintRule && constraintRule.selected && !constraintRule.businessPriorityFactors.includes(factor)) {
+          errors.push(`${factor} is not an effective merchant restriction factor for ${pair} according to the selected expense-type-constraints.md row`);
+        }
         if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
           errors.push(`businessPriority.enabled requires ruleFactorValues.${factor}`);
         }
       }
     }
   }
+  validateInternalFundingSourceDecision(scenario, errors);
+}
+
+function validateInternalFundingSourceDecision(scenario, errors) {
+  if (!isInternalExpenseControlScenario(scenario)) return;
+  const source = scenario.internalFundingSource;
+  if (!source || Array.isArray(source) || typeof source !== "object") {
+    errors.push("internal expense-control scenario.json must confirm internalFundingSource: ISSUE_RULE, QUOTA_LIMIT, or MANUAL_ISSUE");
+    return;
+  }
+  if (!["ISSUE_RULE", "QUOTA_LIMIT", "MANUAL_ISSUE"].includes(source.type)) {
+    errors.push("internalFundingSource.type must be ISSUE_RULE, QUOTA_LIMIT, or MANUAL_ISSUE");
+    return;
+  }
+  if (source.type !== "QUOTA_LIMIT") return;
+  const factors = Array.isArray(source.quotaLimitFactors) ? source.quotaLimitFactors : [];
+  if (factors.length === 0) {
+    errors.push("internalFundingSource.type=QUOTA_LIMIT requires quotaLimitFactors");
+  }
+  for (const factor of factors) {
+    if (!quotaLimitFactors.has(factor)) {
+      errors.push(`internalFundingSource quotaLimitFactors contains non-limit factor: ${factor}`);
+    } else if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
+      errors.push(`internalFundingSource QUOTA_LIMIT requires ruleFactorValues.${factor}`);
+    }
+  }
+}
+
+function isInternalExpenseControlScenario(scenario) {
+  const mode = String(scenario.expenseControlMode || scenario.feeControlMode || "").toLowerCase();
+  if (["internal", "0", "inside"].includes(mode)) return true;
+  const values = scalarScenarioValues(scenario.consultMode || scenario.consult_mode || (scenario.ruleFactorValues && scenario.ruleFactorValues.consult_mode));
+  return values.includes("0");
 }
 
 function isTaotianPlatformScenario(scenario) {
@@ -419,7 +487,11 @@ function parseScenarioConstraint(text, expenseType, subtype, variant, knownFacto
     else selected = false;
   }
   const mandatory = row[hasMerchantVariants ? 2 : 1] || "";
+  const rowText = row.join("\n");
   const tokens = Array.from(new Set(Array.from(mandatory.matchAll(/\b[A-Z][A-Z0-9_]+\b/g))
+    .map((match) => match[0])
+    .filter((token) => knownFactors.has(token))));
+  const rowTokens = Array.from(new Set(Array.from(rowText.matchAll(/\b[A-Z][A-Z0-9_]+\b/g))
     .map((match) => match[0])
     .filter((token) => knownFactors.has(token))));
   const allOf = [];
@@ -440,6 +512,7 @@ function parseScenarioConstraint(text, expenseType, subtype, variant, knownFacto
     needsVariant: hasMerchantVariants,
     selected,
     allowed: new Set(tokens),
+    businessPriorityFactors: rowTokens.filter((token) => merchantRestrictionFactors.has(token)),
     allOf,
     anyOf,
   };
@@ -590,21 +663,6 @@ function hasFieldValue(scopeText, allText, fieldNames, setterNames, value) {
     for (const field of fieldNames) {
       const fieldPattern = `(?:["']${escapeRegExp(field)}["']|\\b${escapeRegExp(field)}\\b)`;
       if (new RegExp(`${fieldPattern}\\s*(?:=>|:|=)\\s*${tokenPattern}`).test(scopeText)) return true;
-    }
-  }
-  return false;
-}
-
-function hasMerchantPidBinding(scopeText, allText) {
-  // 只检查 MERCHANT 和 12306 PID 是否在同一段制度规则代码中绑定。
-  // 单纯在通用枚举、配置说明或常量声明中分别出现，不能满足本规则。
-  if (!hasFieldValue(scopeText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], "MERCHANT")) return false;
-
-  const merchantTokens = valueTokens(allText, "MERCHANT");
-  const pidTokens = valueTokens(allText, "2088011519249952");
-  for (const merchantToken of merchantTokens) {
-    for (const pidToken of pidTokens) {
-      if (hasNearbyTokenUsage(scopeText, merchantToken, "MERCHANT", pidToken, "2088011519249952", 1200)) return true;
     }
   }
   return false;
