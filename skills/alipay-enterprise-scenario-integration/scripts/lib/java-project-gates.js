@@ -273,7 +273,7 @@ function projectMode(root) {
 }
 
 function hasMutableInMemoryCollection(text) {
-  return /\b(?:Map|ConcurrentMap|ConcurrentHashMap|Set|HashSet)\s*<[^;\n=]+>\s+[A-Za-z_$][\w$]*\s*=\s*new\s+(?:ConcurrentHashMap|HashMap|ConcurrentSkipListMap|HashSet|LinkedHashSet)\b/.test(text);
+  return /(?:^|[;\n])\s*(?:(?:private|protected|public|static|final|volatile)\s+)+(?:Map|ConcurrentMap|ConcurrentHashMap|Set|HashSet)\s*<[^;\n=]+>\s+[A-Za-z_$][\w$]*\s*=\s*new\s+(?:ConcurrentHashMap|HashMap|ConcurrentSkipListMap|HashSet|LinkedHashSet)\b/m.test(text);
 }
 
 function isDemoOrTestSource(file, text) {

@@ -51,6 +51,7 @@ const merchantRestrictionFactors = new Set([
   "RECEIPT_IDENTITY_WHITE_LIST",
 ]);
 const quotaLimitFactors = new Set(["QUOTA_DAY", "QUOTA_WEEK", "QUOTA_MONTH", "QUOTA_SEASON", "QUOTA_YEAR", "QUOTA_TOTAL"]);
+const ALIPAY_SDK_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+\.ALL$/;
 
 runGuarded("alipay-enterprise-scenario-integration", main);
 
@@ -93,16 +94,17 @@ function main() {
     console.warn("[alipay-enterprise-scenario-integration] WARN no pom.xml/build.gradle found; compile validation must be reported as unavailable");
   }
   if (javaProject) {
+    const javaFiles = walk(targetDir).filter((file) => file.endsWith(".java"));
     checkBuildConsistency(pom, aggregateErrors);
     checkMavenCompile(pom, aggregateErrors);
     checkSdkJarClasses(pom, aggregateErrors);
+    checkSdkReflectionBypass(javaFiles, aggregateErrors);
     checkSpringValueConsistency(aggregateErrors);
     checkMessageRouterCompleteness(aggregateErrors);
     checkMessageRouterFailurePropagation(aggregateErrors);
     checkMessageRouterUnknownHandling(aggregateErrors);
     checkAlipayMsgClientSecurityConfig(aggregateErrors);
     checkMessageClientStartupFailure(aggregateErrors);
-    const javaFiles = walk(targetDir).filter((file) => file.endsWith(".java"));
     javaProjectGates.checkJavaTransportContracts(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkJavaProductionStateStores(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkJavaStateTransitionPersistence(javaFiles, aggregateErrors, rel);
@@ -665,6 +667,24 @@ function hasFieldValue(scopeText, allText, fieldNames, setterNames, value) {
       if (new RegExp(`${fieldPattern}\\s*(?:=>|:|=)\\s*${tokenPattern}`).test(scopeText)) return true;
     }
   }
+  if (hasScenarioValueComparison(scopeText, allText, fieldNames, value)) return true;
+  return false;
+}
+
+function hasScenarioValueComparison(scopeText, allText, fieldNames, value) {
+  const fieldRefs = fieldNames
+    .map((field) => String(field))
+    .filter(Boolean)
+    .map((field) => field === field.toUpperCase() ? field : `${field}|get${field[0].toUpperCase()}${field.slice(1)}\\s*\\(\\)`)
+    .join("|");
+  if (!fieldRefs) return false;
+  const fieldPattern = `(?:\\b(?:${fieldRefs})\\b)`;
+  for (const token of valueTokens(allText, value)) {
+    const tokenPattern = tokenUsagePattern(token, value);
+    if (new RegExp(`${tokenPattern}\\s*\\.\\s*equals\\s*\\(\\s*${fieldPattern}\\s*\\)`).test(scopeText)) return true;
+    if (new RegExp(`${fieldPattern}\\s*\\.\\s*equals\\s*\\(\\s*${tokenPattern}\\s*\\)`).test(scopeText)) return true;
+    if (new RegExp(`${fieldPattern}\\s*(?:==|===)\\s*${tokenPattern}|${tokenPattern}\\s*(?:==|===)\\s*${fieldPattern}`).test(scopeText)) return true;
+  }
   return false;
 }
 
@@ -897,7 +917,12 @@ function checkBuildConsistency(pom, errors) {
     errors.push("pom.xml must declare com.alipay.sdk:alipay-sdk-java with an explicit version, alipay-sdk.version property, or alipay.sdk.version property");
     return;
   }
+  if (!ALIPAY_SDK_VERSION_PATTERN.test(sdkVersion)) {
+    errors.push(`pom.xml uses invalid alipay-sdk-java version ${sdkVersion}; SDK preflight must extract a version matching x.y.z.ALL from pkg:maven/com.alipay.sdk/alipay-sdk-java@<version> or the Maven dependency snippet, not an arbitrary page asset version`);
+    return;
+  }
   checkSdkVersionSource(sdkVersion, errors);
+  checkForbiddenSdkVersionEvidence(errors);
 
   const readmes = walk(targetDir).filter((f) => /^readme\.md$/i.test(path.basename(f)));
   for (const readme of readmes) {
@@ -905,6 +930,31 @@ function checkBuildConsistency(pom, errors) {
     for (const m of text.matchAll(/alipay-sdk-java\s*[:：]\s*([0-9][0-9A-Za-z._-]*\.ALL)/g)) {
       if (m[1] !== sdkVersion) {
         errors.push(`${rel(readme)}: README SDK version ${m[1]} differs from pom.xml ${sdkVersion}; update README, do not downgrade pom.xml`);
+      }
+    }
+  }
+}
+
+function checkForbiddenSdkVersionEvidence(errors) {
+  const files = walk(targetDir).filter((file) => {
+    const base = path.basename(file).toLowerCase();
+    return /(?:readme|report|summary|sdk|codegen|generation).*\.md$/.test(base)
+      || base === "pom.xml"
+      || base === "build.gradle"
+      || base === "build.gradle.kts";
+  });
+  const forbidden = /search\.maven\.org|solrsearch|latestVersion|maven-metadata\.xml|repo1\.maven\.org|repo\.maven\.apache\.org/i;
+  const central = /central\.sonatype\.com\/artifact\/com\.alipay\.sdk\/alipay-sdk-java|pkg:maven\/com\.alipay\.sdk\/alipay-sdk-java@|<artifactId>\s*alipay-sdk-java\s*<\/artifactId>[\s\S]{0,400}<version>\s*[0-9]+\.[0-9]+\.[0-9]+\.ALL\s*<\/version>/i;
+  for (const file of files) {
+    const text = fs.readFileSync(file, "utf8");
+    if (!/alipay-sdk-java|com\.alipay\.sdk/i.test(text)) continue;
+    if (forbidden.test(text)) {
+      errors.push(`${rel(file)} records search.maven.org, maven-metadata.xml, latestVersion, or Maven repository metadata as an SDK version source; Java/Maven SDK preflight must use Central Portal only and must not describe non-Central results as the Central Portal current version`);
+    }
+    if (/\bCentral Portal\b|Central Portal 当前版本|当前版本/i.test(text)) {
+      const nearby = text.match(/(?:Central Portal|当前版本)[\s\S]{0,1200}/i);
+      if (nearby && /alipay-sdk-java|com\.alipay\.sdk/i.test(nearby[0]) && !central.test(nearby[0])) {
+        errors.push(`${rel(file)} mentions a Central Portal SDK version without the required Central Portal evidence snippet; include pkg:maven/com.alipay.sdk/alipay-sdk-java@<version> or the Maven dependency snippet, not a substituted Maven index result`);
       }
     }
   }
@@ -1442,7 +1492,7 @@ function checkSdkVersionSource(sdkVersion, errors) {
   // 查询失败时直接报错，不回退到脚本内置默认版本。
   const latest = fetchLatestAlipaySdkVersion();
   if (!latest) {
-    errors.push("unable to verify latest alipay-sdk-java version from Central Portal; run `curl -sL \"https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java\"` with approval or provide the Central Portal current version before generating Java/Maven code");
+    errors.push("unable to verify latest alipay-sdk-java version from Central Portal; extract only pkg:maven/com.alipay.sdk/alipay-sdk-java@<version> or the Maven dependency snippet, and require x.y.z.ALL format. Run `curl -sL \"https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java\"` with approval or provide the Central Portal current version before generating Java/Maven code");
     return;
   }
   if (sdkVersion !== latest) {
@@ -1507,6 +1557,17 @@ function checkSdkJarClasses(pom, errors) {
     const entry = `${className.replace(/\./g, "/")}.class`;
     if (!entries.has(entry)) {
       errors.push(`SDK class imported by generated code is not present in alipay-sdk-java ${sdkVersion}: ${className}; change SDK version or generated code, do not create local stubs`);
+    }
+  }
+}
+
+function checkSdkReflectionBypass(files, errors) {
+  for (const file of files) {
+    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
+    const sdkRelevant = /com\.alipay\.api|Alipay[A-Za-z0-9_]*(?:Request|Response|Model)|alipayClient\s*\.\s*execute/.test(text);
+    const reflectionBypass = /java\.lang\.reflect|\.getClass\s*\(\s*\)|\.getMethod\s*\(|\.invoke\s*\(|BeanUtils|PropertyUtils/.test(text);
+    if (sdkRelevant && reflectionBypass) {
+      errors.push(`${rel(file)}: generated Java must not use reflection/BeanUtils to bypass official SDK Request/Model/Response compile-time types; inspect the SDK jar with jar tf or javap and use real getters/setters`);
     }
   }
 }

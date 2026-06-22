@@ -23,6 +23,7 @@ require("./java-project-gates.test").run(javaProjectGates);
 testFixtures();
 testScenarioDecisionGates();
 testBillSceneIdentification();
+testBillIdentifierConstantComparison();
 testIfElseRouterGates();
 testMessageClientStartupFailurePolicy();
 testIntegrationContract();
@@ -119,6 +120,10 @@ function testScenarioDecisionGates() {
     "    return {",
     "        \"method\": \"alipay.ebpp.invoice.institution.create\",",
     "        \"consult_mode\": \"0\",",
+    "        \"issue_rule_info_list\": [{",
+    "            \"issue_rule_name\": \"默认发放规则\",",
+    "            \"outer_source_id\": \"metro-default-issue-rule\",",
+    "        }],",
     "        \"standard_info_list\": [{",
     "            \"expense_type\": EXPENSE_TYPE,",
     "            \"expense_type_sub_category\": SUB_CATEGORY,",
@@ -152,7 +157,7 @@ function testScenarioDecisionGates() {
     requiredRuleFactors: ["CARD_TYPE"],
     ruleFactorValues: { CARD_TYPE: ["S0110000"], QUOTA_TOTAL: ["1000"] },
     expenseControlMode: "internal",
-    internalFundingSource: { type: "QUOTA_LIMIT", quotaLimitFactors: ["QUOTA_TOTAL"] },
+    internalFundingSource: { type: "ISSUE_RULE" },
     businessPriority: { enabled: false, merchantRestrictionFactors: [] },
     billIdentifiers: { expenseType: "METRO", expenseTypeSubCategory: "METRO" },
   });
@@ -241,6 +246,29 @@ function testBillSceneIdentification() {
   ].join("\n"));
   const valid = runNode([validator, validDir]);
   assert.doesNotMatch(output(valid), /also check expense_type_sub_category so sibling subtypes are not misclassified/);
+}
+
+function testBillIdentifierConstantComparison() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-bill-identifier-"));
+  copyDir(path.join(__dirname, "fixtures", "valid"), dir);
+  fs.writeFileSync(path.join(dir, "bill_service.py"), [
+    "EXPENSE_TYPE = \"METRO\"",
+    "EXPENSE_TYPE_SUB_CATEGORY = \"METRO\"",
+    "SCENE_CODE = \"METRO\"",
+    "ORDER_TYPE_METRO = \"METRO\"",
+    "",
+    "def handle_bill_notification(pay_no):",
+    "    return {",
+    "        \"expense_type\": EXPENSE_TYPE,",
+    "        \"expense_type_sub_category\": EXPENSE_TYPE_SUB_CATEGORY,",
+    "        \"scene_code\": SCENE_CODE,",
+    "    }",
+    "",
+    "def is_metro_order(orderType):",
+    "    return ORDER_TYPE_METRO == orderType",
+  ].join("\n"));
+  const result = runNode([validator, dir]);
+  assert.doesNotMatch(output(result), /bill implementation does not use confirmed billIdentifiers.orderType=METRO/);
 }
 
 function testIfElseRouterGates() {
