@@ -66,7 +66,7 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 2. README 或说明文档如写出 `alipay-sdk-java` 版本，必须与 POM/Gradle 保持一致；不得为了匹配 README 反向降级依赖。
 3. 生成后必须通过 Maven 编译。编译失败时，必须保留官方 SDK 代码并基于依赖、类型或文档修正。
 4. 主校验会用本地 `alipay-sdk-java` jar 反查所有 `com.alipay.api.request/response/domain/msg` 导入类真实存在；不存在时必须调整官方 SDK 版本、读取文档或报告不支持。
-5. 主校验会检查 WebSocket 业务载荷没有进入 HTTP 通知信封/二次验签链路，并检查正式 Repository/Store 不使用进程内状态。
+5. 主校验会检查 WebSocket 业务载荷没有进入 HTTP 通知信封/二次验签链路，并检查正式 Repository/Store 不使用进程内状态。进程内状态、demo 业务 Port、示例回调只能在显式 `demo` / `test` profile 生效；不得挂在 `default` profile，生产默认启动必须使用真实实现或 fail-closed。
 6. Spring 注入接口必须在默认配置下存在可用实现；仅有未激活 profile 实现属于运行时装配失败。
 7. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试，Spring Boot 新工程需要上下文装配测试，零测试不得判为通过。
 
@@ -77,12 +77,14 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 3. 主校验会对生成工程的 `.js` / `.cjs` / `.mjs` 执行 `node --check`，并加载不会启动服务监听的 `src` / `lib` / `app` 模块。
 4. 费控模式、制度完整性和额度来源由费控子 Skill 的 Node.js 门禁校验；主聚合层不重复写死内部/外部模式值。
 5. 如果 `package.json` 存在 `test` 脚本，主校验只在聚合层运行一次 `npm test`；失败时不得宣布生成完成。
+6. 示例内存状态、demo 业务端口和示例回调不得作为默认生产导出；默认导出必须是真实实现、明确的 fail-closed，或要求接入方显式配置。
 
 ## Python/Go/.NET 聚合结果一致性
 
 1. Python、Go、.NET 等手拼 HTTP(S) 请求体或使用非 Java SDK 的代码，字段名和嵌套路径必须完全来自接口文档；不得按业务语义生成近义字段。
 2. 主校验会调用员企、费控、账单跨语言门禁，拦截员企猜字段、账单费用子类错写、费控制度结构错位、固定 SPI 成功返回、空幂等查询和未实现占位。
 3. 运行时存在时，主校验会执行 Python 语法检查、`go test ./...` 或 `dotnet build`；运行时缺失时必须在交付说明中明确该构建检查不可用。
+4. demo/test 示例实现必须通过文件路径、配置或启动参数显式隔离；默认运行路径不得使用进程内状态或仅日志业务实现。
 
 ## 共享消息入口
 

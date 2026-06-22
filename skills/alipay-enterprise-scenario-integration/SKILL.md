@@ -43,7 +43,8 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js
 3. 上下文可唯一推断时，展示推断结果后继续，不重复询问。
 4. 存在多个合法选择，或必用规则因子缺少业务值时，必须询问用户。示例：地铁必须确认城市或具体 `CARD_TYPE`。
 5. 文档找不到的费用类型、费用子类、规则因子或业务值不得自行补成 `DEFAULT`；`scene_type` 仅按默认策略取 `DEFAULT` 或票务类 `TRAVEL`。
-6. 代码生成前必须生成 `<项目>/.alipay-skill/scenario.json`，且不得保留 `NEEDS_USER_CONFIRM`。
+6. 因公优先不是默认待确认项；用户没有明确提出“因公优先/企业码优先/因公支付优先”时，不得询问是否启用，直接写入关闭状态。
+7. 代码生成前必须生成 `<项目>/.alipay-skill/scenario.json`，且不得保留 `NEEDS_USER_CONFIRM`。
 
 ## 默认范围
 

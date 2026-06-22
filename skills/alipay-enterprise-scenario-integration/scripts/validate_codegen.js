@@ -605,6 +605,9 @@ function checkBillScenarioIdentifiers(scenario, files, allText, errors) {
     const [fields, setters] = fieldMap[key];
     if (!hasFieldValue(billText, allText, fields, setters, String(value))) {
       errors.push(`bill implementation does not use confirmed billIdentifiers.${key}=${value}`);
+    } else if ((key === "sceneCode" || key === "orderType")
+        && !hasOperationalBillIdentifierUse(files, fields, String(value), allText)) {
+      errors.push(`bill implementation only logs or declares billIdentifiers.${key}=${value}; confirmed bill identifiers must affect routing, filtering, failure, or business handling`);
     }
   }
 
@@ -640,6 +643,58 @@ function checkBillScenarioIdentifiers(scenario, files, allText, errors) {
       }
     }
   }
+}
+
+function hasOperationalBillIdentifierUse(files, fields, value, allText) {
+  for (const file of files) {
+    if (isTestOrGeneratedDocFile(file)) continue;
+    const relPath = rel(file).split(path.sep).join("/");
+    if (!/(^|\/)bill\//i.test(relPath) && !/bill|consume|ecorder/i.test(path.basename(file))) continue;
+    const text = stripSourceComments(fs.readFileSync(file, "utf8"), file);
+    for (const token of valueTokens(allText, value)) {
+      const tokenPattern = tokenUsagePattern(token, value);
+      for (const field of fields) {
+        if (hasOperationalIdentifierLine(text, field, token)) return true;
+        const getter = field === field.toUpperCase()
+          ? escapeRegExp(field)
+          : `(?:${escapeRegExp(field)}|get${escapeRegExp(field[0].toUpperCase() + field.slice(1))}\\s*\\(\\))`;
+        const conditionPattern = new RegExp(`if\\s*\\((?=[^)]*(?:${getter}))(?=[^)]*${tokenPattern})[^)]*\\)\\s*\\{([\\s\\S]{0,500}?)\\}`, "g");
+        for (const match of text.matchAll(conditionPattern)) {
+          if (isOperationalIdentifierBranch(match[1])) return true;
+        }
+        const pythonConditionPattern = new RegExp(`if\\s+(?=[^:\\n]*(?:${getter}))(?=[^:\\n]*${tokenPattern})[^:\\n]*:\\s*\\n([\\s\\S]{0,300})`, "g");
+        for (const match of text.matchAll(pythonConditionPattern)) {
+          if (isOperationalIdentifierBranch(match[1])) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function hasOperationalIdentifierLine(text, field, token) {
+  const lines = text.split(/\r?\n/);
+  const fieldNeedles = Array.from(new Set([
+    field,
+    field.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase()),
+    `get${field.replace(/(?:^|_)([a-z])/g, (_, ch) => ch.toUpperCase())}`,
+  ])).filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/\bif\b/.test(line)) continue;
+    if (!fieldNeedles.some((needle) => line.includes(needle))) continue;
+    if (!line.includes(token)) continue;
+    const body = lines.slice(i + 1, i + 8).join("\n");
+    if (isOperationalIdentifierBranch(body)) return true;
+  }
+  return false;
+}
+
+function isOperationalIdentifierBranch(body) {
+  const withoutLogs = body
+    .replace(/\b(?:log|logger)\.\w+\s*\([^;]*\)\s*;/g, "")
+    .replace(/\bSystem\.out\.println\s*\([^;]*\)\s*;/g, "");
+  return /\breturn\s+(?:false|False|fail|null|None)\b|throw\s+new\b|\braise\b|\bcontinue\s*;|\bbreak\s*;|\bmarkFailed\s*\(|\bprocessNotification\s*\(|\bhandle\s*\(/.test(withoutLogs);
 }
 
 function isTestOrGeneratedDocFile(file) {

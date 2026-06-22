@@ -7,7 +7,11 @@ SCENE_CODE = "METRO"
 ORDER_TYPE = "METRO"
 
 
-def handle_bill_notification(pay_no):
+def handle_bill_notification(pay_no, payload):
+    if payload.get("scene_code") != SCENE_CODE:
+        return False
+    if payload.get("order_type") != ORDER_TYPE:
+        return False
     return {
         "method": NOTIFY_METHOD,
         "pay_no": pay_no,

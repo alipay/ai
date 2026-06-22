@@ -278,7 +278,12 @@ function hasMutableInMemoryCollection(text) {
 
 function isDemoOrTestSource(file, text) {
   return /(^|[/\\])(?:test|tests|demo|demos|examples)([/\\]|$)/i.test(file)
-    || profileNames(text).some((profile) => /(^|[-_.])(?:test|demo)([-_.]|$)/i.test(profile));
+    || isExplicitDemoOrTestProfileOnly(profileNames(text));
+}
+
+function isExplicitDemoOrTestProfileOnly(profiles) {
+  if (!profiles.length) return false;
+  return profiles.every((profile) => /(^|[-_.])(?:test|demo)([-_.]|$)/i.test(profile));
 }
 
 function unique(values) {
