@@ -95,10 +95,12 @@ function testMissingSupportIsBroken() {
 function testValueResolver() {
   const text = [
     "const EXPENSE_TYPE_METRO = \"METRO\";",
+    "const SCENARIO_EXPENSE_TYPE = ExpenseConstants.EXPENSE_TYPE_METRO;",
     "const RULE_VALUE_CARD_TYPE = \"[\\\"S0110000\\\"]\";",
   ].join("\n");
   const tokens = resolver.valueTokens(text, "S0110000");
   assert.deepStrictEqual(tokens, ["S0110000", "RULE_VALUE_CARD_TYPE"]);
+  assert.deepStrictEqual(resolver.valueTokens(text, "METRO"), ["METRO", "EXPENSE_TYPE_METRO", "SCENARIO_EXPENSE_TYPE"]);
 }
 
 function testFixtures() {
@@ -177,8 +179,14 @@ function testScenarioDecisionGates() {
   writeScenario(metro, missingValue);
   const priorityResult = runNode([validator, metro]);
   assert.strictEqual(priorityResult.status, 1, output(priorityResult));
-  assert.match(output(priorityResult), /does not define any effective merchant restriction factor/);
-  assert.match(output(priorityResult), /MERCHANT is not an effective merchant restriction factor/);
+  assert.match(output(priorityResult), /businessPriority factor MERCHANT is not implemented/);
+
+  const unconfirmedPriority = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  unconfirmedPriority.businessPriority = { enabled: true, merchantRestrictionFactors: [] };
+  writeScenario(metro, unconfirmedPriority);
+  const unconfirmedPriorityResult = runNode([validator, metro]);
+  assert.strictEqual(unconfirmedPriorityResult.status, 1, output(unconfirmedPriorityResult));
+  assert.match(output(unconfirmedPriorityResult), /businessPriority\.enabled requires confirmed merchantRestrictionFactors/);
 
   const missingFunding = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
   delete missingFunding.internalFundingSource;
@@ -187,13 +195,12 @@ function testScenarioDecisionGates() {
   assert.strictEqual(missingFundingResult.status, 1, output(missingFundingResult));
   assert.match(output(missingFundingResult), /must confirm internalFundingSource/);
 
-  const nonLimitFunding = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
-  nonLimitFunding.internalFundingSource = { type: "QUOTA_LIMIT", quotaLimitFactors: ["QUOTA_ONCE"] };
-  nonLimitFunding.ruleFactorValues.QUOTA_ONCE = ["100"];
-  writeScenario(metro, nonLimitFunding);
-  const nonLimitFundingResult = runNode([validator, metro]);
-  assert.strictEqual(nonLimitFundingResult.status, 1, output(nonLimitFundingResult));
-  assert.match(output(nonLimitFundingResult), /non-limit factor: QUOTA_ONCE/);
+  const unconfirmedFunding = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  unconfirmedFunding.internalFundingSource = { type: "NEEDS_USER_CONFIRM" };
+  writeScenario(metro, unconfirmedFunding);
+  const unconfirmedFundingResult = runNode([validator, metro]);
+  assert.strictEqual(unconfirmedFundingResult.status, 1, output(unconfirmedFundingResult));
+  assert.match(output(unconfirmedFundingResult), /internalFundingSource\.type must be confirmed/);
 
   const taotian = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
   taotian.expenseType = "DEFAULT";
@@ -269,6 +276,26 @@ function testBillIdentifierConstantComparison() {
   ].join("\n"));
   const result = runNode([validator, dir]);
   assert.doesNotMatch(output(result), /bill implementation does not use confirmed billIdentifiers.orderType=METRO/);
+
+  const javaDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-bill-identifier-java-"));
+  copyDir(path.join(__dirname, "fixtures", "valid"), javaDir);
+  fs.writeFileSync(path.join(javaDir, "BillConstants.java"), [
+    "class BillConstants {",
+    "  static final String EXPENSE_TYPE_METRO = \"METRO\";",
+    "  static final String SCENARIO_EXPENSE_TYPE = BillConstants.EXPENSE_TYPE_METRO;",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(javaDir, "BillSceneIdentifier.java"), [
+    "class BillSceneIdentifier {",
+    "  boolean isMetro(BillDetail detail) {",
+    "    if (BillConstants.SCENARIO_EXPENSE_TYPE.equals(detail.getExpenseType())) { return; }",
+    "    return false;",
+    "  }",
+    "}",
+    "class BillDetail { String getExpenseType() { return \"METRO\"; } }",
+  ].join("\n"));
+  const javaResult = runNode([validator, javaDir]);
+  assert.doesNotMatch(output(javaResult), /bill implementation does not use confirmed billIdentifiers.expenseType=METRO/);
 }
 
 function testIfElseRouterGates() {

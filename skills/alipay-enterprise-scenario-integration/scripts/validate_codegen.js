@@ -42,15 +42,6 @@ const childScripts = [
   "alipay-enterprise-expense-control/scripts/validate_codegen.js",
   "alipay-enterprise-bill/scripts/validate_codegen.js",
 ];
-const merchantRestrictionFactors = new Set([
-  "MEAL_MERCHANT",
-  "MERCHANT",
-  "COMPOSITE_MERCHANT",
-  "SHOP_GROUP",
-  "SHOP",
-  "RECEIPT_IDENTITY_WHITE_LIST",
-]);
-const quotaLimitFactors = new Set(["QUOTA_DAY", "QUOTA_WEEK", "QUOTA_MONTH", "QUOTA_SEASON", "QUOTA_YEAR", "QUOTA_TOTAL"]);
 const ALIPAY_SDK_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+\.ALL$/;
 
 runGuarded("alipay-enterprise-scenario-integration", main);
@@ -224,37 +215,7 @@ function checkSelectedScenario(errors) {
   if (scenario.businessPriority && scenario.businessPriority.enabled) {
     checkBusinessPriorityScenario(scenario, scenarioText, allText, errors);
   }
-  checkInternalFundingSourceImplementation(scenario, scenarioText, allText, errors);
   checkBillScenarioIdentifiers(scenario, files, allText, errors);
-}
-
-function checkInternalFundingSourceImplementation(scenario, scenarioText, allText, errors) {
-  if (!isInternalExpenseControlScenario(scenario) || !scenario.internalFundingSource) return;
-  const source = scenario.internalFundingSource;
-  if (source.type === "ISSUE_RULE") {
-    if (!/issue_rule_info_list|issueRuleInfoList|IssueRuleInfo|setIssueRuleInfoList/.test(scenarioText)) {
-      errors.push("internalFundingSource.type=ISSUE_RULE requires issue_rule_info_list in institution create/modify code");
-    }
-    return;
-  }
-  if (source.type === "MANUAL_ISSUE") {
-    if (!/alipay\.ebpp\.invoice\.expensecontrol\.quota\.create|AlipayEbppInvoiceExpensecontrolQuotaCreate/.test(allText)) {
-      errors.push("internalFundingSource.type=MANUAL_ISSUE requires implemented manual issue quota.create interface");
-    }
-    return;
-  }
-  if (source.type === "QUOTA_LIMIT") {
-    const factors = Array.isArray(source.quotaLimitFactors) ? source.quotaLimitFactors : [];
-    for (const factor of factors) {
-      if (!hasFieldValue(scenarioText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], factor)) {
-        errors.push(`internalFundingSource.type=QUOTA_LIMIT requires quota limit rule_factor=${factor} in institution create/modify code`);
-      }
-      const values = scalarScenarioValues(scenario.ruleFactorValues[factor]);
-      if (values.length && !values.some((value) => hasFactorValueBinding(scenarioText, allText, factor, value))) {
-        errors.push(`quota limit rule_factor=${factor} is not bound to its confirmed internalFundingSource value in institution create/modify code`);
-      }
-    }
-  }
 }
 
 function readScenarioFile(errors) {
@@ -349,11 +310,6 @@ function validateScenarioDecision(scenario, facts, errors) {
     }
   }
 
-  if (isTaotianPlatformScenario(scenario)
-      && scenario.businessPriority && scenario.businessPriority.enabled) {
-    errors.push("ALI_PLATFORM_TYPE=TAOTIAN/1688 scenarios do not support business priority; set businessPriority.enabled=false and do not generate the business-priority rule combination");
-  }
-
   if (!scenario.billIdentifiers || Array.isArray(scenario.billIdentifiers)
       || typeof scenario.billIdentifiers !== "object"
       || Object.keys(scenario.billIdentifiers).length === 0) {
@@ -365,51 +321,30 @@ function validateScenarioDecision(scenario, facts, errors) {
   }
 
   if (scenario.businessPriority && scenario.businessPriority.enabled) {
-    if (constraintRule && constraintRule.selected && constraintRule.businessPriorityFactors.length === 0) {
-      errors.push(`${pair} does not define any effective merchant restriction factor in expense-type-constraints.md; businessPriority.enabled must be false`);
+    const selected = Array.isArray(scenario.businessPriority.merchantRestrictionFactors)
+      ? scenario.businessPriority.merchantRestrictionFactors
+      : [];
+    if (selected.length === 0) {
+      errors.push("businessPriority.enabled requires confirmed merchantRestrictionFactors; detailed factor validity is checked by the expense-control validator");
     }
-    if (!hasConfirmedScenarioValue(scenario.ruleFactorValues.ALARM_CLOCK_TIME)) {
-      errors.push("businessPriority.enabled requires ruleFactorValues.ALARM_CLOCK_TIME");
-    }
-    const selected = scenario.businessPriority.merchantRestrictionFactors;
-    if (Array.isArray(selected)) {
-      for (const factor of selected) {
-        if (!merchantRestrictionFactors.has(factor)) {
-          errors.push(`businessPriority merchantRestrictionFactors contains unsupported factor: ${factor}`);
-        } else if (constraintRule && constraintRule.selected && !constraintRule.businessPriorityFactors.includes(factor)) {
-          errors.push(`${factor} is not an effective merchant restriction factor for ${pair} according to the selected expense-type-constraints.md row`);
-        }
-        if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
-          errors.push(`businessPriority.enabled requires ruleFactorValues.${factor}`);
-        }
+    for (const factor of selected) {
+      if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
+        errors.push(`businessPriority.enabled requires confirmed ruleFactorValues.${factor}`);
       }
     }
   }
-  validateInternalFundingSourceDecision(scenario, errors);
+  validateScenarioFundingSourcePresence(scenario, errors);
 }
 
-function validateInternalFundingSourceDecision(scenario, errors) {
+function validateScenarioFundingSourcePresence(scenario, errors) {
   if (!isInternalExpenseControlScenario(scenario)) return;
   const source = scenario.internalFundingSource;
   if (!source || Array.isArray(source) || typeof source !== "object") {
-    errors.push("internal expense-control scenario.json must confirm internalFundingSource: ISSUE_RULE, QUOTA_LIMIT, or MANUAL_ISSUE");
+    errors.push("internal expense-control scenario.json must confirm internalFundingSource; detailed funding-source validity is checked by the expense-control validator");
     return;
   }
-  if (!["ISSUE_RULE", "QUOTA_LIMIT", "MANUAL_ISSUE"].includes(source.type)) {
-    errors.push("internalFundingSource.type must be ISSUE_RULE, QUOTA_LIMIT, or MANUAL_ISSUE");
-    return;
-  }
-  if (source.type !== "QUOTA_LIMIT") return;
-  const factors = Array.isArray(source.quotaLimitFactors) ? source.quotaLimitFactors : [];
-  if (factors.length === 0) {
-    errors.push("internalFundingSource.type=QUOTA_LIMIT requires quotaLimitFactors");
-  }
-  for (const factor of factors) {
-    if (!quotaLimitFactors.has(factor)) {
-      errors.push(`internalFundingSource quotaLimitFactors contains non-limit factor: ${factor}`);
-    } else if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
-      errors.push(`internalFundingSource QUOTA_LIMIT requires ruleFactorValues.${factor}`);
-    }
+  if (typeof source.type !== "string" || !source.type.trim() || source.type === "NEEDS_USER_CONFIRM") {
+    errors.push("internalFundingSource.type must be confirmed before domain generation");
   }
 }
 
@@ -418,12 +353,6 @@ function isInternalExpenseControlScenario(scenario) {
   if (["internal", "0", "inside"].includes(mode)) return true;
   const values = scalarScenarioValues(scenario.consultMode || scenario.consult_mode || (scenario.ruleFactorValues && scenario.ruleFactorValues.consult_mode));
   return values.includes("0");
-}
-
-function isTaotianPlatformScenario(scenario) {
-  if (!scenario || !scenario.ruleFactorValues) return false;
-  const values = scalarScenarioValues(scenario.ruleFactorValues.ALI_PLATFORM_TYPE);
-  return values.some((value) => value === "TAOTIAN" || value === "1688");
 }
 
 function parseExpenseTypePairs(text) {
@@ -493,9 +422,6 @@ function parseScenarioConstraint(text, expenseType, subtype, variant, knownFacto
   const tokens = Array.from(new Set(Array.from(mandatory.matchAll(/\b[A-Z][A-Z0-9_]+\b/g))
     .map((match) => match[0])
     .filter((token) => knownFactors.has(token))));
-  const rowTokens = Array.from(new Set(Array.from(rowText.matchAll(/\b[A-Z][A-Z0-9_]+\b/g))
-    .map((match) => match[0])
-    .filter((token) => knownFactors.has(token))));
   const allOf = [];
   const anyOf = [];
   if (/至少使用其中一个|至少有一个/.test(mandatory)) {
@@ -514,7 +440,6 @@ function parseScenarioConstraint(text, expenseType, subtype, variant, knownFacto
     needsVariant: hasMerchantVariants,
     selected,
     allowed: new Set(tokens),
-    businessPriorityFactors: rowTokens.filter((token) => merchantRestrictionFactors.has(token)),
     allOf,
     anyOf,
   };
@@ -545,36 +470,19 @@ function hasFactorValueBinding(scopeText, allText, factor, value) {
 }
 
 function checkBusinessPriorityScenario(scenario, scopeText, allText, errors) {
-  if (!hasFieldValue(scopeText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], "ALARM_CLOCK_TIME")) {
-    errors.push("businessPriority.enabled requires ALARM_CLOCK_TIME in institution create/modify code");
-  } else {
-    const timeValues = scalarScenarioValues(scenario.ruleFactorValues.ALARM_CLOCK_TIME);
-    if (timeValues.length && !timeValues.some((value) => hasFactorValueBinding(scopeText, allText, "ALARM_CLOCK_TIME", value))) {
-      errors.push("ALARM_CLOCK_TIME is not bound to its confirmed businessPriority value in institution create/modify code");
+  const selected = Array.isArray(scenario.businessPriority.merchantRestrictionFactors)
+    ? scenario.businessPriority.merchantRestrictionFactors
+    : [];
+  const implemented = selected.filter((factor) =>
+    hasFieldValue(scopeText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], factor));
+  for (const factor of selected) {
+    if (!implemented.includes(factor)) {
+      errors.push(`businessPriority factor ${factor} is not implemented in institution create/modify code`);
+      continue;
     }
-  }
-  const allowed = new Set(["MEAL_MERCHANT", "MERCHANT", "COMPOSITE_MERCHANT", "SHOP_GROUP", "SHOP", "RECEIPT_IDENTITY_WHITE_LIST"]);
-  const selected = scenario.businessPriority.merchantRestrictionFactors;
-  if (!Array.isArray(selected) || !selected.some((factor) => allowed.has(factor))) {
-    errors.push("businessPriority.enabled requires at least one documented merchantRestrictionFactor");
-    return;
-  }
-  const implemented = selected.filter((factor) => allowed.has(factor)
-    && hasFieldValue(scopeText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], factor));
-  if (implemented.length === 0) errors.push("businessPriority.enabled merchant restriction factor is not implemented in institution create/modify code");
-  for (const factor of implemented) {
     const values = scalarScenarioValues(scenario.ruleFactorValues[factor]);
     if (values.length && !values.some((value) => hasFactorValueBinding(scopeText, allText, factor, value))) {
-      errors.push(`${factor} is not bound to its confirmed businessPriority value in institution create/modify code`);
-    }
-  }
-
-  if (implemented.includes("COMPOSITE_MERCHANT")) {
-    const compositeValues = scenario.ruleFactorValues.COMPOSITE_MERCHANT;
-    const validComposite = compositeValues && ["receiptIdentityWhiteList", "shopIdList", "shopGroupIdList"]
-      .some((key) => Array.isArray(compositeValues[key]) && compositeValues[key].length > 0);
-    if (!validComposite) {
-      errors.push("COMPOSITE_MERCHANT counts for business priority only when receiptIdentityWhiteList, shopIdList, or shopGroupIdList is non-empty");
+      errors.push(`businessPriority factor ${factor} is not bound to its confirmed value in institution create/modify code`);
     }
   }
 }
@@ -684,7 +592,8 @@ function hasOperationalIdentifierLine(text, field, token) {
     if (!/\bif\b/.test(line)) continue;
     if (!fieldNeedles.some((needle) => line.includes(needle))) continue;
     if (!line.includes(token)) continue;
-    const body = lines.slice(i + 1, i + 8).join("\n");
+    const inlineBody = line.includes("{") ? line.slice(line.indexOf("{") + 1) : "";
+    const body = [inlineBody, ...lines.slice(i + 1, i + 8)].join("\n");
     if (isOperationalIdentifierBranch(body)) return true;
   }
   return false;
@@ -694,7 +603,7 @@ function isOperationalIdentifierBranch(body) {
   const withoutLogs = body
     .replace(/\b(?:log|logger)\.\w+\s*\([^;]*\)\s*;/g, "")
     .replace(/\bSystem\.out\.println\s*\([^;]*\)\s*;/g, "");
-  return /\breturn\s+(?:false|False|fail|null|None)\b|throw\s+new\b|\braise\b|\bcontinue\s*;|\bbreak\s*;|\bmarkFailed\s*\(|\bprocessNotification\s*\(|\bhandle\s*\(/.test(withoutLogs);
+  return /\breturn\s*(?:;|(?:false|False|fail|null|None)\b)|throw\s+new\b|\braise\b|\bcontinue\s*;|\bbreak\s*;|\bmarkFailed\s*\(|\bprocessNotification\s*\(|\bhandle\s*\(/.test(withoutLogs);
 }
 
 function isTestOrGeneratedDocFile(file) {
@@ -730,10 +639,12 @@ function hasScenarioValueComparison(scopeText, allText, fieldNames, value) {
   const fieldRefs = fieldNames
     .map((field) => String(field))
     .filter(Boolean)
-    .map((field) => field === field.toUpperCase() ? field : `${field}|get${field[0].toUpperCase()}${field.slice(1)}\\s*\\(\\)`)
+    .flatMap((field) => field === field.toUpperCase()
+      ? [`\\b${escapeRegExp(field)}\\b`]
+      : [`\\b${escapeRegExp(field)}\\b`, `\\b${escapeRegExp(getterNameForField(field))}\\s*\\(\\)`])
     .join("|");
   if (!fieldRefs) return false;
-  const fieldPattern = `(?:\\b(?:${fieldRefs})\\b)`;
+  const fieldPattern = `(?:${fieldRefs})`;
   for (const token of valueTokens(allText, value)) {
     const tokenPattern = tokenUsagePattern(token, value);
     if (new RegExp(`${tokenPattern}\\s*\\.\\s*equals\\s*\\(\\s*${fieldPattern}\\s*\\)`).test(scopeText)) return true;
@@ -741,6 +652,11 @@ function hasScenarioValueComparison(scopeText, allText, fieldNames, value) {
     if (new RegExp(`${fieldPattern}\\s*(?:==|===)\\s*${tokenPattern}|${tokenPattern}\\s*(?:==|===)\\s*${fieldPattern}`).test(scopeText)) return true;
   }
   return false;
+}
+
+function getterNameForField(field) {
+  const camel = String(field).replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());
+  return `get${camel[0].toUpperCase()}${camel.slice(1)}`;
 }
 
 function tokenUsagePattern(token, literal) {

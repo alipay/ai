@@ -17,6 +17,24 @@ function extractStringConstants(text) {
   for (const match of text.matchAll(assignment)) {
     constants.set(match[1], decodeString(match[3], match[2]));
   }
+  const aliases = [];
+  const aliasAssignment = /(?:^|[^A-Za-z0-9_$])\$?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::=|=>|=|:)\s*([A-Za-z_$][A-Za-z0-9_$]*(?:(?:\s*\.|::\s*)[A-Za-z_$][A-Za-z0-9_$]*)*)\b/gm;
+  for (const match of text.matchAll(aliasAssignment)) {
+    aliases.push([match[1], match[2].replace(/\s+/g, "")]);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, ref] of aliases) {
+      if (constants.has(name)) continue;
+      const simpleName = ref.split(/\.|::/).pop();
+      const value = constants.get(ref) || constants.get(simpleName);
+      if (value !== undefined) {
+        constants.set(name, value);
+        changed = true;
+      }
+    }
+  }
   return constants;
 }
 

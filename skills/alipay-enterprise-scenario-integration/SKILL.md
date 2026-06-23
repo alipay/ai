@@ -43,7 +43,7 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js
 3. 上下文可唯一推断时，展示推断结果后继续，不重复询问。
 4. 存在多个合法选择，或必用规则因子缺少业务值时，必须询问用户。示例：地铁必须确认城市或具体 `CARD_TYPE`。
 5. 文档找不到的费用类型、费用子类、规则因子或业务值不得自行补成 `DEFAULT`；`scene_type` 仅按默认策略取 `DEFAULT` 或票务类 `TRAVEL`。
-6. 因公优先不是默认待确认项；用户没有明确提出“因公优先/企业码优先/因公支付优先”时，不得询问是否启用，直接写入关闭状态。
+6. 因公优先不是默认待确认项；用户没有明确提出“因公优先/企业码优先/因公支付优先”时，不得询问是否启用，不得把“启用/不启用”放入确认选项，直接写入关闭状态。
 7. 代码生成前必须生成 `<项目>/.alipay-skill/scenario.json`，且不得保留 `NEEDS_USER_CONFIRM`。
 
 ## 默认范围
@@ -77,12 +77,8 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js
 
 ## 生成后校验
 
-代码生成完成后必须以主方案聚合质量门禁为准执行官方主校验；校验细则见 [主方案聚合质量门禁](references/quality-gates/aggregate.md)。
+代码生成完成后必须执行官方主校验；退出码语义、SDK 预检来源和完成状态要求见 [主方案聚合质量门禁](references/quality-gates/aggregate.md)。
 
 ```bash
 node alipay-enterprise-scenario-integration/scripts/validate_codegen.js <生成项目目录>
 ```
-
-退出码 `0` 表示通过，`1` 表示生成代码不符合门禁，`2` 表示主门禁或子 validator 执行不可信。出现 `2` 时不得宣布生成完成。
-
-必须执行上面的主校验脚本，不能用自写脚本、手写 checklist、报告表格、`scripts/*validate*.js` 或模型总结替代。最终回复必须列出原始命令、退出码和最后几行输出；退出码不是 `0` 时不得写 `COMPLETED`、`生成完成`、`通过` 或同义结论。Java/Maven SDK 预检、Central Portal 版本来源和禁止兜底来源的细则见聚合质量门禁。

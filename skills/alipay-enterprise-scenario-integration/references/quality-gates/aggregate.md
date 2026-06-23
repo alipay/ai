@@ -38,11 +38,10 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，`sceneType` 必须来自制度接口文档；用户或上下文未明确因公场景时应为 `DEFAULT`，票务类场景应默认为 `TRAVEL`。
 4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorValues` 必须为每个必用因子提供已确认的非空值。
 5. 具体费用场景的必用因子、特殊业务值及绑定关系由费控子 Skill 的约束文档和本域 validator 校验；主聚合层不重复硬编码单一场景规则。
-6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源：默认 `ISSUE_RULE`，或用户/上下文明确选择的 `QUOTA_LIMIT`、`MANUAL_ISSUE`。选择 `QUOTA_LIMIT` 时，限额因子只能是 `QUOTA_DAY/WEEK/MONTH/SEASON/YEAR/TOTAL`，且必须有已确认业务值。
-7. 用户未明确提出因公优先需求时，`businessPriority.enabled` 必须为 `false`，不得额外生成 `ALARM_CLOCK_TIME` 与商户限制规则组合。
-8. 用户明确启用因公优先时，必须配置 `ALARM_CLOCK_TIME` 和至少一个当前费用场景约束中允许的有效商户限制因子；费用场景约束中没有任何有效商户限制因子时不支持因公优先，`businessPriority.enabled` 必须为 `false`；`COMPOSITE_MERCHANT` 只有配置规定的非空商户列表时才有效。
-9. 使用 `ALI_PLATFORM_TYPE=TAOTIAN/1688` 等淘系平台值时不支持因公优先，`businessPriority.enabled` 必须为 `false`。
-10. 账单识别字段必须来自账单文档；不适用的字段可省略，不得用猜测值补齐。
+6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源，且不得残留待确认值。具体来源类型、限额因子、手工发放接口和制度实现合法性由费控子 Skill 校验，主聚合层只检查该决策已形成并参与聚合。
+7. 用户未明确提出因公优先需求时，`businessPriority.enabled` 必须为 `false`，不得额外生成因公优先规则。
+8. 用户明确启用因公优先时，`businessPriority` 必须记录已确认的商户限制因子和值，并在生成的制度代码中体现；因公优先是否支持、需要哪些时间或商户限制因子、因子值是否合法，由费控子 Skill 的约束文档和本域 validator 校验。
+9. 账单识别字段必须来自账单文档；不适用的字段可省略，不得用猜测值补齐。
 
 已有项目如果接入前全量构建或测试已失败，必须先记录失败 baseline。接入后优先运行本域 validator、主聚合 validator 和可执行的 scoped build/test；不能把既有无关失败当成本次生成完成的阻塞，也不能忽略本次改动引入的新失败。
 
@@ -50,7 +49,7 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 
 1. 生成环境必须运行主校验脚本：`node alipay-enterprise-scenario-integration/scripts/validate_codegen.js <生成项目目录>`。已有项目必须加 `ALIPAY_PROJECT_MODE=existing`，用于强制检查 `.alipay-skill/integration-contract.json`。这是唯一能作为主方案完成依据的校验命令。
 2. Java/Maven 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator。
-3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、`scene_type`、必用规则因子和值，并确认这些值真实用于制度创建或修改实现。不得只因通用枚举、常量声明或文档出现相同字符串就视为通过。
+3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、`scene_type`、必用规则因子和值，并确认场景值真实用于制度创建或修改实现。不得只因通用枚举、常量声明或文档出现相同字符串就视为通过。制度额度/发放来源的具体实现细节由费控子 validator 负责。
 4. Node.js 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator，并执行 Node.js 聚合结果一致性检查。
 5. Python、Go、.NET 项目中，主脚本会运行可用的跨语言子域 validator，并执行所选场景、费控制度字段结构、外部 SPI 占位实现和可用构建检查。
 6. 自定义脚本、临时小脚本、手写 checklist、`CODEGEN_REPORT.md`、`GENERATION_REPORT.md` 或模型口头总结均不能替代主校验脚本。可以额外辅助检查，但不得作为完成依据。
@@ -68,7 +67,8 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 4. 主校验会用本地 `alipay-sdk-java` jar 反查所有 `com.alipay.api.request/response/domain/msg` 导入类真实存在；不存在时必须调整官方 SDK 版本、读取文档或报告不支持。
 5. 主校验会检查 WebSocket 业务载荷没有进入 HTTP 通知信封/二次验签链路，并检查正式 Repository/Store 不使用进程内状态。进程内状态、demo 业务 Port、示例回调只能在显式 `demo` / `test` profile 生效；不得挂在 `default` profile，生产默认启动必须使用真实实现或 fail-closed。
 6. Spring 注入接口必须在默认配置下存在可用实现；仅有未激活 profile 实现属于运行时装配失败。
-7. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试，Spring Boot 新工程需要上下文装配测试，零测试不得判为通过。
+7. fail-closed 实现不得只放在 `demo` profile；`application-<profile>.yml` / `application-<profile>.properties` 中不得设置 `spring.profiles.active`。
+8. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试，Spring Boot 新工程需要上下文装配测试，零测试不得判为通过。
 
 ## Node.js 聚合结果一致性
 

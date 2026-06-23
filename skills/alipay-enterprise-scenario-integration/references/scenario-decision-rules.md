@@ -48,7 +48,7 @@
 
 ## 因公优先
 
-因公优先是可选增强能力，不属于场景接入的默认必选项。除非用户明确提出“需要因公优先”“企业码优先”“因公支付优先”等需求，否则不要主动询问，也不要为了“支持该能力”而生成规则组合；`scenario.json` 直接写入 `businessPriority.enabled=false` 和空的 `merchantRestrictionFactors`。
+因公优先是可选增强能力，不属于场景接入的默认必选项。除非用户明确提出“需要因公优先”“企业码优先”“因公支付优先”等需求，否则不要主动询问，也不要把“是否启用因公优先”放进选择题或确认项；`scenario.json` 直接写入 `businessPriority.enabled=false` 和空的 `merchantRestrictionFactors`，继续后续决策。
 
 用户明确提出需要因公优先时，才判断当前场景是否支持。判断时读取费控子 Skill 的 `expense-type-constraints.md`，看当前费用类型/子类及已选约束分支是否能配置有效商户限制因子。
 
@@ -56,6 +56,7 @@
 
 - 费用场景约束中没有任何有效商户限制因子。
 - 场景使用 `ALI_PLATFORM_TYPE` 并选择 `TAOTIAN`、`1688` 等淘系平台值。
+- 当前费用场景只包含 `TAKE_AWAY_CATEGORY`、`MCC`、`BRAND`、`MERCHANT_LABEL` 等品类、商户类型、品牌或标签类因子，没有下方列出的有效商户限制因子。
 
 不支持时：
 
@@ -71,6 +72,8 @@
 - `SHOP_GROUP`
 - `SHOP`
 - `RECEIPT_IDENTITY_WHITE_LIST`
+
+`TAKE_AWAY_CATEGORY` 虽然用于外卖商户/品类约束，`MCC`、`BRAND`、`MERCHANT_LABEL` 虽然也和商户范围相关，但都不计入因公优先所需的有效商户限制因子。
 
 用户已明确选择启用，且场景支持因公优先时：
 
