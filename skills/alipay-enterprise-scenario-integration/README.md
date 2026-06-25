@@ -40,6 +40,16 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js
 
 脚本会检查平级目录中是否已存在完整领域 Skill；缺失时从 `subskills/*.zip` 事务式解压并校验。失败时应停止处理，不要让模型在子 Skill 不完整时继续猜测，也不要把手工解压作为接入方步骤。
 
+## 版本检查
+
+本 Skill 在 GitHub 版本中包含 `skill.json` 和 `CHANGELOG.md`。如需检查本地版本是否落后，可执行：
+
+```bash
+node alipay-enterprise-scenario-integration/tools/check_version.js
+```
+
+该脚本只提示版本状态，不会自动下载、更新或覆盖本地文件。发现新版本时，由用户决定是否更新本地 Skill。
+
 ## 典型流程
 
 1. 安装并验证三个子 Skill。
