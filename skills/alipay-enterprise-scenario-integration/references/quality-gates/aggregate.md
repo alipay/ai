@@ -35,7 +35,7 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 
 1. 代码生成必须存在 `.alipay-skill/scenario.json`，且 `status` 为 `CONFIRMED`。
 2. 每个字段只描述一个场景，不允许数组化的多场景输入。
-3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，`sceneType` 必须来自制度接口文档；用户或上下文未明确因公场景时应为 `DEFAULT`，票务类场景应默认为 `TRAVEL`。
+3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，因公场景必须来自制度接口文档，并写入 `scenario.json` 的 `sceneType` 字段；用户或上下文未明确时应为“默认”（接口值 `DEFAULT`），票务类场景应默认为“差旅”（接口值 `TRAVEL`）。
 4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorValues` 必须为每个必用因子提供已确认的非空值。
 5. 具体费用场景的必用因子、特殊业务值及绑定关系由费控子 Skill 的约束文档和本域 validator 校验；主聚合层不重复硬编码单一场景规则。
 6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源，且不得残留待确认值。具体来源类型、限额因子、手工发放接口和制度实现合法性由费控子 Skill 校验，主聚合层只检查该决策已形成并参与聚合。
@@ -49,7 +49,7 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 
 1. 生成环境必须运行主校验脚本：`node alipay-enterprise-scenario-integration/scripts/validate_codegen.js <生成项目目录>`。已有项目必须加 `ALIPAY_PROJECT_MODE=existing`，用于强制检查 `.alipay-skill/integration-contract.json`。这是唯一能作为主方案完成依据的校验命令。
 2. Java/Maven 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator。
-3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、`scene_type`、必用规则因子和值，并确认场景值真实用于制度创建或修改实现。不得只因通用枚举、常量声明或文档出现相同字符串就视为通过。制度额度/发放来源的具体实现细节由费控子 validator 负责。
+3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、因公场景、必用规则因子和值，并确认场景值真实用于制度创建或修改实现。不得只因通用枚举、常量声明或文档出现相同字符串就视为通过。制度额度/发放来源的具体实现细节由费控子 validator 负责。
 4. Node.js 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator，并执行 Node.js 聚合结果一致性检查。
 5. Python、Go、.NET 项目中，主脚本会运行可用的跨语言子域 validator，并执行所选场景、费控制度字段结构、外部 SPI 占位实现和可用构建检查。
 6. 自定义脚本、临时小脚本、手写 checklist、`CODEGEN_REPORT.md`、`GENERATION_REPORT.md` 或模型口头总结均不能替代主校验脚本。可以额外辅助检查，但不得作为完成依据。

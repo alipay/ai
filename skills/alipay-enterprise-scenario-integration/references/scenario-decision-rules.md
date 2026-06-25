@@ -7,7 +7,7 @@
 - 费控 `references/common/expense-type-enum.md`
 - 费控 `references/common/expense-type-constraints.md`
 - 费控 `references/common/rule-factors.md`
-- 制度创建/修改文档中的 `scene_type` 枚举
+- 制度创建/修改文档中的因公场景枚举（接口字段为 `scene_type`）
 - 账单 `references/common/expense-type-enum.md`
 - 账单查询和订单文档中的 `expense_type`、`scene_code`、`order_type`、`order_content`
 
@@ -17,7 +17,7 @@
 
 - `expenseType`
 - `expenseTypeSubCategory`
-- `sceneType`
+- 因公场景（写入 `scenario.json` 的 `sceneType` 字段）
 - `constraintVariant`（约束文档存在多个商户范围分支时）
 - `requiredRuleFactors`
 - 每个必用规则因子的已确认业务值
@@ -28,7 +28,7 @@
 
 上下文可唯一推断时展示结果后继续；存在歧义或缺少规则值时必须询问。问询必须只覆盖未决项，不得把已经由用户或上下文确认的模式、模块或默认策略重新混入选项。
 
-`sceneType` 不是默认询问项。用户未明确指定、上下文也不能识别出加班、补贴福利、差旅、招待等因公场景时，默认使用 `DEFAULT`；票务类场景（`expenseType=TICKET`）默认使用 `TRAVEL`。用户明确提出其它因公场景，或上下文能唯一识别出其它场景时，才改用对应枚举，并校验该枚举来自制度接口文档。
+因公场景不是默认询问项。用户未明确指定、上下文也不能识别出加班、补贴福利、差旅、招待等因公场景时，默认使用“默认”（接口值 `DEFAULT`）；票务类场景（`expenseType=TICKET`）默认使用“差旅”（接口值 `TRAVEL`）。用户明确提出其它因公场景，或上下文能唯一识别出其它场景时，才改用对应枚举，并校验该枚举来自制度接口文档。
 
 线下到店类同时提供“指定门店”和“广泛商户”约束时，必须确认其中一个分支，并在 `scenario.json` 中分别写为 `SPECIFIED_MERCHANT` 或 `BROAD_MERCHANT`；不同分支的必用规则因子不能混为一组。
 
