@@ -24,35 +24,23 @@
 
 本 Skill 不负责替接入方完成真实生产配置和业务实现，例如支付宝应用密钥、生产幂等存储、业务落库、上线灰度和真实联调验收。
 
-## 子 Skill 安装
+## 子 Skill
 
-本方案内置三个领域 Skill 的 ZIP 包，使用时由安装脚本自动解压到当前 Skills 根目录，并与本方案 Skill 平级：
+本方案会自动准备并使用三个领域 Skill：
 
 - `alipay-enterprise-ec`
 - `alipay-enterprise-expense-control`
 - `alipay-enterprise-bill`
 
-安装或使用前，先执行：
-
-```bash
-node alipay-enterprise-scenario-integration/tools/install_subskills.js
-```
-
-脚本会检查平级目录中是否已存在完整领域 Skill；缺失时从 `subskills/*.zip` 事务式解压并校验。失败时应停止处理，不要让模型在子 Skill 不完整时继续猜测，也不要把手工解压作为接入方步骤。
+使用本 Skill 时，Agent 会先检查这些领域 Skill 是否已就绪；缺失时会从内置 ZIP 包自动解压到 Skills 根目录。该过程属于 Skill 自身的依赖准备，不是接入方工程的一部分，也不应要求接入方手工解压。
 
 ## 版本检查
 
-本 Skill 在 GitHub 版本中包含 `skill.json` 和 `CHANGELOG.md`。如需检查本地版本是否落后，可执行：
-
-```bash
-node alipay-enterprise-scenario-integration/tools/check_version.js
-```
-
-该脚本只提示版本状态，不会自动下载、更新或覆盖本地文件。发现新版本时，由用户决定是否更新本地 Skill。
+本 Skill 在 GitHub 版本中包含版本信息。运行环境允许联网时，Agent 可以提示本地 Skill 是否落后于 GitHub 版本；检查结果只作为提醒，不会自动下载、更新或覆盖本地文件。是否更新本地 Skill 始终由用户决定。
 
 ## 典型流程
 
-1. 安装并验证三个子 Skill。
+1. 自动准备并验证三个子 Skill。
 2. 识别或确认单一业务场景。
 3. 写入 `<项目>/.alipay-skill/scenario.json`。
 4. 判断新工程或已有工程增量接入。
@@ -79,4 +67,5 @@ alipay-enterprise-scenario-integration/
 
 - 更新任一领域 Skill 后，需要重新打包对应 `subskills/*.zip`。
 - 修改 validator 后，需要运行本 Skill 的 `tests/run.js`。
+- 子 Skill 安装检查由 `tools/install_subskills.js` 执行，版本提示由 `tools/check_version.js` 执行；这两个脚本面向 Skill 维护和 Agent 执行，不作为接入方工程步骤展示。
 - 本 Skill 的 `README.md` 面向人读；真正约束 Agent 行为的入口仍是 `SKILL.md`。
