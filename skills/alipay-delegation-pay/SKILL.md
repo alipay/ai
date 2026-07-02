@@ -1,5 +1,5 @@
 ---
-name: alipay-agent-payment
+name: alipay-delegation-pay
 description: |
   支付宝委托支付（Delegation）接入指南。帮助开发者为智能体应用接入支付宝的委托支付能力，实现代买、抢票、监控购买、自动扣款等场景。
   
