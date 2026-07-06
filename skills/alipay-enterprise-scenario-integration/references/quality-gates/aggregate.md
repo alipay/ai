@@ -9,6 +9,7 @@
 3. 子域 validator 失败时，必须回到对应子 Agent 或子 Skill 阶段修正，不得在主方案层删除接口、删除业务分支或改为 stub 来绕过。
 4. 已有项目叠加接入必须交付业务衔接点说明；只新增孤立支付宝模块、通知只打日志或账单只写幂等记录，不能作为默认完成状态。
 5. 已有项目叠加接入必须在用户确认计划后写入 `.alipay-skill/integration-contract.json`；契约结构见 [已有项目衔接契约](../integration-contract.md)。新工程不强制生成契约。
+6. 火车票三方免密代扣是可选扩展域；未启用时不得纳入默认子域检查。启用时以 `alipay-third-party-withholding` 子 Skill 为字段、接口、MAPI 签名和本域质量事实来源。
 
 ## SDK 来源门禁
 
@@ -31,6 +32,17 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 
 已有项目中，Java/Maven 只把现有 POM/Gradle 作为盘点输入，不作为最终 SDK 版本来源；最终必须升级到 Central Portal 当前版本并验证真实类/方法可用。Node.js 以现有 `package.json` / lockfile 为 SDK 事实来源，除非用户要求升级，不得主动替换版本。
 
+## MAPI 免密代扣接入门禁
+
+本节只在火车票三方免密代扣启用时生效。
+
+1. 用户未明确提出免密代扣、三方代扣、代扣协议、自动扣款、先签约后扣款、火车票/12306 出票扣款、票代代扣等诉求时，不得启用本域，不得要求 MAPI 预检。
+2. 启用时必须存在 `scenario.json.thirdPartyWithholding.enabled=true`，且 `gateway=MAPI`、`scenario=TRAIN_TICKET`。
+3. 本域不适用企业码 OpenAPI SDK Request/Model/Response 预检；必须做 MAPI 接入预检：网关、`partner`、`sign_type`、签名工具、HTTP 客户端、字符集、已有 MAPI 能力和项目状态。
+4. 启用时必须执行 `alipay-third-party-withholding/scripts/validate_codegen.js <生成项目目录>`；缺少该 Skill、validator 执行失败或退出码非 `0` 时，不得宣布生成完成。
+5. 只要生成工程中出现 `dut.agent.third`、`dut.agent.query.third`、`alipay.dut.customer.agreement`、`submit_param`、`DUT_AGENT_THIRD_P`、`mr_dut_third` 等免密代扣实现痕迹，即使 `scenario.json` 未启用，也必须执行本域 validator 或删除/修正误生成代码；不得让未声明的 MAPI 代码绕过校验。
+6. 启用后必须覆盖完整签约 + 代扣链路五个接口，不提供“只签约/只代扣”通过路径。
+
 ## 场景文件门禁
 
 1. 代码生成必须存在 `.alipay-skill/scenario.json`，且 `status` 为 `CONFIRMED`。
@@ -52,10 +64,11 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、因公场景、必用规则因子和值，并确认场景值真实用于制度创建或修改实现。不得只因通用枚举、常量声明或文档出现相同字符串就视为通过。制度额度/发放来源的具体实现细节由费控子 validator 负责。
 4. Node.js 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator，并执行 Node.js 聚合结果一致性检查。
 5. Python、Go、.NET 项目中，主脚本会运行可用的跨语言子域 validator，并执行所选场景、费控制度字段结构、外部 SPI 占位实现和可用构建检查。
-6. 自定义脚本、临时小脚本、手写 checklist、`CODEGEN_REPORT.md`、`GENERATION_REPORT.md` 或模型口头总结均不能替代主校验脚本。可以额外辅助检查，但不得作为完成依据。
-7. 不得在生成工程里创建同名或相似的 `scripts/*validate*.js` 来冒充 Skill validator；如果确需项目自测脚本，命名和说明必须明确为业务辅助测试，并且最终完成仍以 Skill 主校验脚本为准。
-8. Node 校验脚本属于 Skill 生成质量门禁，不作为接入方工程依赖。
-9. 主校验会区分三态：`0` 表示通过，`1` 表示生成代码不符合门禁，`2` 表示门禁自身或子 validator 执行不可信。出现 `1` 或 `2` 时不得宣布生成完成，需先修复代码、门禁或做人工复核。
+6. 火车票三方免密代扣启用或工程出现免密代扣实现痕迹时，主校验还会调用 `alipay-third-party-withholding` 本域 validator；普通企业码场景不调用该 validator。
+7. 自定义脚本、临时小脚本、手写 checklist、`CODEGEN_REPORT.md`、`GENERATION_REPORT.md` 或模型口头总结均不能替代主校验脚本。可以额外辅助检查，但不得作为完成依据。
+8. 不得在生成工程里创建同名或相似的 `scripts/*validate*.js` 来冒充 Skill validator；如果确需项目自测脚本，命名和说明必须明确为业务辅助测试，并且最终完成仍以 Skill 主校验脚本为准。
+9. Node 校验脚本属于 Skill 生成质量门禁，不作为接入方工程依赖。
+10. 主校验会区分三态：`0` 表示通过，`1` 表示生成代码不符合门禁，`2` 表示门禁自身或子 validator 执行不可信。出现 `1` 或 `2` 时不得宣布生成完成，需先修复代码、门禁或做人工复核。
 
 ## Java/Maven 聚合结果一致性
 
@@ -66,9 +79,11 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 3. 生成后必须通过 Maven 编译。编译失败时，必须保留官方 SDK 代码并基于依赖、类型或文档修正。
 4. 主校验会用本地 `alipay-sdk-java` jar 反查所有 `com.alipay.api.request/response/domain/msg` 导入类真实存在；不存在时必须调整官方 SDK 版本、读取文档或报告不支持。
 5. 主校验会检查 WebSocket 业务载荷没有进入 HTTP 通知信封/二次验签链路，并检查正式 Repository/Store 不使用进程内状态。进程内状态、demo 业务 Port、示例回调只能在显式 `demo` / `test` profile 生效；不得挂在 `default` profile，生产默认启动必须使用真实实现或 fail-closed。
-6. Spring 注入接口必须在默认配置下存在可用实现；仅有未激活 profile 实现属于运行时装配失败。
-7. fail-closed 实现不得只放在 `demo` profile；`application-<profile>.yml` / `application-<profile>.properties` 中不得设置 `spring.profiles.active`。
-8. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试，Spring Boot 新工程需要上下文装配测试，零测试不得判为通过。
+6. 核心 Handler、Router、Controller、Service、AutoConfiguration、启动监听器必须默认可装配；demo/test profile 只能用于示例存储、回调、适配器或配置。
+7. Service、Handler、Controller、AutoConfiguration 等核心组件不得直接依赖 demo/test 具体实现；可替换扩展点必须通过接口、Port 或 Store 注入。fail-closed 默认实现必须使用 `@ConditionalOnMissingBean` 或互斥 profile，让 demo/真实实现存在时自动让位。
+8. Spring 注入接口必须在默认配置下存在可用实现；仅有未激活 profile 实现属于运行时装配失败。初始化逻辑不得直接调用同类 `@Bean` 方法绕过 `@ConditionalOnBean` 或 profile 条件。
+9. fail-closed 实现不得只放在 `demo` profile；`application-<profile>.yml` / `application-<profile>.properties` 中不得设置 `spring.profiles.active`。
+10. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试，Spring Boot 新工程需要上下文装配测试，零测试不得判为通过。
 
 ## Node.js 聚合结果一致性
 
@@ -91,13 +106,14 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 Java WebSocket 消息接入的分工和禁止项见 [多 Agent 代码生成编排规则](../multi-agent-codegen.md)。主聚合门禁只检查最终工程是否满足以下结果：
 
 1. 同一个 Java 工程、同一个 `appId` 下只能有一个官方 `AlipayMsgClient` 持有者，且只能有一个 `setMessageHandler` 和一个 `connect` 入口。
-2. 共享入口必须调用 `setSecurityConfig(signType, privateKey, alipayPublicKey)`；第一个参数是签名类型（通常 `RSA2`），不得传 `appId`。
-3. 主方案聚合多个子域时，必须生成一个共享 `MsgHandler.onMessage` 路由器，按 `msgApi` / `msg_method` 分发到员企、账单、费控处理方法。
-4. 子域代码只能提供业务处理器或路由方法；不得各自 `AlipayMsgClient.getInstance(appId)`、`setMessageHandler` 或 `connect`。
-5. 主路由器的 `onMessage` 分发逻辑中，每个已声明的 `msgApi` / `msg_method` case 都必须实际调用对应的子域处理器方法；多个 case fallthrough 到同一个处理块可以共用一次调用。
-6. 主路由器必须传播子域 handler 的失败结果；不能只调用 `handler.handle(...)` 后忽略返回值。返回 `false`、`fail` 或抛异常时，应进入异常或失败路径，让平台重试语义保留。
-7. 未知 `msgApi` / `msg_method` 默认不得正常返回成功；必须抛异常、返回失败，或委托显式 unknown handler 并由该 handler 明确决定是否可确认消费。
-8. 首次 `connect()` 建连失败不得只记录日志后让应用继续处于可服务状态；必须选择 fail-fast 阻止启动，或同时具备后台重试和可观测的连接健康/就绪状态。SDK 已成功进入连接生命周期后的自动重连不能替代首次建连失败处理。
+2. 共享入口必须在 `connect()` 前调用 `setConnector(...)` 和 `setSecurityConfig(signType, privateKey, alipayPublicKey)`；`setSecurityConfig` 第一个参数是签名类型（通常 `RSA2`），不得传 `appId`。
+3. `MsgHandler.onMessage` 的三个参数语义为 `msgApi, msgId, bizContent`；业务 handler 只能解析第三个参数 `bizContent`，不得把第二个参数 `msgId` 当业务 JSON 传入路由。
+4. 主方案聚合多个子域时，必须生成一个共享 `MsgHandler.onMessage` 路由器，按 `msgApi` / `msg_method` 分发到员企、账单、费控处理方法。
+5. 子域代码只能提供业务处理器或路由方法；不得各自 `AlipayMsgClient.getInstance(appId)`、`setMessageHandler` 或 `connect`。
+6. 主路由器的 `onMessage` 分发逻辑中，每个已声明的 `msgApi` / `msg_method` case 都必须实际调用对应的子域处理器方法；多个 case fallthrough 到同一个处理块可以共用一次调用。
+7. 主路由器必须传播子域 handler 的失败结果；不能只调用 `handler.handle(...)` 后忽略返回值。返回 `false`、`fail` 或抛异常时，应进入异常或失败路径；在官方 `MsgHandler.onMessage` 内，分发失败必须抛异常，让 SDK 返回失败 ACK 并保留平台重试语义。
+8. 未知 `msgApi` / `msg_method` 默认不得正常返回成功；必须抛异常、返回失败，或委托显式 unknown handler 并由该 handler 明确决定是否可确认消费。
+9. 首次 `connect()` 建连失败不得只记录日志后让应用继续处于可服务状态；必须选择 fail-fast 阻止启动，或同时具备后台重试和可观测的连接健康/就绪状态。SDK 已成功进入连接生命周期后的自动重连不能替代首次建连失败处理。
 
 ## Spring 配置一致性
 

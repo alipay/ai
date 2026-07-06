@@ -21,6 +21,7 @@
 - 方案编排：默认三域基础模块、已有项目衔接、多 Agent 分域生成；
 - 质量门禁：SDK 或 HTTP(S) 预检、接口证据表、主子 validator 聚合校验；
 - 生成约束：字段、枚举、SDK 类和接口参数必须来自引用文档，不得猜测。
+- 可选扩展：火车票场景中用户明确提出免密代扣/12306 代理购票时，接入完整 MAPI 三方免密代扣链路。
 
 本 Skill 不负责替接入方完成真实生产配置和业务实现，例如支付宝应用密钥、生产幂等存储、业务落库、上线灰度和真实联调验收。
 
@@ -32,7 +33,9 @@
 - `alipay-enterprise-expense-control`
 - `alipay-enterprise-bill`
 
-使用本 Skill 时，Agent 会先检查这些领域 Skill 是否已就绪；缺失时会从内置 ZIP 包自动解压到 Skills 根目录。该过程属于 Skill 自身的依赖准备，不是接入方工程的一部分，也不应要求接入方手工解压。
+使用本 Skill 时，Agent 会先检查这些领域 Skill 是否已就绪；缺失时会通过安装脚本把内置 ZIP 包安装为 Skills 根目录下的平级目录，例如 `<skillsRoot>/alipay-enterprise-ec/`。该过程属于 Skill 自身的依赖准备，不是接入方工程的一部分，也不应要求接入方手工解压。
+
+火车票免密代扣是非默认扩展。用户未明确提出时，Agent 不会安装、读取、询问、生成或校验 `alipay-third-party-withholding`。用户明确提出时，Agent 只能通过 `tools/install_subskills.js --with alipay-third-party-withholding` 额外准备该 Skill，并一次性接入签约和代扣完整链路；不提供“只签约/只代扣”选择。
 
 ## 版本检查
 
@@ -43,11 +46,12 @@
 1. 自动准备并验证三个子 Skill。
 2. 识别或确认单一业务场景。
 3. 写入 `<项目>/.alipay-skill/scenario.json`。
-4. 判断新工程或已有工程增量接入。
-5. 代码生成前完成 SDK 或 HTTP(S) 预检。
+4. 自动判断新工程或已有工程增量接入；证据冲突时才询问用户。
+5. 代码生成前完成接入预检：新/已有项目状态、SDK 或 HTTP(S) 能力；启用火车票免密代扣时改走 MAPI 预检。
 6. 按员企、费控、账单分域读取文档、生成代码并完成本域自检。
-7. 聚合公共配置、消息入口和跨域逻辑。
-8. 执行主聚合校验。
+7. 仅在火车票免密代扣已启用时，生成 MAPI 签约 + 代扣完整链路并运行本域自检。
+8. 聚合公共配置、消息入口和跨域逻辑。
+9. 执行主聚合校验。
 
 代码生成完成后必须执行主聚合校验。主校验会调用三个子域 validator，并检查场景决策、分域代码和跨域聚合是否一致。具体命令和退出码以 `SKILL.md` 与 `references/quality-gates/aggregate.md` 为准。
 
@@ -58,7 +62,7 @@ alipay-enterprise-scenario-integration/
   SKILL.md                         # Agent 读取的主入口
   references/                      # 场景决策、编排、衔接契约和聚合质量门禁
   scripts/                         # 主聚合 validator 和共享校验库
-  subskills/                       # 三个领域 Skill 的 ZIP 包
+  subskills/                       # 三个默认领域 Skill 和可选扩展 Skill 的 ZIP 包
   tests/                           # validator 回归测试
   tools/                           # 子 Skill 安装与维护工具
 ```

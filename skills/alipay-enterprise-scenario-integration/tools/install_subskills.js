@@ -13,8 +13,9 @@ const domains = [
   "alipay-enterprise-expense-control",
   "alipay-enterprise-bill",
 ];
-
-main();
+const optionalDomains = new Set([
+  "alipay-third-party-withholding",
+]);
 
 function main() {
   let options;
@@ -27,7 +28,9 @@ function main() {
     skillsRoot = path.resolve(options.skillsRoot || path.dirname(skillDir));
     fs.mkdirSync(skillsRoot, { recursive: true });
 
-    for (const domain of domains) {
+    const selectedDomains = [...domains, ...options.withDomains];
+    assertNoRootExtraction(skillsRoot, selectedDomains);
+    for (const domain of selectedDomains) {
       const destination = path.join(skillsRoot, domain);
       if (isInstalled(destination)) {
         console.log(`[install-subskills] OK ${domain}: already installed`);
@@ -76,12 +79,16 @@ function main() {
 }
 
 function parseArgs(args) {
-  const options = { checkOnly: false, skillsRoot: null };
+  const options = { checkOnly: false, skillsRoot: null, withDomains: [] };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--check") {
       options.checkOnly = true;
     } else if (args[i] === "--skills-root" && args[i + 1]) {
       options.skillsRoot = args[++i];
+    } else if (args[i] === "--with" && args[i + 1]) {
+      const domain = args[++i];
+      if (!optionalDomains.has(domain)) throw new Error(`unknown optional domain: ${domain}`);
+      if (!options.withDomains.includes(domain)) options.withDomains.push(domain);
     } else {
       throw new Error(`unknown argument: ${args[i]}`);
     }
@@ -105,6 +112,25 @@ function validateZip(zipPath, domain) {
       throw new Error(`${domain}.zip contains unsafe path: ${entry}`);
     }
   }
+}
+
+function assertNoRootExtraction(skillsRoot, selectedDomains) {
+  const rootSkillMd = path.join(skillsRoot, "SKILL.md");
+  if (!fs.existsSync(rootSkillMd)) return;
+
+  const text = fs.readFileSync(rootSkillMd, "utf8");
+  const match = text.match(/^name:\s*([^\s]+)/m);
+  const skillName = match && match[1].trim();
+  if (!skillName || !selectedDomains.includes(skillName)) return;
+
+  throw new Error(
+    [
+      `${skillName} appears to be extracted directly into the Skills root: ${skillsRoot}`,
+      `Expected location: ${path.join(skillsRoot, skillName, "SKILL.md")}`,
+      "Remove the root-level SKILL.md/scripts/references files that belong to that skill,",
+      "then rerun this installer. Do not unzip subskills/*.zip into the Skills root.",
+    ].join(" ")
+  );
 }
 
 function extractZip(zipPath, destination) {
@@ -138,3 +164,5 @@ function walk(dir) {
 }
 
 class MissingError extends Error {}
+
+main();
