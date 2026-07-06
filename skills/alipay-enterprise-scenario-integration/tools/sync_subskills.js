@@ -17,7 +17,7 @@ try {
 /**
  * 子 Skill 同步器。
  *
- * 事实源单一:同级三个子 Skill 源目录。
+ * 事实源单一:仓库 domain-skills 下的领域 Skill 源目录。
  * 产物多目标:主 Skill 的 subskills/<domain>.zip(未来可扩展更多目标)。
  *
  * 解决 codex 教训第 11 条(交付一致性漂移):
@@ -30,13 +30,16 @@ try {
  */
 
 const skillDir = path.resolve(__dirname, "..");
-const skillsRoot = path.resolve(skillDir, "..");
+const solutionSkillsRoot = path.resolve(skillDir, "..");
+const repoRoot = path.resolve(skillDir, "..", "..");
+const domainSkillsRoot = path.join(repoRoot, "domain-skills");
 const subskillsDir = path.join(skillDir, "subskills");
 
 const DOMAINS = [
   "alipay-enterprise-ec",
   "alipay-enterprise-expense-control",
   "alipay-enterprise-bill",
+  "alipay-third-party-withholding",
 ];
 
 // 打完的 zip 必须至少包含这些条目,否则视为缺斤少两。
@@ -57,7 +60,7 @@ function main() {
   }
 
   const plans = DOMAINS.map((domain) => {
-    const srcDir = path.join(skillsRoot, domain);
+    const srcDir = sourceDirForDomain(domain);
     const zipPath = path.join(subskillsDir, `${domain}.zip`);
     if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
       fail(`子 Skill 源目录缺失: ${domain}(期望在 ${rel(srcDir)})`);
@@ -71,6 +74,12 @@ function main() {
   } else {
     runBuild(plans);
   }
+}
+
+function sourceDirForDomain(domain) {
+  const structured = path.join(domainSkillsRoot, domain);
+  if (fs.existsSync(structured) && fs.statSync(structured).isDirectory()) return structured;
+  return path.join(solutionSkillsRoot, domain);
 }
 
 // 校验:逐个比对 zip 内容指纹与源目录指纹;有漂移则汇总后 exit 1。

@@ -22,7 +22,9 @@ try {
 }
 
 const skillDir = path.resolve(__dirname, "..");
-const skillsRoot = path.resolve(skillDir, "..");
+const solutionSkillsRoot = path.resolve(skillDir, "..");
+const repoRoot = path.resolve(skillDir, "..", "..");
+const domainSkillsRoot = path.join(repoRoot, "domain-skills");
 const targetDir = path.resolve(process.argv[2] || ".");
 
 /**
@@ -42,6 +44,7 @@ const childScripts = [
   "alipay-enterprise-expense-control/scripts/validate_codegen.js",
   "alipay-enterprise-bill/scripts/validate_codegen.js",
 ];
+const thirdPartyWithholdingScript = "alipay-third-party-withholding/scripts/validate_codegen.js";
 const ALIPAY_SDK_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+\.ALL$/;
 
 runGuarded("alipay-enterprise-scenario-integration", main);
@@ -66,7 +69,10 @@ function main() {
 
   const childEnv = Object.assign({}, process.env, { ALIPAY_VALIDATE_AGGREGATE: "1" });
   if (nodeProject) childEnv.ALIPAY_VALIDATE_SKIP_NODE_TEST = "1";
-  for (const relScript of childScripts) {
+  const selectedChildScripts = [...childScripts];
+  const thirdPartyWithholdingSelected = shouldRunThirdPartyWithholdingValidator();
+  if (thirdPartyWithholdingSelected) selectedChildScripts.push(thirdPartyWithholdingScript);
+  for (const relScript of selectedChildScripts) {
     const outcome = runChildValidator(relScript, childEnv);
     if (outcome.state === "FAIL") failed = true;
     if (outcome.state === "BROKEN") {
@@ -76,7 +82,9 @@ function main() {
   }
 
   const aggregateErrors = [];
-  validateIntegrationContract(targetDir, ["ec", "expense-control", "bill"], aggregateErrors);
+  const contractDomains = ["ec", "expense-control", "bill"];
+  if (thirdPartyWithholdingSelected) contractDomains.push("third-party-withholding");
+  validateIntegrationContract(targetDir, contractDomains, aggregateErrors);
   checkSelectedScenario(aggregateErrors);
 
   const pom = findFile(targetDir, "pom.xml");
@@ -96,10 +104,15 @@ function main() {
     checkMessageRouterUnknownHandling(aggregateErrors);
     checkAlipayMsgClientSecurityConfig(aggregateErrors);
     checkMessageClientStartupFailure(aggregateErrors);
+    javaProjectGates.checkJavaAlipayMsgClientContracts(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkJavaTransportContracts(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkJavaProductionStateStores(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkJavaStateTransitionPersistence(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkSpringProfileWiring(targetDir, javaFiles, aggregateErrors, rel);
+    javaProjectGates.checkJavaProfiledCoreComponents(javaFiles, aggregateErrors, rel);
+    javaProjectGates.checkJavaConcreteDemoDependency(javaFiles, aggregateErrors, rel);
+    javaProjectGates.checkJavaFailClosedDefaultBackoff(javaFiles, aggregateErrors, rel);
+    javaProjectGates.checkSpringBeanMethodBypass(javaFiles, aggregateErrors, rel);
     javaProjectGates.checkJavaTestEvidence(targetDir, javaFiles, aggregateErrors);
     javaProjectGates.runMavenTests(pom, aggregateErrors);
   }
@@ -124,7 +137,7 @@ function main() {
 }
 
 function runChildValidator(relScript, env) {
-  const script = path.join(skillsRoot, relScript);
+  const script = resolveSkillRelativePath(relScript);
   if (!fs.existsSync(script)) {
     return { state: "BROKEN", reason: "validator script is missing" };
   }
@@ -149,9 +162,37 @@ function runChildValidator(relScript, env) {
   return classifySpawnResult(result);
 }
 
+function resolveSkillRelativePath(relPath) {
+  const parts = relPath.split("/");
+  const domain = parts.shift();
+  return path.join(resolveDomainSkillDir(domain), ...parts);
+}
+
+function resolveDomainSkillDir(domain) {
+  const structured = path.join(domainSkillsRoot, domain);
+  if (fs.existsSync(structured) && fs.statSync(structured).isDirectory()) return structured;
+  return path.join(solutionSkillsRoot, domain);
+}
+
 function readAll(dir) {
   return walk(dir).filter((f) => /\.(java|php|py|js|ts|go|cs|rb|md|xml|json|ya?ml)$/i.test(f))
     .map((f) => fs.readFileSync(f, "utf8")).join("\n");
+}
+
+function shouldRunThirdPartyWithholdingValidator() {
+  const scenarioFile = path.join(targetDir, ".alipay-skill", "scenario.json");
+  if (fs.existsSync(scenarioFile)) {
+    try {
+      const scenario = JSON.parse(fs.readFileSync(scenarioFile, "utf8"));
+      if (scenario && scenario.thirdPartyWithholding && scenario.thirdPartyWithholding.enabled === true) return true;
+    } catch (_) {
+      // readScenarioFile reports malformed scenario.json later; do not hide that by failing here.
+    }
+  }
+  const text = readImplementationAndConfigFiles(targetDir)
+    .map((file) => stripSourceComments(fs.readFileSync(file, "utf8"), file))
+    .join("\n");
+  return /dut\.agent\.third|dut\.agent\.query\.third|alipay\.dut\.customer\.agreement|submit_param|DUT_AGENT_THIRD_P|mr_dut_third/i.test(text);
 }
 
 function readImplementationAndConfigFiles(dir) {
@@ -243,7 +284,7 @@ function readScenarioFile(errors) {
 }
 
 function readScenarioFacts(errors) {
-  const expenseSkill = path.join(skillsRoot, "alipay-enterprise-expense-control");
+  const expenseSkill = resolveDomainSkillDir("alipay-enterprise-expense-control");
   const files = {
     enumDoc: path.join(expenseSkill, "references", "common", "expense-type-enum.md"),
     constraints: path.join(expenseSkill, "references", "common", "expense-type-constraints.md"),
@@ -333,7 +374,22 @@ function validateScenarioDecision(scenario, facts, errors) {
       }
     }
   }
+  validateThirdPartyWithholdingScenario(scenario, errors);
   validateScenarioFundingSourcePresence(scenario, errors);
+}
+
+function validateThirdPartyWithholdingScenario(scenario, errors) {
+  const withholding = scenario.thirdPartyWithholding;
+  if (!withholding) return;
+  if (withholding.enabled !== true) return;
+  if (`${scenario.expenseType}/${scenario.expenseTypeSubCategory}` !== "TICKET/TICKET") {
+    errors.push("thirdPartyWithholding.enabled is only supported for train-ticket TICKET/TICKET scenarios");
+  }
+  if (withholding.gateway !== "MAPI") errors.push("thirdPartyWithholding.gateway must be MAPI");
+  if (withholding.scenario !== "TRAIN_TICKET") errors.push("thirdPartyWithholding.scenario must be TRAIN_TICKET");
+  if (Array.isArray(withholding.modules) && withholding.modules.length) {
+    errors.push("thirdPartyWithholding must not select partial modules; enabling it means full agreement + withholding chain");
+  }
 }
 
 function validateScenarioFundingSourcePresence(scenario, errors) {
@@ -505,7 +561,7 @@ function checkBillScenarioIdentifiers(scenario, files, allText, errors) {
   const fieldMap = {
     expenseType: [["expense_type", "expenseType", "ExpenseType"], ["setExpenseType"]],
     expenseTypeSubCategory: [["expense_type_sub_category", "expenseTypeSubCategory", "ExpenseTypeSubCategory"], ["setExpenseTypeSubCategory"]],
-    sceneCode: [["scene_code", "sceneCode", "SceneCode"], ["setSceneCode"]],
+    sceneCode: [["scene_code", "sceneCode", "SceneCode", "expenseSceneCode", "ExpenseSceneCode"], ["setSceneCode", "setExpenseSceneCode"]],
     orderType: [["order_type", "orderType", "OrderType"], ["setOrderType"]],
   };
   for (const [key, value] of Object.entries(scenario.billIdentifiers)) {
@@ -556,8 +612,6 @@ function checkBillScenarioIdentifiers(scenario, files, allText, errors) {
 function hasOperationalBillIdentifierUse(files, fields, value, allText) {
   for (const file of files) {
     if (isTestOrGeneratedDocFile(file)) continue;
-    const relPath = rel(file).split(path.sep).join("/");
-    if (!/(^|\/)bill\//i.test(relPath) && !/bill|consume|ecorder/i.test(path.basename(file))) continue;
     const text = stripSourceComments(fs.readFileSync(file, "utf8"), file);
     for (const token of valueTokens(allText, value)) {
       const tokenPattern = tokenUsagePattern(token, value);
@@ -566,6 +620,7 @@ function hasOperationalBillIdentifierUse(files, fields, value, allText) {
         const getter = field === field.toUpperCase()
           ? escapeRegExp(field)
           : `(?:${escapeRegExp(field)}|get${escapeRegExp(field[0].toUpperCase() + field.slice(1))}\\s*\\(\\))`;
+        if (hasOperationalIdentifierPredicate(text, getter, tokenPattern)) return true;
         const conditionPattern = new RegExp(`if\\s*\\((?=[^)]*(?:${getter}))(?=[^)]*${tokenPattern})[^)]*\\)\\s*\\{([\\s\\S]{0,500}?)\\}`, "g");
         for (const match of text.matchAll(conditionPattern)) {
           if (isOperationalIdentifierBranch(match[1])) return true;
@@ -576,6 +631,26 @@ function hasOperationalBillIdentifierUse(files, fields, value, allText) {
         }
       }
     }
+  }
+  return false;
+}
+
+function hasOperationalIdentifierPredicate(text, getterPattern, tokenPattern) {
+  const methodPattern = /(?:public|protected|private)?\s*(?:boolean|Boolean|bool|def)?\s*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{([\s\S]{0,900}?)\n\s*\}/g;
+  for (const match of text.matchAll(methodPattern)) {
+    const methodName = match[1];
+    const body = match[2];
+    if (!/^(?:matches?|supports?|filters?|routes?|identif(?:y|ies)|is|should|accepts?)/i.test(methodName)) continue;
+    const comparesIdentifier = new RegExp(`(?=.*(?:${getterPattern}))(?=.*${tokenPattern})(?:return|&&|\\|\\||==|equals\\s*\\()`, "s").test(body);
+    if (comparesIdentifier) return true;
+  }
+  const pythonMethodPattern = /def\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*:\s*\n([\s\S]{0,500}?)(?=\n\S|\n\s*def\s+|\s*$)/g;
+  for (const match of text.matchAll(pythonMethodPattern)) {
+    const methodName = match[1];
+    const body = match[2];
+    if (!/^(?:matches?|supports?|filters?|routes?|identif(?:y|ies)|is|should|accepts?)/i.test(methodName)) continue;
+    const comparesIdentifier = new RegExp(`(?=.*(?:${getterPattern}))(?=.*${tokenPattern})(?:return|and|or|==)`, "s").test(body);
+    if (comparesIdentifier) return true;
   }
   return false;
 }
@@ -603,7 +678,7 @@ function isOperationalIdentifierBranch(body) {
   const withoutLogs = body
     .replace(/\b(?:log|logger)\.\w+\s*\([^;]*\)\s*;/g, "")
     .replace(/\bSystem\.out\.println\s*\([^;]*\)\s*;/g, "");
-  return /\breturn\s*(?:;|(?:false|False|fail|null|None)\b)|throw\s+new\b|\braise\b|\bcontinue\s*;|\bbreak\s*;|\bmarkFailed\s*\(|\bprocessNotification\s*\(|\bhandle\s*\(/.test(withoutLogs);
+  return /\breturn\s*(?:;|(?:true|True|false|False|fail|null|None)\b)|throw\s+new\b|\braise\b|\bcontinue\s*;|\bbreak\s*;|\bmarkFailed\s*\(|\bprocessNotification\s*\(|\bhandle\s*\(/.test(withoutLogs);
 }
 
 function isTestOrGeneratedDocFile(file) {

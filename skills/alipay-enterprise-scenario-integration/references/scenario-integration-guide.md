@@ -35,6 +35,8 @@
 | 费控 | [费控 Skill](../../alipay-enterprise-expense-control/SKILL.md) | 制度管理 |
 | 账单 | [账单 Skill](../../alipay-enterprise-bill/SKILL.md) | 推模式账单管理 |
 
+火车票三方免密代扣是可选扩展，不属于默认三域。只有用户明确提出免密代扣、三方代扣、代扣协议、自动扣款、先签约后扣款、火车票/12306 出票扣款或票代代扣等诉求时，才额外启用 `alipay-third-party-withholding`。
+
 部门、核算主体、企业地址、企业消息任务、手工发放、额度管理、订单同步和对账单下载按用户需求纳入；如果所选场景依赖订单履约明细，订单同步应纳入范围，是否必选以账单子 Skill 文档为准。用户只选基础模块时，不读取或实现扩展模块。
 
 方案 Skill 启动后、读取本指南的场景决策内容之前执行：
@@ -43,7 +45,7 @@
 node alipay-enterprise-scenario-integration/tools/install_subskills.js
 ```
 
-安装器会把缺失的子 Skill 解压到方案 Skill 的平级目录并校验完整性。方案设计和代码生成都需要读取子 Skill 的场景、枚举与规则文档，因此安装失败时必须在场景决策前阻断，不把解压步骤留给接入方手工处理。安装完成只代表文件存在；代码生成仍必须按 [多 Agent 代码生成编排规则](multi-agent-codegen.md) 显式加载子 Skill。
+安装器会把缺失的子 Skill 安装为方案 Skill 的平级独立目录，例如 `<skillsRoot>/alipay-enterprise-ec/`，并校验完整性。方案设计和代码生成都需要读取子 Skill 的场景、枚举与规则文档，因此安装失败时必须在场景决策前阻断。不得手工把 `subskills/*.zip` 直接解到 Skills 根目录，也不得把解压步骤留给接入方手工处理。安装完成只代表文件存在；代码生成仍必须按 [多 Agent 代码生成编排规则](multi-agent-codegen.md) 显式加载子 Skill。
 
 ## 场景决策
 

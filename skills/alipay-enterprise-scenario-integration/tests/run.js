@@ -46,8 +46,15 @@ function testSubskillInstaller() {
     assert.ok(fs.existsSync(path.join(skillsRoot, domain, "SKILL.md")), `${domain} must be installed beside the solution skill`);
     assert.ok(fs.existsSync(path.join(skillsRoot, domain, "scripts", "validate_codegen.js")), `${domain} validator must be installed`);
   }
+  assert.ok(!fs.existsSync(path.join(skillsRoot, "alipay-third-party-withholding")), "optional withholding skill must stay silent by default");
   const check = runNode([installer, "--check", "--skills-root", skillsRoot]);
   assert.strictEqual(check.status, 0, output(check));
+  const withOptional = runNode([installer, "--with", "alipay-third-party-withholding", "--skills-root", skillsRoot]);
+  assert.strictEqual(withOptional.status, 0, output(withOptional));
+  assert.ok(
+    fs.existsSync(path.join(skillsRoot, "alipay-third-party-withholding", "SKILL.md")),
+    "optional withholding skill must install only when explicitly requested",
+  );
   const second = runNode([installer, "--skills-root", skillsRoot]);
   assert.strictEqual(second.status, 0, output(second));
   assert.match(output(second), /already installed/);
@@ -276,6 +283,7 @@ function testBillIdentifierConstantComparison() {
   ].join("\n"));
   const result = runNode([validator, dir]);
   assert.doesNotMatch(output(result), /bill implementation does not use confirmed billIdentifiers.orderType=METRO/);
+  assert.doesNotMatch(output(result), /bill implementation only logs or declares billIdentifiers.orderType=METRO/);
 
   const javaDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-bill-identifier-java-"));
   copyDir(path.join(__dirname, "fixtures", "valid"), javaDir);
@@ -283,6 +291,8 @@ function testBillIdentifierConstantComparison() {
     "class BillConstants {",
     "  static final String EXPENSE_TYPE_METRO = \"METRO\";",
     "  static final String SCENARIO_EXPENSE_TYPE = BillConstants.EXPENSE_TYPE_METRO;",
+    "  static final String SCENE_CODE_METRO = \"METRO\";",
+    "  static final String ORDER_TYPE_METRO = \"METRO\";",
     "}",
   ].join("\n"));
   fs.writeFileSync(path.join(javaDir, "BillSceneIdentifier.java"), [
@@ -291,11 +301,21 @@ function testBillIdentifierConstantComparison() {
     "    if (BillConstants.SCENARIO_EXPENSE_TYPE.equals(detail.getExpenseType())) { return; }",
     "    return false;",
     "  }",
+    "  boolean matchesExpenseType(BillDetail detail) {",
+    "    return BillConstants.SCENE_CODE_METRO.equals(detail.getSceneCode())",
+    "        && BillConstants.ORDER_TYPE_METRO.equals(detail.getOrderType());",
+    "  }",
     "}",
-    "class BillDetail { String getExpenseType() { return \"METRO\"; } }",
+    "class BillDetail {",
+    "  String getExpenseType() { return \"METRO\"; }",
+    "  String getSceneCode() { return \"METRO\"; }",
+    "  String getOrderType() { return \"METRO\"; }",
+    "}",
   ].join("\n"));
   const javaResult = runNode([validator, javaDir]);
   assert.doesNotMatch(output(javaResult), /bill implementation does not use confirmed billIdentifiers.expenseType=METRO/);
+  assert.doesNotMatch(output(javaResult), /bill implementation only logs or declares billIdentifiers.sceneCode=METRO/);
+  assert.doesNotMatch(output(javaResult), /bill implementation only logs or declares billIdentifiers.orderType=METRO/);
 }
 
 function testIfElseRouterGates() {
