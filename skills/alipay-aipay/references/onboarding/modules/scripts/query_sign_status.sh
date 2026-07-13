@@ -2,7 +2,7 @@
 #=============================================================================
 # 脚本名称: query_sign_status.sh
 # 功能描述: 查询签约状态并根据结果判断后续流程
-# 调用位置: Step 3.1 签约状态查询
+# 调用位置: Step 3.1 状态与资源查询
 # 调用前置: 脚本通过 error_handler.sh 间接初始化 DEV_TOOL_NAME；需传入 --sales-code，或兼容使用 SALES_CODE 环境变量
 # 用法: bash query_sign_status.sh --sales-code <code> [--product-type aipay|webpay|apppay]
 # 返回值: 输出签约状态判断结果和处理建议
@@ -73,15 +73,15 @@ emit_signed_flow() {
   case "$SALES_CODE" in
     "I1080300001000041203")
       echo "FLOW:PC_WEB_SIGNED"
-      # 网站支付已生效或已提交：跳过签约提交，直接进入应用发布
+      # 网站支付已生效或已提交：Step 4 只处理应用决策，Step 5 跳过签约提交
       ;;
     "I1080300001000041313")
       echo "FLOW:APP_SIGNED"
-      # APP支付已生效或已提交：跳过签约提交，直接进入应用发布
+      # APP支付已生效或已提交：Step 4 只处理应用决策，Step 5 跳过签约提交
       ;;
     "I1080300001000160457")
       echo "FLOW:AI_PAY_SIGNED"
-      # 按量付费已生效或已提交：跳过签约提交，直接进入服务注册 + 应用发布
+      # 按量付费已生效或已提交：Step 4 处理服务/应用决策，Step 5 跳过签约提交
       ;;
   esac
 }
@@ -99,8 +99,14 @@ fi
 # 解包 MCP 信封后解析业务字段
 BUSINESS=$(unwrap_mcp "$RESULT")
 
-# 使用 // [] 安全提取数组，判断签约状态；解析失败必须阻断，避免误判为未签约
-AR_LIST=$(echo "$BUSINESS" | jq -c '.resultObj.arInfoList // []' 2>/dev/null)
+# 只有明确返回数组才可判断签约状态；缺少字段必须阻断，避免误判为未签约
+AR_LIST=$(echo "$BUSINESS" | jq -c '
+  if (.resultObj | type) == "object" and (.resultObj.arInfoList | type) == "array" then
+    .resultObj.arInfoList
+  else
+    null
+  end
+' 2>/dev/null)
 if [ -z "$AR_LIST" ] || ! echo "$AR_LIST" | jq -e 'type == "array"' >/dev/null 2>&1; then
   echo "❌ 签约状态返回结构异常，无法解析 arInfoList"
   exit 1
@@ -108,7 +114,7 @@ fi
 AR_COUNT=$(echo "$AR_LIST" | jq 'length')
 
 if [ "$AR_COUNT" -eq 0 ]; then
-  echo "📋 未签约 (NOT_SIGNED)，进入资料采集流程"
+  echo "📋 签约状态: 未签约 (NOT_SIGNED)；继续 Step 4 一次性资料与资源决策"
   echo "SIGN_STATUS=NOT_SIGNED"
 
   case "$SALES_CODE" in
@@ -122,16 +128,16 @@ if [ "$AR_COUNT" -eq 0 ]; then
       ;;
     "I1080300001000160457")
       echo "FLOW:AI_PAY_NOT_SIGNED"
-      # 按量付费未签约：跳过 Step 4，进入 Step 5.1 签约，再继续服务注册 + 应用发布
+      # 按量付费未签约：Step 4 无需页面图片，但仍完成服务/应用决策
       ;;
   esac
 else
-  # 使用 // [] 避免迭代 null 报错
+  # AR_LIST 已在上方确认为数组
   HAS_EFFECTIVE=$(echo "$AR_LIST" | jq -r '[.[] | select(.arStatus == "02")] | length')
   HAS_SUBMITTED=$(echo "$AR_LIST" | jq -r '[.[] | select(.arStatus == "01")] | length')
 
   if [ "$HAS_EFFECTIVE" -gt 0 ]; then
-    echo "✅ 已签约（已生效），跳过资料采集"
+    echo "✅ 签约已生效；无需签约材料，继续 Step 4 资源决策"
     echo "SIGN_STATUS=SIGNED_EFFECTIVE"
     emit_signed_flow
   elif [ "$HAS_SUBMITTED" -gt 0 ]; then
@@ -139,7 +145,7 @@ else
     echo "SIGN_STATUS=SIGN_SUBMITTED"
     emit_signed_flow
   else
-    echo "📋 其他签约状态，进入资料采集流程"
+    echo "📋 其他签约状态；保留已取得的只读结果并将签约分支标记为待核验"
     echo "SIGN_STATUS=OTHER_STATUS"
     echo "FLOW:OTHER_STATUS"
   fi

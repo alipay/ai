@@ -9,9 +9,9 @@
 #   auth confirm [--scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>]
 #   auth mismatch [--scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>]
 # 返回值:
-#   init:     AUTH_FLOW:SKIP | AUTH_FLOW:READY
+#   init:     AUTH_FLOW:SKIP | AUTH_FLOW:READY | AUTH_FLOW:SCOPE_MISMATCH | AUTH_FLOW:MCC_MISMATCH | AUTH_FLOW:FAILED
 #   confirm:  AUTH_FLOW:AUTH_SUCCESS | AUTH_FLOW:PENDING | AUTH_FLOW:EXPIRED | AUTH_FLOW:SCOPE_MISMATCH | AUTH_FLOW:MCC_MISMATCH | AUTH_FLOW:FAILED
-#   mismatch: 执行 logout → 调用 auth init 重新生成授权链接（不输出 FLOW 标记，由 auth init 输出 AUTH_FLOW:READY）
+#   mismatch: 执行一次 logout 后调用 auth init 重新生成授权链接（不输出 FLOW 标记，由 auth init 输出 AUTH_FLOW:READY）
 #=============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,6 +194,123 @@ run_json_command() {
   return 1
 }
 
+# 校验当前登录会话是否覆盖目标产品 scope 和 MCC。
+# 可复用调用方已经取得的 whoami JSON，避免重复查询。
+validate_current_authorization() {
+  local whoami_result="${1:-}"
+  local logged_in is_expired granted_scope required_scope
+  local scope_match mcc_verify_result mcc_verify_unwrapped mcc_match
+  local mcc_error_type mcc_error_code mcc_success
+  local granted_scope_item
+  local -a granted_scope_items
+
+  if [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ]; then
+    echo "❌ 缺少授权校验参数"
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
+
+  if [ -z "$whoami_result" ]; then
+    whoami_result=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || {
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    }
+  fi
+
+  if ! handle_error "$whoami_result"; then
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
+
+  logged_in=$(echo "$whoami_result" | jq -r '.data.logged_in // false')
+  is_expired=$(echo "$whoami_result" | jq -r '.data.is_expired // false')
+  if [ "$logged_in" != "true" ] || [ "$is_expired" = "true" ]; then
+    echo "❌ 当前登录状态无效或已过期"
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
+
+  granted_scope=$(echo "$whoami_result" | jq -r '.data.scope // empty')
+  case "$SALES_CODE" in
+    "I1080300001000041203") required_scope="fast_instant_trade_pay:write" ;;
+    "I1080300001000041313") required_scope="auth_alipay_apppay:write" ;;
+    "I1080300001000160457") required_scope="machine_pay:write" ;;
+    *)
+      echo "❌ 未知产品码: $SALES_CODE"
+      echo "AUTH_FLOW:FAILED"
+      return 1
+      ;;
+  esac
+
+  scope_match="false"
+  IFS=',' read -r -a granted_scope_items <<< "$granted_scope"
+  for granted_scope_item in "${granted_scope_items[@]}"; do
+    granted_scope_item="${granted_scope_item#"${granted_scope_item%%[![:space:]]*}"}"
+    granted_scope_item="${granted_scope_item%"${granted_scope_item##*[![:space:]]}"}"
+    if [ "$granted_scope_item" = "$required_scope" ]; then
+      scope_match="true"
+      break
+    fi
+  done
+
+  mcc_match="true"
+  if [ "$scope_match" = "true" ]; then
+    mcc_verify_result=$(run_json_command "alipay-cli mcp call ar-query.queryArInfosBySalesProd" \
+      alipay-cli mcp call ar-query.queryArInfosBySalesProd \
+      -d "{\"request\":{\"salesProductCodes\":[\"${SALES_CODE}\"]},\"ctx\":{}}" \
+      --json) || {
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    }
+
+    mcc_verify_unwrapped=$(unwrap_mcp "$mcc_verify_result")
+    mcc_error_type=$(detect_error "$mcc_verify_result")
+    if [ "$mcc_error_type" = "AUTH_MISMATCH" ]; then
+      mcc_match="false"
+    elif [ "$mcc_error_type" != "SUCCESS" ]; then
+      echo "❌ MCC 校验失败"
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    fi
+
+    # 保留对非标准错误响应的兼容，只在后端明确返回 MCC 未授权时判定不匹配。
+    mcc_error_code=$(echo "$mcc_verify_unwrapped" | jq -r '.errorCode // .data.errorCode // ""' 2>/dev/null)
+    mcc_success=$(echo "$mcc_verify_unwrapped" | jq -r '.success // "null"' 2>/dev/null)
+    if [ "$mcc_success" = "false" ] && [ -n "$mcc_error_code" ] && \
+       echo "$mcc_verify_unwrapped" | jq -r '.errorMessage // .data.errorMessage // .error.message // ""' 2>/dev/null | grep -qi "mccCode.*is not auth"; then
+      mcc_match="false"
+    elif echo "$mcc_verify_unwrapped" | grep -qi "mccCode.*is not auth"; then
+      mcc_match="false"
+    fi
+  fi
+
+  if [ "$scope_match" = "true" ] && [ "$mcc_match" = "true" ]; then
+    echo "✅ 授权范围校验通过（scope + MCC）"
+    return 0
+  fi
+
+  echo ""
+  echo "⚠️ 授权范围不满足"
+  if [ "$scope_match" != "true" ]; then
+    echo "📋 原因：scope 权限不满足"
+    echo "🤖 需要权限: $required_scope"
+    echo "🤖 已授权 scope: $granted_scope"
+  fi
+  if [ "$mcc_match" != "true" ]; then
+    echo "📋 原因：经营类目未授权"
+    echo "🤖 当前类目: $MCC_CODE"
+  fi
+
+  echo ""
+  echo "📋 必须通过 auth.sh mismatch 退出当前登录并重新授权"
+  if [ "$scope_match" != "true" ]; then
+    echo "AUTH_FLOW:SCOPE_MISMATCH"
+  else
+    echo "AUTH_FLOW:MCC_MISMATCH"
+  fi
+  return 1
+}
+
 # ─── auth init: 检查登录状态 + 执行登录 + 构建授权链接 + 输出授权信息 ────────
 auth_init() {
   SCOPE=""
@@ -230,26 +347,42 @@ auth_init() {
   fi
 
   # Step 1: 检查登录状态
-  CHECK_RESULT=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || exit 1
+  CHECK_RESULT=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || {
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  }
+  if ! handle_error "$CHECK_RESULT"; then
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
   LOGGED_IN=$(echo "$CHECK_RESULT" | jq -r '.data.logged_in // false')
   IS_EXPIRED=$(echo "$CHECK_RESULT" | jq -r '.data.is_expired // false')
 
   if [ "$LOGGED_IN" = "true" ] && [ "$IS_EXPIRED" = "false" ]; then
+    validate_current_authorization "$CHECK_RESULT" || return 1
     DEVICE_CODE=""
     save_auth_state
-    echo "✅ 已处于登录状态，可继续后续流程"
+    echo "✅ 当前登录及授权范围有效，可继续后续流程"
     echo "AUTH_FLOW:SKIP"
     return 0
   fi
 
   # Step 2: 执行登录
-  LOGIN_RESULT=$(run_json_command "alipay-cli login --non-interactive --scope" alipay-cli login --non-interactive --scope "$SCOPE" --json) || exit 1
+  LOGIN_RESULT=$(run_json_command "alipay-cli login --non-interactive --scope" alipay-cli login --non-interactive --scope "$SCOPE" --json) || {
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  }
+  if ! handle_error "$LOGIN_RESULT"; then
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
   LOGIN_STATUS=$(echo "$LOGIN_RESULT" | jq -r '.data.status // ""')
 
   if [ "$LOGIN_STATUS" = "already_logged_in" ]; then
+    validate_current_authorization || return 1
     DEVICE_CODE=""
     save_auth_state
-    echo "✅ 已处于登录状态，可继续后续流程"
+    echo "✅ 当前登录及授权范围有效，可继续后续流程"
     echo "AUTH_FLOW:SKIP"
     return 0
   fi
@@ -269,8 +402,21 @@ auth_init() {
     exit 1
   fi
 
-  # Step 5: 构建授权链接（禁止使用 CLI 返回的 verification_url）
-  BROWSER_URL="https://aipay.alipay.com/cli-auth?deviceCode=${DEVICE_CODE}&productCode=${SALES_CODE}&mccCode=${MCC_CODE}&platform=${DEV_TOOL_NAME}"
+  # Step 5: 构建并校验授权链接（禁止使用 CLI 返回的 verification_url）
+  BROWSER_URL="https://aipay.alipay.com/cli-auth?deviceCode=${DEVICE_CODE}&productCode=${SALES_CODE}&mccCode=${MCC_CODE}"
+  if [ -n "${DEV_TOOL_NAME:-}" ] && [ "$DEV_TOOL_NAME" != "unknown" ]; then
+    AUTH_PLATFORM=$(jq -nr --arg value "$DEV_TOOL_NAME" '$value|@uri')
+    BROWSER_URL="${BROWSER_URL}&platform=${AUTH_PLATFORM}"
+  fi
+  if [[ "$BROWSER_URL" != https://aipay.alipay.com/cli-auth\?* ]] ||
+     [[ "$BROWSER_URL" != *"deviceCode=${DEVICE_CODE}"* ]] ||
+     [[ "$BROWSER_URL" != *"productCode=${SALES_CODE}"* ]] ||
+     [[ "$BROWSER_URL" != *"mccCode=${MCC_CODE}"* ]] ||
+     [[ "$BROWSER_URL" == *"opengw.alipay.com/oauth/device"* ]]; then
+    echo "❌ 授权链接构建失败，缺少必要参数或误用了 CLI verification_url，已停止。"
+    echo "📋 正确格式: https://aipay.alipay.com/cli-auth?deviceCode=...&productCode=...&mccCode=..."
+    exit 1
+  fi
 
   # Step 6: 保存参数到状态文件（供 confirm/mismatch 使用）
   save_auth_state
@@ -349,103 +495,29 @@ auth_confirm() {
     echo "AUTH_FLOW:EXPIRED"
     return 0
   else
-    echo "❌ 授权确认失败"
-    echo "$LOGIN_COMPLETE_RESULT" | jq -r '.data.error.message // .error.message // "未知错误"' 2>/dev/null
+    if handle_error "$LOGIN_COMPLETE_RESULT"; then
+      echo "❌ 授权确认失败：返回结果未包含可识别的完成状态"
+    fi
     cleanup_auth_state
     echo "AUTH_FLOW:FAILED"
     return 1
   fi
 
-  # Step 3: Scope 权限校验
+  # Step 3: 复用 init 的 scope + MCC 校验
   WHOAMI_RESULT=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || {
     echo "AUTH_FLOW:FAILED"
     return 1
   }
-  GRANTED_SCOPE=$(echo "$WHOAMI_RESULT" | jq -r '.data.scope // empty')
-
-  case "$SALES_CODE" in
-    "I1080300001000041203") REQUIRED_SCOPE="fast_instant_trade_pay:write" ;;
-    "I1080300001000041313") REQUIRED_SCOPE="auth_alipay_apppay:write" ;;
-    "I1080300001000160457") REQUIRED_SCOPE="machine_pay:write" ;;
-    *) echo "❌ 未知产品码: $SALES_CODE"; return 1 ;;
-  esac
-
-  SCOPE_MATCH="false"
-  if echo "$GRANTED_SCOPE" | grep -Fq "$REQUIRED_SCOPE"; then
-    SCOPE_MATCH="true"
-  fi
-
-  # Step 4: MCC 一致性校验
-  MCC_VERIFY_RESULT=$(run_json_command "alipay-cli mcp call ar-query.queryArInfosBySalesProd" \
-    alipay-cli mcp call ar-query.queryArInfosBySalesProd \
-    -d "{\"request\":{\"salesProductCodes\":[\"${SALES_CODE}\"]},\"ctx\":{}}" \
-    --json) || {
-    echo "AUTH_FLOW:FAILED"
-    return 1
-  }
-
-  # 先解包 MCP 信封再精确解析
-  MCC_VERIFY_UNWRAPPED=$(unwrap_mcp "$MCC_VERIFY_RESULT")
-
-  MCC_MATCH="true"
-  MCC_ERROR_TYPE=$(detect_error "$MCC_VERIFY_RESULT")
-  if [ "$MCC_ERROR_TYPE" = "AUTH_MISMATCH" ]; then
-    MCC_MATCH="false"
-  elif [ "$MCC_ERROR_TYPE" != "SUCCESS" ]; then
-    echo "❌ MCC 校验失败"
-    echo "AUTH_FLOW:FAILED"
-    return 1
-  fi
-
-  # 精确解析 errorCode 字段判断 MCC 授权异常，避免 grep 全文匹配误判
-  MCC_ERROR_CODE=$(echo "$MCC_VERIFY_UNWRAPPED" | jq -r '.errorCode // .data.errorCode // ""' 2>/dev/null)
-  MCC_SUCCESS=$(echo "$MCC_VERIFY_UNWRAPPED" | jq -r '.success // "null"' 2>/dev/null)
-  # 优先路径：success=false 且 errorCode 存在，且 errorMessage 精确包含 mccCode is not auth
-  # 这条路径确保仅在后端明确返回授权类错误时才判定为 MCC 不匹配，避免正常数据误触发
-  if [ "$MCC_SUCCESS" = "false" ] && [ -n "$MCC_ERROR_CODE" ] && echo "$MCC_VERIFY_UNWRAPPED" | jq -r '.errorMessage // .data.errorMessage // .error.message // ""' 2>/dev/null | grep -qi "mccCode.*is not auth"; then
-    MCC_MATCH="false"
-  # 兜底路径：解包后的全文包含 "mccCode is not auth"（覆盖非 JSON 格式的错误响应）
-  elif echo "$MCC_VERIFY_UNWRAPPED" | grep -qi "mccCode.*is not auth"; then
-    MCC_MATCH="false"
-  fi
-
-  # Step 5: 判断校验结果
-  if [ "$SCOPE_MATCH" = "true" ] && [ "$MCC_MATCH" = "true" ]; then
-    echo "✅ 授权范围校验通过（scope + MCC）"
-    cleanup_auth_state
-    echo "AUTH_FLOW:AUTH_SUCCESS"
-    return 0
-  fi
-
-  # Step 6: 校验不通过，输出原因
-  echo ""
-  echo "⚠️ 授权范围不满足，正在退出登录..."
-
-  if [ "$SCOPE_MATCH" != "true" ]; then
-    echo "📋 原因：scope 权限不满足"
-    echo "🤖 需要权限: $REQUIRED_SCOPE"
-    echo "🤖 已授权 scope: $GRANTED_SCOPE"
-  fi
-  if [ "$MCC_MATCH" != "true" ]; then
-    echo "📋 原因：经营类目未授权"
-    echo "🤖 当前类目: $MCC_CODE"
-  fi
-
-  LOGOUT_RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli logout --json 2>/dev/null)
-  echo "✅ 已退出当前登录"
-  echo ""
-  echo "📋 需要重新执行授权流程"
-
-  if [ "$SCOPE_MATCH" != "true" ]; then
-    echo "AUTH_FLOW:SCOPE_MISMATCH"
-  else
-    echo "AUTH_FLOW:MCC_MISMATCH"
-  fi
-  return 1
+  validate_current_authorization "$WHOAMI_RESULT" || return 1
+  cleanup_auth_state
+  echo "AUTH_FLOW:AUTH_SUCCESS"
+  return 0
 }
 
-# ─── auth mismatch: 授权范围不满足 → logout + 重新授权 ───────────────────────
+# ─── auth mismatch: 授权范围不满足 → logout → 重新授权 ──────────────────────
 auth_mismatch() {
+  local logout_result logout_error_type
+
   # 优先使用显式传入的非敏感上下文；未传时再从状态文件兜底恢复。
   restore_auth_context_or_state "$@" || exit 1
 
@@ -454,18 +526,27 @@ auth_mismatch() {
     return 1
   fi
 
-  echo "⚠️ 授权范围不满足，正在退出登录..."
-
-  # Step 1: 退出登录
-  LOGOUT_RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli logout --json 2>/dev/null)
-  echo "📋 已退出当前登录"
-
-  # Step 2: 根据 salesCode 构造正确的 scope
+  # Step 1: 根据 salesCode 构造正确的 scope；目标无效时不退出当前登录。
   SCOPE=$(get_scope "$SALES_CODE")
   if [ -z "$SCOPE" ]; then
     echo "❌ 未知产品码: $SALES_CODE"
     return 1
   fi
+
+  # Step 2: mismatch 是授权不匹配恢复路径中唯一执行 logout 的入口。
+  echo "⚠️ 授权范围不满足，正在退出当前登录并准备重新授权..."
+  logout_result=$(run_json_command "alipay-cli logout --json" alipay-cli logout --json) || {
+    echo "❌ 退出当前登录失败，已停止重新授权"
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  }
+  logout_error_type=$(detect_error "$logout_result")
+  if [ "$logout_error_type" != "SUCCESS" ]; then
+    echo "❌ 退出当前登录失败，已停止重新授权"
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
+  echo "✅ 已退出当前登录"
 
   # Step 3: 调用 auth init 执行登录 + 构建授权链接 + 输出授权信息
   # DEV_TOOL_NAME 已 export，子进程可继承

@@ -1,7 +1,7 @@
 # 产品签约模块
 
 > 本文档定义产品签约的完整流程、参数规范和状态判断逻辑。
-> 被引用文档：`SKILL.md` → Step 5 入驻推进 - 签约部分
+> 被引用文档：`onboarding/flow.md` → Step 3.1 签约查询 + Step 5.1 签约提交
 > 本文档位于 `references/onboarding/modules/`，文中的 `scripts/...` 路径相对本目录；从技能包根目录执行时对应 `references/onboarding/modules/scripts/...`。
 
 ---
@@ -12,7 +12,7 @@
 
 本模块采用 `ar-sign.apply` **外部直调 / 静态参数模式**：由 `scripts/ar_sign_apply.sh` 基于当前已确认的产品类型、MCC 和资料字段直接构造 `businessProperty` 后提交申请。它不走 `previewFormView` 动态 schema 收集循环，因此只覆盖本文档明确列出的字段和产品。
 
-**触发条件：** Step 3.1 授权后处理中，签约状态为 NOT_SIGNED 时触发。
+**使用条件：** Step 3.1 始终使用本模块的签约状态查询规则；只有查询结果为 `NOT_SIGNED` 时，才使用本模块的签约申请提交规则。`SIGNED_EFFECTIVE`、`SIGN_SUBMITTED`、查询失败或其他状态均禁止提交签约申请。
 
 ---
 
@@ -42,8 +42,8 @@
 | 返回结果 | 状态判定 | 说明 |
 |----------|----------|------|
 | `resultObj.arInfoList` 为空数组 `[]` | `NOT_SIGNED` | 未签约 |
-| `resultObj.arInfoList` 不为空，且存在 `arStatus` 为 `"02"` 的记录 | `SIGNED_EFFECTIVE` | 签约已生效，跳过资料采集 |
-| `resultObj.arInfoList` 不为空，且存在 `arStatus` 为 `"01"` 的记录 | `SIGN_SUBMITTED` | 已提交签约（待生效），跳过资料采集与重复签约提交 |
+| `resultObj.arInfoList` 不为空，且存在 `arStatus` 为 `"02"` 的记录 | `SIGNED_EFFECTIVE` | 签约已生效，跳过签约材料采集，仍在 Step 4 处理应用/服务决策 |
+| `resultObj.arInfoList` 不为空，且存在 `arStatus` 为 `"01"` 的记录 | `SIGN_SUBMITTED` | 已提交签约（待生效），跳过签约材料和重复签约提交，仍在 Step 4 处理应用/服务决策 |
 
 ### 判断逻辑
 
@@ -53,22 +53,22 @@
 
 | 签约状态 | 产品类型 | FLOW 信号 | 后续流程 |
 |----------|----------|-----------|----------|
-| `NOT_SIGNED` | 网站支付 | `FLOW:PC_WEB_NOT_SIGNED` | 进入 Step 4 资料采集（3张网站截图）→ Step 5 签约 + 应用发布 |
-| `NOT_SIGNED` | APP支付 | `FLOW:APP_NOT_SIGNED` | 进入 Step 4 资料采集（APP名称 + 3张APP界面截图）→ Step 5 签约 + 应用发布 |
-| `NOT_SIGNED` | 按量付费 | `FLOW:AI_PAY_NOT_SIGNED` | 跳过 Step 4，进入 Step 5.1 签约，再继续服务注册 + 应用发布 |
-| `SIGNED_EFFECTIVE` | 网站支付 | `FLOW:PC_WEB_SIGNED` | 跳过签约提交，直接执行应用发布 |
-| `SIGNED_EFFECTIVE` | APP支付 | `FLOW:APP_SIGNED` | 跳过签约提交，直接执行应用发布 |
-| `SIGNED_EFFECTIVE` | 按量付费 | `FLOW:AI_PAY_SIGNED` | 跳过签约提交，直接执行服务注册 + 应用发布 |
-| `SIGN_SUBMITTED` | 网站支付 | `FLOW:PC_WEB_SIGNED` | 跳过重复签约提交，直接执行应用发布 |
-| `SIGN_SUBMITTED` | APP支付 | `FLOW:APP_SIGNED` | 跳过重复签约提交，直接执行应用发布 |
-| `SIGN_SUBMITTED` | 按量付费 | `FLOW:AI_PAY_SIGNED` | 跳过重复签约提交，直接执行服务注册 + 应用发布 |
+| `NOT_SIGNED` | 网站支付 | `FLOW:PC_WEB_NOT_SIGNED` | 进入 Step 4 一次性资料与资源决策（3张网站截图 + 应用决策/条件资料）→ Step 5 签约 + 应用发布 |
+| `NOT_SIGNED` | APP支付 | `FLOW:APP_NOT_SIGNED` | 进入 Step 4 一次性资料与资源决策（APP名称 + 3张APP界面截图 + 应用决策/条件资料）→ Step 5 签约 + 应用发布 |
+| `NOT_SIGNED` | 按量付费 | `FLOW:AI_PAY_NOT_SIGNED` | Step 4 无需收集页面图片，但一次完成服务/应用决策和条件资料；再进入 Step 5.1 签约 |
+| `SIGNED_EFFECTIVE` | 网站支付 | `FLOW:PC_WEB_SIGNED` | Step 4 完成应用决策后，跳过签约提交并执行应用发布 |
+| `SIGNED_EFFECTIVE` | APP支付 | `FLOW:APP_SIGNED` | Step 4 完成应用决策后，跳过签约提交并执行应用发布 |
+| `SIGNED_EFFECTIVE` | 按量付费 | `FLOW:AI_PAY_SIGNED` | Step 4 完成服务/应用决策后，跳过签约提交并执行服务注册 + 应用发布 |
+| `SIGN_SUBMITTED` | 网站支付 | `FLOW:PC_WEB_SIGNED` | Step 4 完成应用决策后，跳过重复签约提交并执行应用发布 |
+| `SIGN_SUBMITTED` | APP支付 | `FLOW:APP_SIGNED` | Step 4 完成应用决策后，跳过重复签约提交并执行应用发布 |
+| `SIGN_SUBMITTED` | 按量付费 | `FLOW:AI_PAY_SIGNED` | Step 4 完成服务/应用决策后，跳过重复签约提交并执行服务注册 + 应用发布 |
 
-**⚠️ 按量付费 无需前置资料采集：**
+**⚠️ 按量付费无需签约材料：**
 ```
 ✅ 网站支付未签约：需先采集 3 张网站截图，再进入 Step 5 签约
 ✅ APP支付未签约：需先采集 APP 名称和 3 张APP界面截图，再进入 Step 5 签约
-✅ 按量付费 未签约：跳过 Step 4，进入 Step 5.1 签约，再继续服务注册 + 应用发布
-❌ 禁止：按量付费 在 Step 4 收集服务注册信息（服务信息在 Step 5 服务注册时交互式收集）
+✅ 按量付费 未签约：Step 4 无需签约页面图片，但前置完成服务/应用决策和条件资料；Step 5 仍先提交签约
+✅ 按量付费在 Step 4 基于已查询的服务候选，一次收集新建/修改分支的完整五项服务资料；Step 5.2 才执行写操作
 ```
 
 **按量付费签约后的必要后续动作：**
@@ -188,8 +188,8 @@ bash scripts/ar_sign_apply.sh --product apppay --sales-code "I108030000100004131
 | `mccCode` | Step 2 方案规划 | 运行时变量，格式 `Axxxx_Bxxxx`，不持久化到状态文件 |
 | `channelCode` | 固定值 | `"B_SK_SH_RPC"` |
 | `orderType` | 固定值 | `"NEW_SIGN"` |
-| `screenshot` | Step 4 资料采集 | **仅网站支付/APP支付需要**（3个上传后的图片引用值），按量付费 无需此项 |
-| `appName` | Step 4 资料采集 | **仅APP支付需要**；脚本参数仍为 `--app-name`，提交到 MCP 时映射为 `nativeAppDTO.name` |
+| `screenshot` | Step 4 一次性资料与资源决策 | **仅未签约的网站支付/APP支付需要**（3个上传后的图片引用值），按量付费无需此项 |
+| `appName` | Step 4 一次性资料与资源决策 | **仅未签约的 APP支付需要**；脚本参数仍为 `--app-name`，提交到 MCP 时映射为 `nativeAppDTO.name` |
 | `appStatus` | 固定值 | **仅APP支付需要**，本次固定为 `OFFLINE` |
 
 ### 按量付费接入产物映射
@@ -209,8 +209,11 @@ bash scripts/ar_sign_apply.sh --product apppay --sales-code "I108030000100004131
 ✅ 网站支付未签约 → 需要 3 张网站截图（首页、商品页、支付页）
 ✅ APP支付未签约 → 需要 APP 名称和 3 张APP界面截图（首页、商品页、支付页），签约状态固定按 OFFLINE 提交
 ✅ 按量付费 未签约 → 无需截图，直接签约
+✅ 网站支付/APP支付缺少支付页或支付能力 → 不提交签约；先进入/回到集成流程完成实现，再回来上传图片
+✅ 网站支付/APP支付页面和支付能力已存在、仅缺三张页面图片 → 保留在 onboarding Step 4 收集和上传，不进入集成流程
 ❌ 禁止：按量付费 签约时传入 screenshot 字段
 ❌ 禁止：网站支付/APP支付 签约时省略 screenshot 字段
+❌ 禁止：将“支付页”自行改口为“支付成功页”或要求用户提供文档未定义的页面
 ❌ 禁止：APP支付签约 MCP payload 中使用 webAppDTO、appDTO、appName、appType、placeType=APP、placeType=ONLINE_WEBAPP、placeType=ONLINE_NATIVEAPP 或 appType=PC_WEB
 ```
 
@@ -226,7 +229,7 @@ bash scripts/ar_sign_apply.sh --product apppay --sales-code "I108030000100004131
 
 > ⚠️ **签约提交成功后，无需等待签约审核通过，应立即继续推进后续步骤。**
 
-签约申请提交后，后端会异步审核，`arStatus` 为 `"01"`（已提交待生效）。应用创建和服务注册不依赖签约审核通过，可以并行推进。
+签约申请提交后，后端会异步审核，`arStatus` 为 `"01"`（已提交待生效）。应用创建和服务注册不依赖签约审核通过，可以继续推进。为减少用户交互，应用/服务列表查询及分支资料采集可在签约提交前完成；当前流程仍先提交签约，成功后才执行服务或应用写操作。
 
 ### FLOW 信号
 

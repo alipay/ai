@@ -1,8 +1,13 @@
 <?php
 /**
  * A2M 智能收产品接入示例 - PHP 版本
+ *
+ * 本示例展示 A2M 核心协议与 SDK 调用流程。
+ * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
+ * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
+ * 禁止将本文件原样用于生产或判定为生产就绪。
  * 
- * 本文件演示完整的智能收产品接入流程：
+ * 本文件演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
  * 2. 验证 Payment-Proof 支付凭证
  * 3. 发送履约回执确认
@@ -19,7 +24,7 @@ define('ALIPAY_CONFIG', [
     'alipayPublicKey' => '<ALIPAY_PUBLIC_KEY>', // 请填写您的支付宝公钥
     'gateway' => 'https://openapi.alipay.com/gateway.do',
     'sellerId' => '<SELLER_ID_2088>', // 商户 ID（2088 格式）
-    'serviceId' => '<SERVICE_ID>', // 商户服务 ID
+    'serviceId' => 'api_mock_service_id', // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
     'merchantPrivateKey' => '<APP_PRIVATE_KEY>' // 请填写您的应用私钥（用于商家签名）
 ]);
 
@@ -73,9 +78,17 @@ function generateSellerSignature($params, $privateKey) {
     }
     $signString = implode('&', $signContent);
     
-    // 3. RSA2 签名
-    $privateKeyResource = openssl_pkey_get_private($privateKey);
-    openssl_sign($signString, $signature, $privateKeyResource, OPENSSL_ALGO_SHA256);
+    // 3. OpenSSL 需要 PEM；仅为本次签名临时包装裸 PKCS#1 Base64，不修改原始配置。
+    $privateKeyPem = "-----BEGIN RSA PRIVATE KEY-----\n"
+        . chunk_split($privateKey, 64, "\n")
+        . "-----END RSA PRIVATE KEY-----";
+    $privateKeyResource = openssl_pkey_get_private($privateKeyPem);
+    if ($privateKeyResource === false) {
+        throw new RuntimeException('无法解析 PKCS#1 应用私钥');
+    }
+    if (!openssl_sign($signString, $signature, $privateKeyResource, OPENSSL_ALGO_SHA256)) {
+        throw new RuntimeException('seller_signature 生成失败');
+    }
     
     return base64_encode($signature);
 }
@@ -118,7 +131,7 @@ function jsonResponse($data, $statusCode = 200, $headers = []) {
 /**
  * 智能收产品统一接口
  * 
- * 完整流程演示：
+ * 核心协议流程演示：
  * 1. 不带 Payment-Proof Header：返回 HTTP 402 + Payment-Needed Header
  * 2. 带 Payment-Proof Header：验证支付 → 自动履约 → 返回资源
  */
@@ -279,9 +292,11 @@ function verifyPaymentAndDeliverResource($paymentProof) {
         }
         
         // 4. 验证成功，获取订单信息
-        $verifyTradeNo = $verifyResponse->trade_no ?? null;
-        $verifyOutTradeNo = $verifyResponse->out_trade_no ?? null;
-        $resourceId = $verifyResponse->resource_id ?? null;
+        $verifyTradeNo = $verifyResponse->trade_no ?? $verifyResponse->tradeNo ?? '';
+        $verifyOutTradeNo = $verifyResponse->out_trade_no ?? $verifyResponse->outTradeNo ?? '';
+        $resourceId = $verifyResponse->resource_id ?? $verifyResponse->resourceId ?? '';
+        // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
+        $resourceIdVerified = !empty($resourceId) ? $resourceId : RESOURCE_CONFIG['path'];
         $active = $verifyResponse->active ?? null;
         
         error_log("支付凭证验证成功：tradeNo={$verifyTradeNo}, outTradeNo={$verifyOutTradeNo}");
@@ -322,7 +337,7 @@ function verifyPaymentAndDeliverResource($paymentProof) {
         // }
         
         // 9. 执行业务逻辑，生成资源内容
-        $serviceResult = generateServiceResource($resourceId);
+        $serviceResult = generateServiceResource($resourceIdVerified);
         
         // 10. 【TODO】履约记录落库（用于审计/售后/对账）
         // $fulfillmentRecordRepository->save([...]);
@@ -338,10 +353,11 @@ function verifyPaymentAndDeliverResource($paymentProof) {
         //     'serviceResult' => $serviceResult
         // ]);
 
-        error_log("资源已生成，准备发送履约确认：outTradeNo={$verifyOutTradeNo}, tradeNo={$verifyTradeNo}");
+        $fulfillmentTradeNo = $verifyTradeNo ?: $tradeNo;
+        error_log("资源已生成，准备发送履约确认：outTradeNo={$verifyOutTradeNo}, tradeNo={$fulfillmentTradeNo}");
 
         // 12. 发送履约确认到支付宝，确认成功后才返回成功交付
-        if (!sendFulfillmentConfirm($verifyTradeNo)) {
+        if (!sendFulfillmentConfirm($fulfillmentTradeNo)) {
             jsonResponse([
                 'code' => 'FULFILLMENT_CONFIRM_FAILED',
                 'message' => '资源已生成但履约确认失败，请稍后使用同一 Payment-Proof 重试'
@@ -354,23 +370,23 @@ function verifyPaymentAndDeliverResource($paymentProof) {
         //     'fulfilledAt' => date('c')
         // ]);
 
-        error_log("履约确认成功：outTradeNo={$verifyOutTradeNo}, tradeNo={$verifyTradeNo}");
+        error_log("履约确认成功：outTradeNo={$verifyOutTradeNo}, tradeNo={$fulfillmentTradeNo}");
         
         // 13. 构造 Payment-Validation Header
         $paymentValidation = [
-            'trade_no' => $verifyTradeNo,
+            'trade_no' => $fulfillmentTradeNo,
             'out_trade_no' => $verifyOutTradeNo,
             'validated' => true,
-            'resource_id' => $resourceId
+            'resource_id' => $resourceIdVerified
         ];
         
         $paymentValidationEncoded = base64UrlEncode(json_encode($paymentValidation, JSON_UNESCAPED_UNICODE));
         
         // 14. 返回资源内容
         jsonResponse([
-            'resource_id' => $resourceId,
+            'resource_id' => $resourceIdVerified,
             'content' => $serviceResult,
-            'trade_no' => $verifyTradeNo,
+            'trade_no' => $fulfillmentTradeNo,
             'out_trade_no' => $verifyOutTradeNo,
             'already_fulfilled' => false,
             'fulfillment_confirmed' => true
@@ -402,6 +418,11 @@ function generateServiceResource($resourceId) {
  * 发送履约确认
  */
 function sendFulfillmentConfirm($tradeNo) {
+    if (empty($tradeNo)) {
+        error_log('履约确认失败：tradeNo 为空');
+        return false;
+    }
+
     try {
         error_log("开始发送履约确认：tradeNo={$tradeNo}");
         

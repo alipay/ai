@@ -55,20 +55,22 @@ fi
 
 ## 3. 前置依赖：GPG 与 jq
 
-安装脚本需要 GPG 签名验证，先检查：
+`npx -y @alipay/alipay-aipay@latest install` 会优先保障 `alipay-cli` 可用；如果 `alipay-cli` 已安装或可直接安装成功，不需要额外安装 GPG。
+
+只有在 `alipay-cli` 首次安装失败，且失败输出指向缺少 GPG/GnuPG 时，后台准备任务才会把 GPG 作为兜底依赖检查：
 ```bash
 which gpg 2>/dev/null
 ```
 
-未安装时先安装 GPG：
+确认 GPG 未安装时，按系统安装：
 
 | 操作系统 | 安装命令 |
 |----------|----------|
-| macOS | `brew install gnupg`（或使用国内镜像源） |
+| macOS | 优先执行 `brew install gnupg`；失败或卡住时配置 Homebrew bottle 镜像后重试 |
 | Linux (Debian/Ubuntu) | `sudo apt-get install -y gnupg` |
 | Linux (CentOS/RHEL) | `sudo yum install -y gnupg2` |
 
-> ⚠️ macOS 如遇下载慢，可只切换 Homebrew bottle 下载源，并跳过自动更新。安装器不会阻塞等待 GPG 安装；只有在 `alipay-cli` 缺失、后台准备任务需要安装前置 GPG 时，才会按以下顺序自动重试：清华 → 阿里云 → 中科大 → 直连。
+> ⚠️ macOS 的 Homebrew 包名是 `gnupg`。安装器不会阻塞等待 GPG 安装；只有在 `alipay-cli` 缺失、首次安装失败且失败输出指向缺少 GPG/GnuPG 时，后台准备任务才会先使用 Homebrew 当前配置执行一次 `brew install gnupg`。如果默认安装失败或卡住，再并行探测清华、阿里云、中科大三个 bottle 镜像，选择最快可用镜像后用镜像重试一次。自动安装使用“无输出超时”：45 秒没有 stdout/stderr 输出才认为命令卡住；默认安装首轮最多 2 分钟，镜像兜底最多 8 分钟。
 >
 > 手动执行时可任选一个镜像源，例如清华：
 > ```bash
@@ -184,12 +186,12 @@ AI 编程工具检测使用通用脚本 `scripts/detect_dev_tool.sh`。shell 脚
 │   ↓           │
 │  不存在       │
 │   │           │
-│   ↓           │
-│ 检测 GPG ────┼──无→ 后台尝试安装 GPG → 安装 CLI 到 ~/.local/bin
-│   ↓           │
-│ 有 GPG        │
-│   ↓           │
+│   ↓
 │ 设置 ALIPAY_CLI_BIN="$HOME/.local/bin" 后执行安装脚本
+│   ↓
+│ 安装失败且提示缺少 GPG? ─┼──是→ 检测 GPG ──无→ 后台尝试安装 GPG（macOS 配置 bottle 镜像）
+│   │           │
+│   │           └──GPG 就绪后重试安装 CLI 到 ~/.local/bin
 │   ↓           │
 │ 安装失败? ───┼──是→ 提示指定可写目录手动安装
 │   ↓           │

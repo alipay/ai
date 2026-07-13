@@ -13,6 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/*
+ * 本示例展示 A2M 核心协议与 SDK 调用流程。
+ * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
+ * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
+ * 禁止将本文件原样用于生产或判定为生产就绪。
+ */
 package com.alipay.aipayweb.demo;
 
 import com.alibaba.fastjson.JSONObject;
@@ -44,7 +50,7 @@ import java.util.*;
 /**
  * A2M智能收产品接入示例 Controller
  * 
- * 本Controller为开发者示例代码，演示完整的智能收产品接入流程：
+ * 本Controller为开发者示例代码，演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
  * 2. 验证 Payment-Proof 支付凭证
  * 3. 发送履约回执确认
@@ -83,6 +89,7 @@ public class A2MPaymentDemoController {
      * 支付宝SDK客户端
      */
     private final AlipayClient alipayClient;
+    private static final String RESOURCE_PATH = "/demo/a2m/resource";
 
     public A2MPaymentDemoController() {
         // 使用AlipayConfig初始化支付宝客户端（推荐方式）
@@ -115,7 +122,7 @@ public class A2MPaymentDemoController {
     /**
      * 智能收产品统一接口
      * 
-     * 完整流程演示：
+     * 核心协议流程演示：
      * 1. 不带 Payment-Proof Header：返回 HTTP 402 + Payment-Needed Header
      * 2. 带 Payment-Proof Header：验证支付 → 自动履约 → 返回资源
      * 
@@ -146,7 +153,7 @@ public class A2MPaymentDemoController {
             String outTradeNo = "ORDER_" + System.currentTimeMillis(); //用户可自定义外部订单号的生成逻辑
             String amount = "0.01"; // 单位：元
             String currency = "CNY"; //固定用CNY
-            String resourceId = "/demo/a2m/resource"; //用户可自定义资源id的生成逻辑，用于资源防串
+            String resourceId = RESOURCE_PATH; //用户可自定义资源id的生成逻辑，用于资源防串
             String goodsName = "AI 生成内容服务"; //用户可自行定义商品名称
             
             // 2. 计算支付截止时间（30分钟后），用户可自行设置
@@ -173,7 +180,7 @@ public class A2MPaymentDemoController {
             // 4. 生成商家签名（需要使用商户私钥）
             // 注意：实际使用时请从配置中读取商户ID和服务ID
             String sellerId = "<SELLER_ID_2088>"; // 商户ID（2088格式）
-            String serviceId = "<SERVICE_ID>"; // 商户服务ID
+            String serviceId = "api_mock_service_id"; // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
             
             Map<String, String> signParams = new HashMap<>();
             signParams.put("amount", amount);
@@ -336,6 +343,10 @@ public class A2MPaymentDemoController {
             String verifyTradeNo = verifyResponse.getTradeNo();          // 支付宝订单号
             String verifyOutTradeNo = verifyResponse.getOutTradeNo();   // 商户订单号
             String resourceId = verifyResponse.getResourceId();   // 资源ID
+            // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
+            String resourceIdVerified = resourceId == null || resourceId.trim().isEmpty()
+                ? RESOURCE_PATH
+                : resourceId;
             Boolean active = verifyResponse.getActive();          // 凭证有效标识
             
             System.out.println("支付凭证验证成功: tradeNo=" + verifyTradeNo + ", outTradeNo=" + verifyOutTradeNo);
@@ -425,7 +436,7 @@ public class A2MPaymentDemoController {
             // orderRepository.save(order);
             
             // 10. 执行业务逻辑，生成资源内容
-            String serviceResult = generateServiceResource(resourceId);
+            String serviceResult = generateServiceResource(resourceIdVerified);
             
             // 11. 履约记录落库（用于审计/售后/对账）
             // 示例逻辑：
@@ -449,10 +460,13 @@ public class A2MPaymentDemoController {
             // 注意：如果生成资源会产生扣减额度、调用第三方、写业务数据等副作用，
             // 必须把 serviceResult 和幂等键落库后再允许重试，否则重试可能重复生成或重复扣减。
             
-            System.out.println("资源已生成，准备发送履约确认: outTradeNo=" + verifyOutTradeNo + ", tradeNo=" + verifyTradeNo);
+            String fulfillmentTradeNo = verifyTradeNo == null || verifyTradeNo.trim().isEmpty()
+                ? tradeNo
+                : verifyTradeNo;
+            System.out.println("资源已生成，准备发送履约确认: outTradeNo=" + verifyOutTradeNo + ", tradeNo=" + fulfillmentTradeNo);
             
             // 13. 发送履约确认到支付宝
-            boolean fulfillmentConfirmed = sendFulfillmentConfirm(verifyTradeNo);
+            boolean fulfillmentConfirmed = sendFulfillmentConfirm(fulfillmentTradeNo);
             if (!fulfillmentConfirmed) {
                 JSONObject errorResponse = new JSONObject();
                 errorResponse.put("code", "FULFILLMENT_CONFIRM_FAILED");
@@ -467,14 +481,14 @@ public class A2MPaymentDemoController {
             // order.setUpdatedAt(LocalDateTime.now());
             // orderRepository.save(order);
 
-            System.out.println("履约确认成功: outTradeNo=" + verifyOutTradeNo + ", tradeNo=" + verifyTradeNo);
+            System.out.println("履约确认成功: outTradeNo=" + verifyOutTradeNo + ", tradeNo=" + fulfillmentTradeNo);
             
             // payload 只包含最核心的验证信息
             JSONObject payload = new JSONObject();
-            payload.put("trade_no", verifyTradeNo);              // 支付宝订单号
+            payload.put("trade_no", fulfillmentTradeNo);         // 支付宝订单号
             payload.put("out_trade_no", verifyOutTradeNo);       // 商户订单号
             payload.put("validated", true);                // 验证通过标识
-            payload.put("resource_id", resourceId);        // 资源ID（校验用）
+            payload.put("resource_id", resourceIdVerified); // 资源ID（校验用）
 
             // Base64URL编码
             String paymentValidationEncoded = Base64.getUrlEncoder()
@@ -483,9 +497,9 @@ public class A2MPaymentDemoController {
 
             // 14. 返回资源内容
             JSONObject resourceContent = new JSONObject();
-            resourceContent.put("resource_id", resourceId);
+            resourceContent.put("resource_id", resourceIdVerified);
             resourceContent.put("content", serviceResult);
-            resourceContent.put("trade_no", verifyTradeNo);
+            resourceContent.put("trade_no", fulfillmentTradeNo);
             resourceContent.put("out_trade_no", verifyOutTradeNo);
             resourceContent.put("already_fulfilled", false);
             resourceContent.put("fulfillment_confirmed", true);
@@ -547,6 +561,11 @@ public class A2MPaymentDemoController {
      * @return 履约确认是否成功
      */
     private boolean sendFulfillmentConfirm(String tradeNo) {
+        if (tradeNo == null || tradeNo.trim().isEmpty()) {
+            System.err.println("履约确认失败: tradeNo 为空");
+            return false;
+        }
+
         try {
             System.out.println("开始发送履约确认: tradeNo=" + tradeNo);
             

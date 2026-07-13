@@ -1,7 +1,7 @@
 # 服务市场注册模块
 
 > 本文档定义按量付费产品的服务市场上架流程。**仅按量付费产品需要服务市场注册**。
-> 被引用文档：`SKILL.md` → Step 5 入驻推进 - 服务注册部分
+> 被引用文档：`onboarding/flow.md` → Step 3.1 服务查询 + Step 5.2 服务注册
 > 本文档位于 `references/onboarding/modules/`，文中的 `scripts/...` 路径相对本目录；从技能包根目录执行时对应 `references/onboarding/modules/scripts/...`。
 
 ---
@@ -32,11 +32,11 @@
 │    └─ 调用 discoverBazaarServicesForMcp                             │
 │                                                                     │
 │  Step 2: 判断服务列表                                                │
-│    ├─ serviceList 为空 → 进入 Step 3 交互式收集服务信息               │
-│    └─ serviceList 不为空 → 进入 Step 3 让用户选择操作                 │
+│    ├─ data.items 为空 → 进入 Step 3 收集服务信息                       │
+│    └─ data.items 不为空 → 展示完整分页结果后进入 Step 3 决策           │
 │                                                                     │
 │  Step 3: 用户决策                                                    │
-│    ├─ 选择序号（复用已有服务）→ 跳过创建，完成                        │
+│    ├─ 选择序号复用已有服务 → 跳过创建，完成                            │
 │    ├─ 选择"新建" → ⚠️ 检查服务数量，若 ≥ 20 则禁止创建                │
 │    │                 若 < 20，收集 5 项服务信息，进入 Step 4           │
 │    └─ 选择"修改" → 输入服务ID，收集所有服务信息，进入 Step 4          │
@@ -72,7 +72,7 @@
 
 ## Step 2: 根据查询结果执行不同分支
 
-### 场景 A：serviceList 为空（无已有服务）
+### 场景 A：服务列表为空（无已有服务）
 
 **此时必须进入 Step 3 收集服务信息并创建新服务。**
 
@@ -80,24 +80,24 @@
 >
 > ⚠️ 注意：服务数量上限为 20 个，`service.sh save` 在创建前会校验。
 
-### 场景 B：serviceList 不为空（有已有服务）
+### 场景 B：服务列表不为空（有已有服务）
 
-**此时必须让用户选择是复用已有服务还是创建新服务。**
+**此时必须按接口返回结果展示服务及其实际状态，让用户选择复用、创建或修改。Skill 不额外按状态过滤复用候选。**
 
 **输出格式：**
 
 ```markdown
 📋 发现您已有以下服务：
 
-| 序号 | 服务ID | 服务名称 | 描述 | 价格 | 状态 | 服务地址 |
-|------|--------|----------|------|------|------|----------|
+| 序号 | 服务ID | 服务名称 | 描述 | 价格 | 实际状态 | 服务地址 |
+|------|--------|----------|------|------|----------|----------|
 | 1 | SVC001 | 天气查询 | 提供全球天气查询 | 0.01元/次 | 已上架 | https://api.example.com/weather |
 | 2 | SVC002 | AI助手 | 智能对话服务 | 0.05元/次 | 审核中 | https://api.example.com/ai |
 
 请选择：
   • 输入序号（1/2）复用对应服务
   • 输入"新建"创建新服务
-  • 输入"修改"修改已有服务
+  • 输入"修改 + serviceId"修改已有服务
 ```
 
 > 📎 表格渲染由 `scripts/service.sh list` 自动完成，无需手动拼接。Agent 直接展示脚本输出即可。
@@ -110,9 +110,11 @@ Agent 根据用户输入执行对应分支：
 |----------|----------|
 | 数字序号（1-$SERVICE_COUNT） | 复用对应服务 → 跳过创建，直接进入应用发布 |
 | "新建" | 进入 Step 3 收集服务信息 → `bash scripts/service.sh save`（创建前自动校验数量 < 20） |
-| "修改" | 引导用户输入服务ID → 进入 Step 3 收集**所有**字段 → `bash scripts/service.sh save --service-id <id>` |
+| "修改 + serviceId" | 使用表格中展示的 serviceId → 进入 Step 3 收集**所有**字段 → `bash scripts/service.sh save --service-id <id>` |
 
 > ⚠️ 服务数量上限 20 个，由 `service.sh save` 在创建前自动校验。
+
+用户选择修改时可使用列表中展示的 `serviceId`。展示和记录接口返回的实际状态，不自行增加状态过滤、可用性结论或审核规则。
 
 ---
 
@@ -120,9 +122,9 @@ Agent 根据用户输入执行对应分支：
 
 **⚠️ 在以下情况需执行此步骤：**
 ```
-✅ serviceList 为空（无已有服务）→ 创建新服务
+✅ 服务列表为空（无已有服务）→ 创建新服务
 ✅ 用户选择"新建" → 创建新服务
-✅ 用户选择"修改" → 修改已有服务（需先输入服务ID）
+✅ 用户选择"修改" → 修改已有服务（提供表格中的 serviceId）
 ```
 
 **⚠️ 修改服务特别注意：**
@@ -141,10 +143,14 @@ Agent 根据用户输入执行对应分支：
 2. 服务描述（1-500 字符）：简要描述服务功能
 3. 服务地址（URL）：服务的 API 地址
 4. 服务单价（元，最低 0.01）：用户每次调用的费用
-5. 请求示例（JSON）：API 请求参数示例
+5. 请求示例（JSON）：API 请求参数示例，提交时作为 `schemaUrl` 字符串传入
 
-请依次提供以上信息。
+请在一条回复中一次性提供以上全部信息。修改服务时请同时提供表格中的 serviceId，不再单独增加一轮询问。
 ```
+
+只补问缺失或校验失败的字段。已经通过校验的字段必须保留，不要求用户重新提交；修改服务仍必须最终获得全部五项字段，禁止只提交局部字段。
+
+Agent 在当前任务中记录操作选择、serviceId 和五项服务资料。用户更正字段时只覆盖并重新校验该字段，其他未变化且已校验通过的字段继续复用；操作类型变化时清除不再适用的 serviceId 或创建资料。只补问缺失或校验失败字段，本模块的 `scripts/service.sh validate` 继续作为业务格式校验唯一来源。
 
 ### 入参校验规则
 
@@ -154,7 +160,9 @@ Agent 根据用户输入执行对应分支：
 | `serviceDesc` | 服务描述 | 长度 1-500 字符 | 服务描述长度需在 1-500 字符之间 |
 | `resourceUrl` | 服务地址 | 有效的 URL 格式（以 http:// 或 https:// 开头） | 请提供有效的 URL 地址 |
 | `pricing` | 服务单价 | 必须 >= 0.01 元 | 服务单价最低为 0.01 元 |
-| `schemaUrl` | 请求示例 | 有效的 JSON 格式 | 请提供有效的 JSON 格式请求示例 |
+| `schemaUrl` | 请求示例 | 有效的 JSON 格式；提交时序列化为字符串 | 请提供有效的 JSON 格式请求示例 |
+
+> `schemaUrl` 是 MCP 入参字段名，本流程中承载的是序列化后的 JSON 请求示例，不是 URL。用户提供原始 JSON，例如 `{}`；`scripts/service.sh` 校验 JSON 后将其作为字符串写入 `request.schemaUrl`。禁止因为字段名含 `Url` 而要求用户提供网页地址。
 
 ### 校验脚本
 
@@ -230,8 +238,15 @@ bash scripts/service.sh validate   --name "$SERVICE_NAME"   --desc "$SERVICE_DES
 
 | 查询方式 | 参数 | 说明 |
 |----------|------|------|
-| 查询已上线服务列表 | `{"request":{"serviceStatus":"ACTIVE"}}` | 返回所有已上架的服务列表 |
+| 查询服务列表 | `{"request":{"limit":20,"offset":0}}` | 返回接口可见的服务列表；脚本按 `pagination.total` 自动翻页并完整展示实际状态，不按状态过滤候选 |
 | 根据 serviceId 查询详情 | `{"request":{"keyword":"API_xxx"}}` | 返回指定服务的详细信息 |
+
+**查询返回处理：**
+
+- MCP 信封先通过共享 `unwrap_mcp` 解包 `content[0].text`。
+- 当前成功协议以 `code="10000"` 判断，服务数组读取 `data.items`，分页读取 `data.pagination.limit/offset/total`。
+- 脚本兼容旧成功协议中的 `success=true` 与 `resultObj.serviceList`，但不得用旧结构覆盖或猜测当前字段。
+- 只有明确取得成功响应中的空数组，才能判定没有已有服务；业务失败、字段缺失、分页不完整或候选缺少 `serviceId` 均必须阻断，禁止输出 `FLOW:CREATE_NEW` 或 `FLOW:SELECT`。
 
 **⚠️ saveBazaarServiceForMcp 创建/修改服务参数说明：**
 
@@ -240,12 +255,26 @@ bash scripts/service.sh validate   --name "$SERVICE_NAME"   --desc "$SERVICE_DES
 | 创建新服务 | serviceName, serviceDesc, resourceUrl, pricing, schemaUrl | 无需传入 serviceId |
 | 修改已有服务 | **serviceId**, serviceName, serviceDesc, resourceUrl, pricing, schemaUrl | **必须传入 serviceId + 所有资料信息** |
 
+其中 `schemaUrl` 按本模块约定传入序列化后的 JSON 请求示例。例如空请求示例的实际入参为：
+
+```json
+{
+  "request": {
+    "serviceName": "服务名称",
+    "serviceDesc": "服务描述",
+    "resourceUrl": "https://your-domain.com/callback",
+    "pricing": "0.6",
+    "schemaUrl": "{}"
+  }
+}
+```
+
 ### 正确调用示例
 
 > 📎 所有 MCP 调用均有对应脚本：
 
 ```bash
-# ✅ 查询已上线服务列表 → scripts/service.sh list
+# ✅ 查询服务列表 → scripts/service.sh list
 # ✅ 创建新服务 → scripts/service.sh save --name <name> --desc <desc> --url <url> --pricing <pricing> --schema <json>
 # ✅ 修改已有服务 → scripts/service.sh save --service-id <id> --name <name> --desc <desc> --url <url> --pricing <pricing> --schema <json>
 ```
@@ -272,10 +301,10 @@ export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call a2a-pay-service.saveBaza
 
 | 状态 | 说明 | 处理方式 |
 |------|------|----------|
-| `DRAFT` | 草稿 | 可继续编辑或提交审核 |
-| `PENDING` | 审核中 | 等待审核结果，服务暂不可用 |
-| `ONLINE` | 已上架 | 服务可被调用，可直接复用 |
-| `REJECTED` | 审核拒绝 | 引导用户联系客服或重新提交 |
+| `DRAFT` | 草稿 | 展示接口返回的实际状态，由用户决定后续操作 |
+| `PENDING` | 审核中 | 展示接口返回的实际状态，由用户决定后续操作 |
+| `ONLINE` | 已上架 | 展示接口返回的实际状态，由用户决定后续操作 |
+| `REJECTED` | 审核拒绝 | 展示接口返回的实际状态，由用户决定后续操作 |
 
 ---
 
@@ -283,8 +312,8 @@ export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call a2a-pay-service.saveBaza
 
 ```
 ❌ 禁止：未查询已有服务直接创建新服务
-❌ 禁止：在 Step 4 资料采集阶段收集 按量付费 的服务信息（服务信息在服务市场模块交互式收集）
-❌ 禁止：serviceList 不为空时直接创建新服务（必须让用户选择）
+❌ 禁止：未在 Step 3.1 成功查询已有服务就要求用户决定新建/修改或提供服务资料
+❌ 禁止：服务列表不为空时直接创建新服务（必须让用户选择）
 ❌ 禁止：用户选择复用已有服务后仍创建新服务
 ❌ 禁止：跳过服务信息校验直接提交
 ❌ 禁止：使用虚拟或自行推断的 MCP 方法

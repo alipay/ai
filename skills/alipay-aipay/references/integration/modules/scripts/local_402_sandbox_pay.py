@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 PAY_ENDPOINT = "http://aicashier.dl.alipaydev.com/openclawpay/agent/v1/pay"
 PAY_URL_PREFIX = "https://render.alipay.com/p/yuyan/180020010001290755/pay.html?schema="
+A2M_SANDBOX_SERVICE_ID = "api_mock_service_id"
 DEFAULT_PAYMENT_NEEDED_FILE = "/tmp/402_needed_file.txt"
 DEFAULT_PAY_RETRIES = 3
 DEFAULT_PAY_RETRY_DELAY_SECONDS = 2.0
@@ -462,6 +463,12 @@ def command_run(args: argparse.Namespace) -> int:
         )
 
     decoded_bill = b64decode_json(payment_needed)
+    method_data = decoded_bill.get("method") if isinstance(decoded_bill.get("method"), dict) else {}
+    if method_data.get("service_id") != A2M_SANDBOX_SERVICE_ID:
+        raise RuntimeError(
+            f"沙箱联调 method.service_id 必须为 {A2M_SANDBOX_SERVICE_ID}，"
+            "请修正用户服务的沙箱运行配置后重试"
+        )
     cashier_payload = build_cashier_payload(decoded_bill, buyer_id, args.buyer_signature)
 
     (artifact_dir / "payment_needed.txt").write_text(payment_needed, encoding="utf-8")
@@ -514,12 +521,13 @@ def command_run(args: argparse.Namespace) -> int:
             "errorMessage": pay_response.get("errorMessage"),
         }
         write_json(artifact_dir / "state.json", state)
+        retry_mode = " --auto-complete" if args.auto_complete else ""
         raise RuntimeError(
             "收银接口未返回 payScheme，无法生成付款链接。"
             f"过程产物已保存：{artifact_dir}。"
             "如果是 PAY_SUBMIT_FAILED/系统繁忙，可稍后复用同一个 Payment-Needed 重试：\n"
             f"python3 {shell_quote(Path(__file__).resolve())} run "
-            f"--reuse-artifact {shell_quote(artifact_dir)}"
+            f"--reuse-artifact {shell_quote(artifact_dir)}{retry_mode}"
         )
 
     pay_url = pay_url_from_response(pay_response)
@@ -528,9 +536,24 @@ def command_run(args: argparse.Namespace) -> int:
     state["tradeNo"] = trade_no
     write_json(artifact_dir / "state.json", state)
 
+    print(f"\n过程产物目录：{artifact_dir}")
+
+    if args.auto_complete:
+        print("\n继续执行 Payment-Proof 服务端联调...")
+        complete_args = argparse.Namespace(
+            artifact_dir=str(artifact_dir),
+            payment_proof=args.payment_proof,
+            buyer_signature=args.buyer_signature,
+        )
+        result = command_complete(complete_args)
+        if result == 0:
+            print("\n按量付费沙箱服务端联调通过。")
+            print("\n沙箱付款体验链接（可选）：")
+            print(pay_url)
+        return result
+
     print("\n请在浏览器打开以下链接，并使用沙箱买家账号完成付款：")
     print(pay_url)
-    print(f"\n过程产物目录：{artifact_dir}")
     print("付款成功后运行：")
     print(f"python3 {Path(__file__).resolve()} complete --artifact-dir {artifact_dir}")
 
@@ -619,7 +642,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--reuse-artifact", help="复用上一轮 run 产物中的 url/method/body/content-type/payment_needed")
     run_parser.add_argument("--pay-endpoint", default=PAY_ENDPOINT)
     run_parser.add_argument("--artifact-dir", help="生成过程产物的目录")
-    run_parser.add_argument("--payment-proof", help="使用 --wait 时可选的最终 payment_proof 值")
+    run_parser.add_argument(
+        "--payment-proof",
+        help="使用 --auto-complete 或 --wait 时可选的最终 payment_proof 值",
+    )
     run_parser.add_argument("--pay-retries", type=int, default=DEFAULT_PAY_RETRIES, help="沙箱收银接口临时失败时的重试次数")
     run_parser.add_argument(
         "--pay-retry-delay",
@@ -628,12 +654,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="沙箱收银接口重试间隔秒数",
     )
     run_parser.add_argument("--dry-run", action="store_true", help="调用收银接口前停止")
+    run_parser.add_argument(
+        "--auto-complete",
+        action="store_true",
+        help="生成付款链接后连续携带 Payment-Proof 重试原始服务",
+    )
     run_parser.add_argument("--wait", action="store_true", help="等待付款后立刻重试原始服务")
     run_parser.set_defaults(func=command_run)
 
     complete_parser = subparsers.add_parser("complete", help="携带 Payment-Proof 重试原始服务")
     complete_parser.add_argument("--artifact-dir", required=True, help="run 命令生成的过程产物目录")
-    complete_parser.add_argument("--payment-proof", help="可选 payment_proof；默认生成一个确定性的非空哈希")
+    complete_parser.add_argument("--payment-proof", help="可选 payment_proof；未传时由脚本按沙箱联调约定处理")
     complete_parser.add_argument("--buyer-signature", help="买家签名占位值")
     complete_parser.set_defaults(func=command_complete)
 

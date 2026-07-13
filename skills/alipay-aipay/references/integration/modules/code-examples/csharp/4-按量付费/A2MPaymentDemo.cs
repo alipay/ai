@@ -1,7 +1,12 @@
 /*
  * A2M 智能收产品接入示例 - C# 版本
+ *
+ * 本示例展示 A2M 核心协议与 SDK 调用流程。
+ * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
+ * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
+ * 禁止将本文件原样用于生产或判定为生产就绪。
  * 
- * 本文件演示完整的智能收产品接入流程：
+ * 本文件演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
  * 2. 验证 Payment-Proof 支付凭证
  * 3. 发送履约回执确认
@@ -45,7 +50,7 @@ namespace A2MPaymentDemo
         };
 
         private static readonly string SellerId = "<SELLER_ID_2088>"; // 商户 ID（2088 格式）
-        private static readonly string ServiceId = "<SERVICE_ID>"; // 商户服务 ID
+        private static readonly string ServiceId = "api_mock_service_id"; // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
         private static readonly string MerchantPrivateKey = "<APP_PRIVATE_KEY>"; // 请填写您的应用私钥（用于商家签名）
         
         private const string ResourcePath = "/demo/a2m/resource";
@@ -147,9 +152,9 @@ namespace A2MPaymentDemo
             }
 
             // 3. RSA2 签名
-            using (var rsa = new RSACryptoServiceProvider())
+            using (var rsa = RSA.Create())
             {
-                rsa.ImportPkcs8PrivateKey(Convert.FromBase64String(privateKey), out _);
+                rsa.ImportRSAPrivateKey(Convert.FromBase64String(privateKey), out _);
                 var signature = rsa.SignData(Encoding.UTF8.GetBytes(signContent.ToString()), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 return Convert.ToBase64String(signature);
             }
@@ -351,6 +356,8 @@ namespace A2MPaymentDemo
                 var verifyTradeNo = verifyResponse.TradeNo;
                 var verifyOutTradeNo = verifyResponse.OutTradeNo;
                 var resourceId = verifyResponse.ResourceId;
+                // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
+                var resourceIdVerified = string.IsNullOrWhiteSpace(resourceId) ? ResourcePath : resourceId;
                 var active = verifyResponse.Active;
 
                 Console.WriteLine($"支付凭证验证成功：tradeNo={verifyTradeNo}, outTradeNo={verifyOutTradeNo}");
@@ -374,7 +381,7 @@ namespace A2MPaymentDemo
                 // 8. 【TODO】履约防重放校验
 
                 // 9. 生成资源内容
-                var serviceResult = GenerateServiceResource(resourceId);
+                var serviceResult = GenerateServiceResource(resourceIdVerified);
 
                 // 10. 【TODO】履约记录落库
                 // 11. 【TODO】保存待确认履约状态
@@ -382,10 +389,11 @@ namespace A2MPaymentDemo
                 // fulfillment.confirm 成功后再标记 FULFILLED；如果确认失败，
                 // 允许同一笔 Payment-Proof 重试确认，避免误返回成功。
 
-                Console.WriteLine($"资源已生成，准备发送履约确认：outTradeNo={verifyOutTradeNo}, tradeNo={verifyTradeNo}");
+                var fulfillmentTradeNo = string.IsNullOrWhiteSpace(verifyTradeNo) ? tradeNo : verifyTradeNo;
+                Console.WriteLine($"资源已生成，准备发送履约确认：outTradeNo={verifyOutTradeNo}, tradeNo={fulfillmentTradeNo}");
 
                 // 12. 发送履约确认到支付宝，确认成功后才返回成功交付
-                var fulfillmentConfirmed = await SendFulfillmentConfirm(verifyTradeNo);
+                var fulfillmentConfirmed = await SendFulfillmentConfirm(fulfillmentTradeNo);
                 if (!fulfillmentConfirmed)
                 {
                     response.StatusCode = 502;
@@ -402,15 +410,15 @@ namespace A2MPaymentDemo
                 // order.FulfillStatus = "FULFILLED";
                 // order.FulfilledAt = DateTime.Now;
 
-                Console.WriteLine($"履约确认成功：outTradeNo={verifyOutTradeNo}, tradeNo={verifyTradeNo}");
+                Console.WriteLine($"履约确认成功：outTradeNo={verifyOutTradeNo}, tradeNo={fulfillmentTradeNo}");
 
                 // 13. 构造 Payment-Validation Header
                 var paymentValidation = new
                 {
-                    trade_no = verifyTradeNo,
+                    trade_no = fulfillmentTradeNo,
                     out_trade_no = verifyOutTradeNo,
                     validated = true,
-                    resource_id = resourceId
+                    resource_id = resourceIdVerified
                 };
 
                 var paymentValidationJson = JsonSerializer.Serialize(paymentValidation, new JsonSerializerOptions
@@ -422,9 +430,9 @@ namespace A2MPaymentDemo
                 // 14. 返回资源内容
                 var responseBody = new
                 {
-                    resource_id = resourceId,
+                    resource_id = resourceIdVerified,
                     content = serviceResult,
-                    trade_no = verifyTradeNo,
+                    trade_no = fulfillmentTradeNo,
                     out_trade_no = verifyOutTradeNo,
                     already_fulfilled = false,
                     fulfillment_confirmed = true
@@ -467,6 +475,12 @@ namespace A2MPaymentDemo
         /// </summary>
         private static async Task<bool> SendFulfillmentConfirm(string tradeNo)
         {
+            if (string.IsNullOrWhiteSpace(tradeNo))
+            {
+                Console.WriteLine("履约确认失败：tradeNo 为空");
+                return false;
+            }
+
             try
             {
                 Console.WriteLine($"开始发送履约确认：tradeNo={tradeNo}");

@@ -22,7 +22,7 @@
 
 ### 2.1 检查命令
 
-> 📎 已收口到脚本 `scripts/auth.sh init`。Agent 执行流程时调用 `bash scripts/auth.sh init`（见 flow.md Step 3），脚本返回 `AUTH_FLOW:SKIP`（已登录）或 `AUTH_FLOW:READY`（需新授权）。
+> 📎 已收口到脚本 `scripts/auth.sh init`。Agent 执行流程时调用 `bash scripts/auth.sh init`（见 flow.md Step 3）；脚本只有在登录有效且目标产品 scope、MCC 均校验通过后才返回 `AUTH_FLOW:SKIP`，需要新授权时返回 `AUTH_FLOW:READY`。校验不匹配时脚本返回对应信号并停止当前操作，不自行 logout；检查或校验无法完成时返回 `AUTH_FLOW:FAILED`，禁止进入状态查询。
 
 whoami 原始返回格式：
 
@@ -40,9 +40,11 @@ whoami 原始返回格式：
 
 **检查 `.data.logged_in` 字段（不是外层的 `.success`）**
 
+当前约定的 `whoami` 返回只用于校验登录是否有效、是否过期和授权 scope，不包含可依赖的账号主体标识。外部写操作摘要不得从该返回中编造主体名称；按 `../flow.md` Step 5 展示当前有效登录会话，有其他已验证查询返回非敏感主体标识时再脱敏展示，否则要求用户确认当前登录账号就是操作目标。
+
 | 返回值 | 状态 | 处理 |
 |--------|------|------|
-| `logged_in: true` + `is_expired: false` | 正常登录 | 继续后续步骤 |
+| `logged_in: true` + `is_expired: false` | 登录有效 | 继续校验目标产品 scope 和 MCC；均通过后才可进入后续步骤 |
 | `logged_in: false` 或 `is_expired: true` | 未登录/已过期 | 进入登录授权流程 |
 
 ---
@@ -50,6 +52,8 @@ whoami 原始返回格式：
 ## 三、授权前用户确认（强制）
 
 **在执行 `login` 命令前，必须先让用户确认产品类型和经营类目！**
+
+该确认可以由 `../flow.md` Step 2 的一次性方案确认或 `../../../SKILL.md` 的“完整接入编排”首次确认满足，但必须是用户对同一产品、经营类目和授权范围作出的明确确认。复用确认只减少重复询问，不降低本节要求；找不到有效确认记录、确认范围不同或信息发生变化时，必须按本节模板重新等待用户确认。
 
 ### 3.1 输出格式（Markdown）
 
@@ -85,7 +89,7 @@ whoami 原始返回格式：
 
 > 📎 已收口到脚本：`scripts/auth.sh init`（Step 2-4: login + 解析 + 校验）
 
-`auth.sh init` 自动执行 login、解析 device_code/verification_code/expires_in、三参数校验，无需手动执行。
+`auth.sh init` 自动执行 login、解析 device_code/verification_code/expires_in、三参数校验和最终授权链接完整性校验，无需手动执行。
 
 ### 4.2 解析返回结果
 
@@ -93,7 +97,7 @@ whoami 原始返回格式：
 
 ### 4.3 参数校验
 
-由 `auth.sh init` 自动校验 device_code、sales_code、mcc_code。
+由 `auth.sh init` 自动校验 device_code、sales_code、mcc_code，并在输出前确认最终授权链接至少包含 `deviceCode`、`productCode`、`mccCode` 三个必需参数。
 
 ---
 
@@ -102,7 +106,8 @@ whoami 原始返回格式：
 ### 5.1 链接格式
 
 ```
-✅ 正确链接：https://aipay.alipay.com/cli-auth?deviceCode=xxx&productCode=xxx&mccCode=xxx&platform=xxx
+✅ 正确链接：https://aipay.alipay.com/cli-auth?deviceCode=xxx&productCode=xxx&mccCode=xxx
+✅ 可选追加：platform=xxx
 
 ❌ 禁止使用：https://opengw.alipay.com/oauth/device （此链接无法授权）
 ```
@@ -113,9 +118,22 @@ whoami 原始返回格式：
 
 `auth.sh init` 自动构建正确的授权链接（`https://aipay.alipay.com/cli-auth?...`），禁止使用 CLI 返回的 `verification_url`。
 
+授权链接输出前必须完成完整性校验。缺少 `deviceCode`、`productCode`、`mccCode` 任一必需参数，或链接域名不是 `https://aipay.alipay.com/cli-auth` 时，必须阻断，不得把半成品链接展示给用户。`platform` 为可选参数，不得因缺少 `platform` 阻断。
+
 ### 5.3 ⚠️ 禁止透出 verification_url
 
 CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于授权，禁止透出给用户！**
+
+### 5.4 ⚠️ 授权链接与确认码红线
+
+```
+❌ 禁止：展示 https://opengw.alipay.com/oauth/device 或任何 CLI verification_url
+❌ 禁止：展示缺少 productCode 或 mccCode 的 https://aipay.alipay.com/cli-auth 半成品链接
+❌ 禁止：让用户“输入验证码”
+❌ 禁止：把确认码说成验证码、校验码或需要用户手动输入的内容
+✅ 必须：把 login 返回的 verification_code 展示为“确认码”
+✅ 必须：提示用户在授权页面核对确认码是否一致；确认码仅用于核对，不用于输入
+```
 
 ---
 
@@ -151,6 +169,11 @@ CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于
 请在完成授权后告诉我"好了"继续后续流程。
 ```
 
+**输出红线：**
+- `auth.sh init` 的输出模板是唯一授权提示模板；Agent 不得自行简写、重排或改写为“授权确认/步骤/输入验证码”等其他格式。
+- 确认码只用于用户核对授权页面展示内容，绝不是让用户输入的验证码。
+- 授权链接必须使用完整 Markdown 链接 `[点击跳转进行授权]({BROWSER_URL})`，不得只输出裸链接替代模板。
+
 ---
 
 ## 七、授权确认
@@ -159,7 +182,7 @@ CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于
 
 > 📎 已收口到脚本 `scripts/auth.sh confirm`。Agent 在用户回复"好了"后调用 `bash scripts/auth.sh confirm --scope "$SCOPE" --sales-code "$SALES_CODE" --mcc-code "$MCC_CODE" --product-name "$PRODUCT_NAME" --mcc-name "$MCC_NAME"`（见 flow.md Step 3）。
 
-脚本内部执行 `login --complete` + scope 校验 + MCC 校验。原始返回格式：
+脚本内部执行 `login --complete` + scope 校验 + MCC 校验。授权上下文处理规则：
 
 > `confirm` / `mismatch` 优先使用显式传入的 `salesCode`、`mccCode`、`scope`、`productName`、`mccName` 等非敏感授权上下文。`auth.sh init` 仍会短期保存本地状态文件，仅用于独立执行子命令时兜底恢复参数。授权成功、过期或失败后脚本会清理该状态文件。
 
@@ -167,11 +190,11 @@ CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于
 
 | 脚本输出 | 含义 | 处理 |
 |----------|------|------|
-| `AUTH_FLOW:AUTH_SUCCESS` | 授权成功，scope + MCC 校验通过 | 继续 Step 3.1 |
+| `AUTH_FLOW:AUTH_SUCCESS` | 授权成功，scope + MCC 校验通过 | 继续 Step 3.1 状态与资源查询 |
 | `AUTH_FLOW:PENDING` | 用户尚未完成授权 | 继续等待 |
 | `AUTH_FLOW:EXPIRED` | 授权链接已过期 | 重新执行 auth.sh init |
-| `AUTH_FLOW:SCOPE_MISMATCH` | scope 权限不满足 | 已自动 logout，需重新授权 |
-| `AUTH_FLOW:MCC_MISMATCH` | 经营类目未授权 | 已自动 logout，需重新授权 |
+| `AUTH_FLOW:SCOPE_MISMATCH` | scope 权限不满足 | 调用 `auth.sh mismatch`，由其 logout 后重新授权 |
+| `AUTH_FLOW:MCC_MISMATCH` | 经营类目未授权 | 调用 `auth.sh mismatch`，由其 logout 后重新授权 |
 | `AUTH_FLOW:FAILED` | 授权确认返回未知错误 | 检查返回信息，联系技术支持 |
 
 ### 7.3 ⚠️ 禁止轮询
@@ -185,16 +208,16 @@ CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于
 
 > 📎 已收口到脚本：`scripts/auth.sh confirm`（Step 3-6: scope + MCC 校验）
 
-`auth.sh confirm` 在 `login --complete` 成功后自动执行 scope 校验和 MCC 校验，失败时自动 logout。Agent 只需根据脚本返回值判断结果：
+`auth.sh init` 对已有有效登录、`auth.sh confirm` 对本次完成的授权都自动执行同一套 scope 和 MCC 校验；不匹配时返回信号并停止当前操作。Agent 只需根据脚本返回值判断结果：
 
 | 脚本输出 | 后续操作 |
 |----------|----------|
-| `AUTH_FLOW:AUTH_SUCCESS` | 进入 Step 3.1 签约状态查询 |
-| `AUTH_FLOW:SCOPE_MISMATCH` / `AUTH_FLOW:MCC_MISMATCH` | 调用 `auth.sh mismatch` 重新授权 |
+| `AUTH_FLOW:SKIP` / `AUTH_FLOW:AUTH_SUCCESS` | 进入 Step 3.1 状态与资源查询 |
+| `AUTH_FLOW:SCOPE_MISMATCH` / `AUTH_FLOW:MCC_MISMATCH` | 调用 `auth.sh mismatch`，由其 logout 后重新授权 |
 
 #### 7.4.1 校验实现
 
-由 `auth.sh confirm` 自动完成，无需手动执行。
+由 `auth.sh init`（已有有效登录）和 `auth.sh confirm`（本次授权完成）自动完成，无需手动执行。
 
 **为什么需要这两个校验**：
 - `login --complete` 只确认用户完成了扫码，不代表授权范围满足业务需求
@@ -211,13 +234,13 @@ CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于
 **当检测到授权范围不满足时，必须执行 logout 然后重新授权。**
 
 触发条件：
-1. `auth.sh confirm` 返回 `AUTH_FLOW:SCOPE_MISMATCH` / `AUTH_FLOW:MCC_MISMATCH`
+1. `auth.sh init` 或 `auth.sh confirm` 返回 `AUTH_FLOW:SCOPE_MISMATCH` / `AUTH_FLOW:MCC_MISMATCH`
 2. MCP 调用返回 `mccCode is not auth` 错误
 3. MCP 调用返回 `scope is not auth` 错误
 
 处理流程：
 
-> 📎 已收口到脚本 `scripts/auth.sh mismatch`。Agent 调用 `bash scripts/auth.sh mismatch --scope "$SCOPE" --sales-code "$SALES_CODE" --mcc-code "$MCC_CODE" --product-name "$PRODUCT_NAME" --mcc-name "$MCC_NAME"`（见 flow.md Step 3），脚本自动执行 logout + 调用 auth init 重新授权。
+> 📎 `scripts/auth.sh init` / `confirm` 和 `error_handler.sh` 只返回或提示授权不匹配并停止当前操作，不执行 logout。Agent 随后调用 `bash scripts/auth.sh mismatch --scope "$SCOPE" --sales-code "$SALES_CODE" --mcc-code "$MCC_CODE" --product-name "$PRODUCT_NAME" --mcc-name "$MCC_NAME"`（见 flow.md Step 3）；该子命令是此恢复路径唯一的 logout 入口，退出成功后再调用 auth init 重新授权。
 
 ### 8.2 禁止行为
 
@@ -229,14 +252,14 @@ CLI 返回的 JSON 中包含 `verification_url` 字段，**此链接无法用于
 
 ---
 
-## 九、重新授权三参数铁律
+## 九、授权链接参数铁律
 
-**三个强参数（deviceCode、productCode、mccCode）必须齐全，platform 为可选参数。**
+**最终展示给用户的授权链接必须包含 `deviceCode`、`productCode`、`mccCode` 三个必需参数。`platform` 为可选参数；脚本可由 `DEV_TOOL_NAME` 追加，缺失时不得阻断授权。**
 
-| 场景 | deviceCode 来源 | productCode 来源 | mccCode 来源 |
-|------|-----------------|------------------|--------------|
-| 首次授权 | login 返回 | Step 2 确认的 salesCode | Step 2 推荐的类目编码 |
-| 重新授权 | 新 login 返回 | 显式参数或状态文件 salesCode | 显式参数或状态文件 mccCode |
+| 场景 | deviceCode 来源 | productCode 来源 | mccCode 来源 | platform 来源 |
+|------|-----------------|------------------|--------------|-------------|
+| 首次授权 | login 返回 | Step 2 确认的 salesCode | Step 2 推荐的类目编码 | 可选，来自 `DEV_TOOL_NAME` |
+| 重新授权 | 新 login 返回 | 显式参数或状态文件 salesCode | 显式参数或状态文件 mccCode | 可选，来自 `DEV_TOOL_NAME` |
 
 > ⚠️ **显式参数和状态文件只包含授权链路恢复所需的非敏感上下文，不包含密钥、私钥或业务凭据。**
 
@@ -248,6 +271,8 @@ if [ -z "$DEVICE_CODE" ] || [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ]; then
   exit 1
 fi
 ```
+
+授权链接由 `auth.sh init` 统一构建并做最终完整性校验；Agent 不得手写、简写或改写授权链接。
 
 ---
 

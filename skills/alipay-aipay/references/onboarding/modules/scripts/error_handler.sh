@@ -244,6 +244,8 @@ detect_error() {
 
 # ─── MCP 认证错误处理 ──────────────────────────────────────────────────────
 handle_mcp_auth_error() {
+  local LOGOUT_RESULT LOGOUT_EXIT_CODE LOGOUT_ERROR_TYPE LOGOUT_ERROR_MSG
+
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "🔐 未登录或授权已过期"
@@ -255,7 +257,22 @@ handle_mcp_auth_error() {
   echo "📋 说明：Authorization is empty（认证信息为空）"
   echo ""
   echo "🔄 正在退出当前登录..."
-  export PLATFORM=${DEV_TOOL_NAME:-unknown} && alipay-cli logout --json 2>/dev/null
+  LOGOUT_RESULT=$(PLATFORM=${DEV_TOOL_NAME:-unknown} alipay-cli logout --json 2>&1)
+  LOGOUT_EXIT_CODE=$?
+  LOGOUT_ERROR_TYPE=$(detect_error "$LOGOUT_RESULT")
+
+  if [ "$LOGOUT_EXIT_CODE" -ne 0 ] || [ "$LOGOUT_ERROR_TYPE" != "SUCCESS" ]; then
+    echo ""
+    echo "❌ 退出当前登录失败，已停止重新授权"
+    if echo "$LOGOUT_RESULT" | jq -e . >/dev/null 2>&1; then
+      LOGOUT_ERROR_MSG=$(extract_error_message "$LOGOUT_RESULT")
+      echo "📋 错误信息：$LOGOUT_ERROR_MSG"
+    elif [ -n "$LOGOUT_RESULT" ]; then
+      echo "📋 错误信息：$LOGOUT_RESULT"
+    fi
+    echo "📋 请先重试退出登录；确认退出成功后再重新授权。"
+    return 1
+  fi
 
   echo ""
   echo "✅ 已退出登录状态"
@@ -265,7 +282,7 @@ handle_mcp_auth_error() {
   echo "   2. 您使用支付宝扫码授权"
   echo "   3. 授权成功后继续当前操作"
   echo ""
-  echo "请回复「继续」开始重新授权，或「退出」结束流程。"
+  echo "📌 产品、MCC 和授权范围未变化时，沿用已有确认立即重新生成授权链接；发生变化时先重新确认受影响内容。"
 }
 
 # ─── MCP 服务不可用处理 ────────────────────────────────────────────────────
@@ -322,11 +339,8 @@ handle_auth_mismatch() {
 
   echo ""
   echo ""
-
-  echo "🔄 正在退出当前登录..."
-  export PLATFORM=${DEV_TOOL_NAME:-unknown} && alipay-cli logout --json 2>/dev/null
-
-  echo "✅ 已退出登录，请重新执行登录授权流程"
+  echo "⛔ 已停止当前操作和后续调用"
+  echo "📋 请调用 auth.sh mismatch；该命令会统一退出当前登录并使用正确范围重新授权"
 }
 
 # ─── 后端业务错误处理（完整透出错误信息） ──────────────────────────────────

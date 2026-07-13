@@ -16,9 +16,9 @@
 | `unwrap_mcp` | MCP 信封解包，提取 `content[0].text` 中的业务 JSON；非信封结构原样透传 | 解包后的 JSON 字符串 |
 | `detect_error` | 统一错误检测入口，自动解包 MCP 信封后按优先级匹配所有错误类型 | `MCP_AUTH_ERROR` / `MCP_SERVICE_ERROR` / `AUTH_MISMATCH` / `SERVICE_UNSTABLE` / `ERROR:xxx` / `CLI_ERROR:xxx` / `SUCCESS` |
 | `handle_error` | 统一错误处理入口，调用 `detect_error` 后路由到对应 handler（内含 `unwrap_mcp` 自动解包信封） | `0`=成功, `1`=需用户干预 |
-| `handle_mcp_auth_error` | 处理 MCP 认证错误（HTTP 401），执行 logout + 引导重新授权 | - |
+| `handle_mcp_auth_error` | 处理 MCP 认证错误（HTTP 401），校验 logout 成功后再引导重新授权；logout 失败时阻断 | - |
 | `handle_mcp_service_error` | 处理 MCP 服务不可用（网络/连接错误）；沙箱化 Agent 环境提示申请可联网权限重试同一命令，其他环境提示检查网络 | - |
-| `handle_auth_mismatch` | 处理授权不匹配（MCC/产品/scope），执行 logout + 引导重新授权 | - |
+| `handle_auth_mismatch` | 识别授权不匹配（MCC/产品/scope），停止当前操作并引导调用 `auth.sh mismatch` | - |
 | `handle_service_unstable` | 处理 MCP 服务不稳定，提示稍后重试 | - |
 | `handle_backend_error` | 处理后端业务错误（errorCode），展示错误信息、bizTips、checkedError | - |
 
@@ -38,7 +38,8 @@
 
 ### 处理原则
 ```
-✅ 检测到 HTTP 401 → 退出当前登录 → 引导用户重新授权
+✅ 检测到 HTTP 401 → 执行并校验 logout → 仅退出成功后引导用户重新授权
+❌ logout 失败 → 明确报错并停止重新授权，禁止宣称已退出登录
 ✅ 清理对话上下文中的授权相关数据
 ✅ 提供清晰的错误说明和下一步操作指引
 ❌ 禁止自动重试 MCP 调用（会导致相同的认证错误）
@@ -100,8 +101,9 @@
 
 ### 处理原则
 ```
-✅ 检测到授权不匹配 → 执行 logout 退出登录 → 调用 auth.sh mismatch 重新授权
+✅ 检测到授权不匹配 → 停止当前操作 → 调用 auth.sh mismatch → 由 mismatch 执行 logout 后重新授权
 ✅ 重新授权时使用正确的 scope（根据当前 salesCode 确定）
+✅ 多查询流程中检测到认证失败或授权不匹配 → 立即停止剩余查询；重新授权后只恢复未执行查询，主体无法确认一致时重新查询全部适用状态
 ❌ 禁止：检测到授权范围不满足后继续执行后续操作
 ❌ 禁止：不执行 logout 直接重新登录
 ```
@@ -230,10 +232,11 @@ SUCCESS=$(echo "$BUSINESS" | jq -r '.success // false')
 
 | Step | MCP 调用位置 | 建议使用的检测函数 |
 |------|---------------|-------------------|
-| Step 1 环境检查 | CLI whoami / login | 由 `auth.sh` 内置处理 |
-| Step 3 登录授权 | login --complete / logout | 由 `auth.sh` 内置处理 |
-| Step 3.1 签约状态查询 | ar-query.queryArInfosBySalesProd | 由 `query_sign_status.sh` 内置（source error_handler.sh；建议设置 PRODUCT_TYPE 做产品码一致性校验） |
-| Step 4 资料采集 | file upload | 由 `upload_screenshots.sh` 内置（source error_handler.sh + unwrap_mcp 解包信封） |
+| Step 1 环境检查 | alipay-cli 可用性与安装检查 | 由 `../../normal/alipay-cli-env.md` 处理，不执行登录状态预检 |
+| Step 3 登录授权 | whoami / login / login --complete / logout | 由 `auth.sh` 内置处理 |
+| Step 3.1 状态与资源查询（签约状态） | ar-query.queryArInfosBySalesProd | 由 `query_sign_status.sh` 内置（source error_handler.sh；建议设置 PRODUCT_TYPE 做产品码一致性校验） |
+| Step 3.1 应用/服务资源查询 | apprelease.queryApplicationList / a2a-pay-service.discoverBazaarServicesForMcp | 分别由 `app.sh list` / `service.sh list` 内置，禁止将失败结果当作空列表 |
+| Step 4 一次性资料与资源决策 | file upload | 由 `upload_screenshots.sh` 内置（source error_handler.sh + unwrap_mcp 解包信封） |
 | Step 5.1 产品签约 | ar-sign.apply | 由 `ar_sign_apply.sh` 内置（source error_handler.sh） |
 | Step 5.2 服务注册 | a2a-pay-service.* | 由 `service.sh` 内置（source error_handler.sh） |
 | Step 5.3 应用发布 | apprelease.* | 由 `app.sh` 内置（source error_handler.sh） |

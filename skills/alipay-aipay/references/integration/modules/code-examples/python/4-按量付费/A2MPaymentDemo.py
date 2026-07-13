@@ -3,14 +3,19 @@
 """
 A2M 智能收产品接入示例 - Python 版本
 
-本文件演示完整的智能收产品接入流程：
+本示例展示 A2M 核心协议与 SDK 调用流程。
+订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
+需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
+禁止将本文件原样用于生产或判定为生产就绪。
+
+本文件演示 A2M 核心协议调用流程：
 1. 返回 402 Payment-Needed Header
 2. 验证 Payment-Proof 支付凭证
 3. 发送履约回执确认
 4. 返回资源内容
 
 依赖安装：
-pip install flask alipay-sdk-python
+pip install flask alipay-sdk-python pycryptodome
 
 注意：Python SDK 3.7+ 版本必须使用 Model 类（如 AlipayAipayAgentPaymentVerifyModel），
 不能直接使用 dict 赋值给 biz_model，因为 SDK 会调用 to_alipay_dict() 方法。
@@ -41,7 +46,7 @@ ALIPAY_CONFIG = {
     'alipayPublicKey': '<ALIPAY_PUBLIC_KEY>',  # 请填写您的支付宝公钥
     'gateway': 'https://openapi.alipay.com/gateway.do',
     'sellerId': '<SELLER_ID_2088>',  # 商户 ID（2088 格式）
-    'serviceId': '<SERVICE_ID>',  # 商户服务 ID
+    'serviceId': 'api_mock_service_id',  # 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
     'merchantPrivateKey': '<APP_PRIVATE_KEY>'  # 请填写您的应用私钥（用于商家签名）
 }
 
@@ -96,8 +101,9 @@ def generate_seller_signature(params, private_key):
     
     sign_string = '&'.join(sign_content)
     
-    # 3. RSA2 签名
-    key = RSA.import_key(private_key)
+    # 3. 将裸 PKCS#1 Base64 临时解码为 DER 密钥对象，不修改原始配置。
+    key_der = base64.b64decode(private_key, validate=True)
+    key = RSA.import_key(key_der)
     h = SHA256.new(sign_string.encode('utf-8'))
     signature = pkcs1_15.new(key).sign(h)
     
@@ -143,7 +149,7 @@ def handle_resource():
     """
     智能收产品统一接口
     
-    完整流程演示：
+    核心协议流程演示：
     1. 不带 Payment-Proof Header：返回 HTTP 402 + Payment-Needed Header
     2. 带 Payment-Proof Header：验证支付 → 自动履约 → 返回资源
     """
@@ -306,9 +312,11 @@ def verify_payment_and_deliver_resource(payment_proof):
             }, status_code=400)
         
         # 4. 验证成功，获取订单信息
-        verify_trade_no = response_data.get('trade_no')
-        verify_out_trade_no = response_data.get('out_trade_no')
-        resource_id = response_data.get('resource_id')
+        verify_trade_no = response_data.get('trade_no') or response_data.get('tradeNo') or ''
+        verify_out_trade_no = response_data.get('out_trade_no') or response_data.get('outTradeNo') or ''
+        resource_id = response_data.get('resource_id') or response_data.get('resourceId') or ''
+        # 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
+        resource_id_verified = resource_id or RESOURCE_CONFIG['path']
         active = response_data.get('active')
         
         print(f"支付凭证验证成功：tradeNo={verify_trade_no}, outTradeNo={verify_out_trade_no}")
@@ -345,7 +353,7 @@ def verify_payment_and_deliver_resource(payment_proof):
         #     }, status_code=200)
         
         # 9. 生成资源内容
-        service_result = generate_service_resource(resource_id)
+        service_result = generate_service_resource(resource_id_verified)
         
         # 10. 【TODO】履约记录落库
         # fulfillment_record_repository.save({...})
@@ -361,11 +369,12 @@ def verify_payment_and_deliver_resource(payment_proof):
         #     'service_result': service_result
         # })
 
-        print(f"资源已生成，准备发送履约确认：outTradeNo={verify_out_trade_no}, tradeNo={verify_trade_no}")
+        fulfillment_trade_no = verify_trade_no or trade_no
+        print(f"资源已生成，准备发送履约确认：outTradeNo={verify_out_trade_no}, tradeNo={fulfillment_trade_no}")
 
         # 12. 发送履约确认到支付宝，确认成功后才返回成功交付
         # 注意：同样需要使用 Model 类
-        if not send_fulfillment_confirm(verify_trade_no):
+        if not send_fulfillment_confirm(fulfillment_trade_no):
             return json_response({
                 'code': 'FULFILLMENT_CONFIRM_FAILED',
                 'message': '资源已生成但履约确认失败，请稍后使用同一 Payment-Proof 重试'
@@ -377,23 +386,23 @@ def verify_payment_and_deliver_resource(payment_proof):
         #     'fulfilled_at': datetime.now(timezone.utc).astimezone().isoformat()
         # })
 
-        print(f"履约确认成功：outTradeNo={verify_out_trade_no}, tradeNo={verify_trade_no}")
+        print(f"履约确认成功：outTradeNo={verify_out_trade_no}, tradeNo={fulfillment_trade_no}")
         
         # 13. 构造 Payment-Validation Header
         payment_validation = {
-            'trade_no': verify_trade_no,
+            'trade_no': fulfillment_trade_no,
             'out_trade_no': verify_out_trade_no,
             'validated': True,
-            'resource_id': resource_id
+            'resource_id': resource_id_verified
         }
         
         payment_validation_encoded = base64url_encode(json.dumps(payment_validation, ensure_ascii=False))
         
         # 14. 返回资源内容
         return json_response({
-            'resource_id': resource_id,
+            'resource_id': resource_id_verified,
             'content': service_result,
-            'trade_no': verify_trade_no,
+            'trade_no': fulfillment_trade_no,
             'out_trade_no': verify_out_trade_no,
             'already_fulfilled': False,
             'fulfillment_confirmed': True
@@ -420,6 +429,10 @@ def generate_service_resource(resource_id):
 
 def send_fulfillment_confirm(trade_no):
     """发送履约确认"""
+    if not trade_no:
+        print("履约确认失败：tradeNo 为空")
+        return False
+
     try:
         print(f"开始发送履约确认：tradeNo={trade_no}")
         

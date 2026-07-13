@@ -1,14 +1,19 @@
 /**
  * A2M 智能收产品接入示例 - Node.js 版本
+ *
+ * 本示例展示 A2M 核心协议与 SDK 调用流程。
+ * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
+ * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
+ * 禁止将本文件原样用于生产或判定为生产就绪。
  * 
- * 本文件演示完整的智能收产品接入流程：
+ * 本文件演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
  * 2. 验证 Payment-Proof 支付凭证
  * 3. 发送履约回执确认
  * 4. 返回资源内容
  * 
  * 依赖安装：
- * npm install express alipay-sdk crypto-js
+ * npm install express alipay-sdk
  */
 
 const express = require('express');
@@ -18,17 +23,17 @@ const crypto = require('crypto');
 const app = express();
 const PORT = 3000;
 
-// ==================== 配置信息（实际使用时请从配置中心读取）====================
+// ==================== 配置信息（实际使用时请从受保护的配置读取）====================
 const CONFIG = {
   // 支付宝配置
   alipay: {
-    appId: '<APP_ID>',
-    privateKey: '<APP_PRIVATE_KEY>', // 请填写您的应用私钥（PKCS#1 格式）
-    alipayPublicKey: '<ALIPAY_PUBLIC_KEY>', // 请填写您的支付宝公钥
+    appId: '<APP_ID>', // 运行时映射沙箱 appId
+    privateKey: '<APP_PRIVATE_KEY>', // 运行时映射 appPrivatePkcsKey（PKCS#1）
+    alipayPublicKey: '<ALIPAY_PUBLIC_KEY>', // 运行时映射 alipayPublicKey
     gateway: 'https://openapi.alipay.com/gateway.do',
     sellerId: '<SELLER_ID_2088>', // 商户 ID（2088 格式）
-    serviceId: '<SERVICE_ID>', // 商户服务 ID
-    merchantPrivateKey: '<APP_PRIVATE_KEY>' // 请填写您的应用私钥（用于商家签名）
+    serviceId: 'api_mock_service_id', // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
+    merchantPrivateKey: '<APP_PRIVATE_KEY>' // 与 privateKey 使用同一运行时配置，用于商家签名
   },
   // 资源服务配置
   resource: {
@@ -43,6 +48,7 @@ const alipaySdk = new AlipaySdk({
   privateKey: CONFIG.alipay.privateKey,
   alipayPublicKey: CONFIG.alipay.alipayPublicKey,
   gateway: CONFIG.alipay.gateway,
+  timeout: 30000,
 });
 
 // ==================== 工具方法 ====================
@@ -74,11 +80,16 @@ function generateSellerSignature(params, privateKey) {
     })
     .join('&');
   
-  // 3. RSA2 签名
+  // 3. 将裸 PKCS#1 Base64 临时解析为 DER 密钥对象，不修改原始配置。
+  const sellerPrivateKey = crypto.createPrivateKey({
+    key: Buffer.from(privateKey, 'base64'),
+    format: 'der',
+    type: 'pkcs1'
+  });
   const sign = crypto
     .createSign('RSA-SHA256')
     .update(signContent, 'utf8')
-    .sign(privateKey, 'base64');
+    .sign(sellerPrivateKey, 'base64');
   
   return sign;
 }
@@ -132,7 +143,7 @@ function base64UrlDecode(str) {
 /**
  * 智能收产品统一接口
  * 
- * 完整流程演示：
+ * 核心协议流程演示：
  * 1. 不带 Payment-Proof Header：返回 HTTP 402 + Payment-Needed Header
  * 2. 带 Payment-Proof Header：验证支付 → 自动履约 → 返回资源
  * 
@@ -283,24 +294,37 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     });
     
     // 3. 验证失败，返回错误
-    // 注意：SDK 返回的响应可能是扁平结构（code/trade_no 在顶层），
-    // 也可能嵌套在 alipay_aipay_agent_payment_verify_response 键下，需兼容两种情况
-    const responseData = verifyResponse.alipay_aipay_agent_payment_verify_response || verifyResponse;
-    if (responseData.code !== '10000') {
-      console.error('支付凭证验证失败:', responseData.sub_msg);
+    // SDK 可能返回嵌套响应，也可能直接返回业务字段。
+    const nestedResponse = verifyResponse.alipay_aipay_agent_payment_verify_response;
+    const responseData = nestedResponse || verifyResponse;
+
+    if (responseData.code !== '10000' && responseData.code !== 10000) {
+      const errorCode = responseData.sub_code || responseData.errorCode;
+      const errorMessage = responseData.sub_msg || responseData.msg || '支付凭证验证失败';
+      console.error('支付凭证验证失败:', errorMessage);
       return res.status(400).json({
-        code: responseData.sub_code,
-        message: responseData.sub_msg
+        code: errorCode,
+        message: errorMessage
       });
     }
     
     // 4. 验证成功，获取订单信息
-    const {
-      trade_no: verifyTradeNo,
-      out_trade_no: verifyOutTradeNo,
-      resource_id: resourceId,
-      active
-    } = responseData;
+    // 同时兼容 SDK 的 snake_case 与 camelCase 业务字段。
+    const verifyTradeNo = responseData.trade_no || responseData.tradeNo || '';
+    const verifyOutTradeNo = responseData.out_trade_no || responseData.outTradeNo || '';
+    // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
+    const resourceIdVerified = responseData.resource_id || responseData.resourceId || CONFIG.resource.path;
+    const active = responseData.active;
+
+    if (process.env.A2M_DEBUG === 'true') {
+      console.log('验付响应字段:', {
+        code: responseData.code,
+        tradeNo: verifyTradeNo,
+        outTradeNo: verifyOutTradeNo,
+        resourceId: resourceIdVerified,
+        active
+      });
+    }
     
     console.log(`支付凭证验证成功：tradeNo=${verifyTradeNo}, outTradeNo=${verifyOutTradeNo}`);
     
@@ -323,7 +347,7 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     // }
     
     // 7. 【TODO】资源防串校验
-    // if (resourceId !== order.resourceId) {
+    // if (resourceIdVerified !== order.resourceId) {
     //   return res.status(403).json({
     //     code: 'RESOURCE_ID_MISMATCH',
     //     message: '资源 ID 不匹配，可能存在资源串改风险'
@@ -340,7 +364,7 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     // }
     
     // 9. 执行业务逻辑，生成资源内容
-    const serviceResult = generateServiceResource(resourceId);
+    const serviceResult = generateServiceResource(resourceIdVerified);
     
     // 10. 【TODO】履约记录落库（用于审计/售后/对账）
     // await fulfillmentRecordRepository.save({ ... });
@@ -356,10 +380,11 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     //   serviceResult
     // });
     
-    console.log(`资源已生成，准备发送履约确认：outTradeNo=${verifyOutTradeNo}, tradeNo=${verifyTradeNo}`);
-    
     // 12. 发送履约确认到支付宝，确认成功后才返回成功交付
-    const fulfillmentConfirmed = await sendFulfillmentConfirm(verifyTradeNo);
+    const fulfillmentTradeNo = verifyTradeNo || tradeNo;
+    console.log(`资源已生成，准备发送履约确认：outTradeNo=${verifyOutTradeNo}, tradeNo=${fulfillmentTradeNo}`);
+
+    const fulfillmentConfirmed = await sendFulfillmentConfirm(fulfillmentTradeNo);
     if (!fulfillmentConfirmed) {
       return res.status(502).json({
         code: 'FULFILLMENT_CONFIRM_FAILED',
@@ -373,14 +398,14 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     //   fulfilledAt: new Date()
     // });
 
-    console.log(`履约确认成功：outTradeNo=${verifyOutTradeNo}, tradeNo=${verifyTradeNo}`);
+    console.log(`履约确认成功：outTradeNo=${verifyOutTradeNo}, tradeNo=${fulfillmentTradeNo}`);
     
     // 13. 构造 Payment-Validation Header
     const paymentValidation = {
-      trade_no: verifyTradeNo,
+      trade_no: fulfillmentTradeNo,
       out_trade_no: verifyOutTradeNo,
       validated: true,
-      resource_id: resourceId
+      resource_id: resourceIdVerified
     };
     
     const paymentValidationEncoded = base64UrlEncode(JSON.stringify(paymentValidation));
@@ -388,9 +413,9 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     
     // 14. 返回资源内容
     res.json({
-      resource_id: resourceId,
+      resource_id: resourceIdVerified,
       content: serviceResult,
-      trade_no: verifyTradeNo,
+      trade_no: fulfillmentTradeNo,
       out_trade_no: verifyOutTradeNo,
       already_fulfilled: false,
       fulfillment_confirmed: true
@@ -422,6 +447,11 @@ function generateServiceResource(resourceId) {
  * 发送履约确认
  */
 async function sendFulfillmentConfirm(tradeNo) {
+  if (!tradeNo) {
+    console.error('履约确认失败：tradeNo 为空');
+    return false;
+  }
+
   try {
     console.log(`开始发送履约确认：tradeNo=${tradeNo}`);
     
@@ -433,11 +463,13 @@ async function sendFulfillmentConfirm(tradeNo) {
     
     // 注意：SDK 返回的响应可能是扁平结构，也可能嵌套在响应键下，需兼容两种情况
     const responseData = response.alipay_aipay_agent_fulfillment_confirm_response || response;
-    if (responseData.code === '10000') {
+    if (responseData.code === '10000' || responseData.code === 10000) {
       console.log(`履约确认成功：tradeNo=${tradeNo}`);
       return true;
     } else {
-      console.error(`履约确认失败：tradeNo=${tradeNo}, errorCode=${responseData.sub_code}, errorMsg=${responseData.sub_msg}`);
+      const errorCode = responseData.sub_code || responseData.errorCode;
+      const errorMessage = responseData.sub_msg || responseData.msg || '履约确认失败';
+      console.error(`履约确认失败：tradeNo=${tradeNo}, errorCode=${errorCode}, errorMsg=${errorMessage}`);
       return false;
     }
     

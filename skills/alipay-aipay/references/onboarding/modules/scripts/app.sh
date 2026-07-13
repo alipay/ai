@@ -2,7 +2,7 @@
 #=============================================================================
 # 脚本名称: app.sh
 # 功能描述: 应用发布全流程 - 查询/复用 + 创建 + 公钥设置 + 提交审核
-# 调用位置: Step 5.3 应用发布
+# 调用位置: list 用于 Step 3.1 前置资源查询；其他命令用于 Step 5.3 应用发布
 # 调用前置: 脚本通过 error_handler.sh 间接初始化 DEV_TOOL_NAME
 #          list/create 可传 --application-type，未传时按 --product-type/--sales-code 或兼容环境变量推断
 # 用法:
@@ -13,8 +13,8 @@
 #   app audit  <appId>                   - 提交应用审核
 #   app reuse  <appId>                   - 复用已有应用（查询安全密钥）
 # 返回值:
-#   list:   FLOW:CREATE_NEW | FLOW:SELECT | FLOW:ERROR
-#   create: 输出 APP_ID=xxx
+#   list:   FLOW:CREATE_NEW | FLOW:SELECT | FLOW:PENDING_APPLICATIONS | FLOW:ERROR
+#   create: 成功输出 APP_ID=xxx；失败 exit 1，返回结构异常时同时输出 FLOW:ERROR
 #   key:    输出 confirmPageUrl
 #   audit:  输出审核结果
 #   reuse:  FLOW:REUSE_SUCCESS | FLOW:REUSE_NO_KEY | FLOW:ERROR
@@ -31,7 +31,6 @@ else
 fi
 
 require_command jq || exit 1
-require_command alipay-cli || exit 1
 
 parse_app_context_args() {
   while [[ $# -gt 0 ]]; do
@@ -261,36 +260,54 @@ extract_application_status() {
   '
 }
 
-extract_rsa2_key_info() {
-  echo "$SECURITY_BUSINESS" | jq -c '
-    (
-      (.resultObj.alipayKeyList // []) +
-      (.resultObj.securityKeys // []) +
-      (.data.alipayKeyList // []) +
-      (.data.securityKeys // [])
-    ) | map(select(.signType == "RSA2")) | .[0] // {}
-  '
-}
-
-extract_rsa2_security_config() {
+extract_rsa2_application_key_info() {
   echo "$SECURITY_BUSINESS" | jq -c '
     (
       (.resultObj.securityConfigList // []) +
-      (.data.securityConfigList // [])
-    ) | map(select(.signType == "RSA2")) | .[0] // {}
+      (.resultObj.securityKeys // []) +
+      (.data.securityConfigList // []) +
+      (.data.securityKeys // []) +
+      (.resultObj.alipayKeyList // []) +
+      (.data.alipayKeyList // [])
+    ) |
+    map(select(
+      .signType == "RSA2" and
+      (
+        ((.partnerPublicKey // "") != "") or
+        ((.certInfoDTO | type) == "object" and ((.certInfoDTO.publicKey // "") != ""))
+      )
+    )) |
+    .[0] // {}
   '
+}
+
+extract_rsa2_alipay_key_info() {
+  echo "$SECURITY_BUSINESS" | jq -c '
+    (
+      (.resultObj.alipayKeyList // []) +
+      (.data.alipayKeyList // []) +
+      (.resultObj.securityKeys // []) +
+      (.data.securityKeys // [])
+    ) |
+    map(select(.signType == "RSA2" and ((.alipayPublicKey // "") != ""))) |
+    .[0] // {}
+  '
+}
+
+extract_alipay_public_key() {
+  local RSA2_KEY_INFO="$1"
+  echo "$RSA2_KEY_INFO" | jq -r '.alipayPublicKey // empty'
 }
 
 is_rsa2_application_key_ready() {
   local RSA2_KEY_INFO="$1"
-  local RSA2_SECURITY_CONFIG="$2"
 
   echo "$RSA2_KEY_INFO" | jq -e '
-    ((.certInfoDTO.publicKey // .publicKey // .alipayPublicKey // "") != "")
-  ' >/dev/null 2>&1 && return 0
-
-  echo "$RSA2_SECURITY_CONFIG" | jq -e '
-    ((.partnerPublicKey // "") != "") and (.invalid != true)
+    ((.partnerPublicKey // "") != "") or
+    (
+      (.certInfoDTO | type) == "object" and
+      ((.certInfoDTO.publicKey // "") != "")
+    )
   ' >/dev/null 2>&1
 }
 
@@ -342,10 +359,9 @@ ensure_rsa2_application_key_ready() {
   while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
     query_security_key "$APP_ID" "$PUBLIC_KEY" || return 1
 
-    RSA2_KEY_INFO=$(extract_rsa2_key_info)
-    RSA2_SECURITY_CONFIG=$(extract_rsa2_security_config)
+    RSA2_KEY_INFO=$(extract_rsa2_application_key_info)
 
-    if is_rsa2_application_key_ready "$RSA2_KEY_INFO" "$RSA2_SECURITY_CONFIG"; then
+    if is_rsa2_application_key_ready "$RSA2_KEY_INFO"; then
       return 0
     fi
 
@@ -361,30 +377,35 @@ ensure_rsa2_application_key_ready() {
   return 1
 }
 
-ensure_alipay_public_key_exported() {
+verify_key_and_export_alipay_public_key() {
   local APP_ID="$1"
 
   query_security_key "$APP_ID" || return 1
 
-  RSA2_KEY_INFO=$(extract_rsa2_key_info)
-  RSA2_SECURITY_CONFIG=$(extract_rsa2_security_config)
-  ALIPAY_PUBLIC_KEY=$(echo "$RSA2_KEY_INFO" | jq -r '.alipayPublicKey // empty')
+  RSA2_KEY_INFO=$(extract_rsa2_application_key_info)
+  RSA2_ALIPAY_KEY_INFO=$(extract_rsa2_alipay_key_info)
+  ALIPAY_PUBLIC_KEY=$(extract_alipay_public_key "$RSA2_ALIPAY_KEY_INFO")
 
-  if ! is_rsa2_application_key_ready "$RSA2_KEY_INFO" "$RSA2_SECURITY_CONFIG"; then
+  if ! is_rsa2_application_key_ready "$RSA2_KEY_INFO"; then
     echo "❌ 应用公钥尚未确认，禁止提交应用审核"
     return 1
   fi
 
   if [ -z "$ALIPAY_PUBLIC_KEY" ]; then
-    echo "❌ 未获取到 RSA2 支付宝公钥，禁止提交应用审核"
+    echo "❌ 已确认应用公钥生效，但未获取到 RSA2 支付宝公钥，禁止提交应用审核"
     return 1
   fi
 
   if write_alipay_public_key "$APP_ID" "$ALIPAY_PUBLIC_KEY"; then
     echo "✅ 已确认应用公钥并导出支付宝公钥"
     echo "支付宝公钥保存路径: ~/.config/${APP_ID}-alipayPublicKey.keytext"
+    echo "ALIPAY_PUBLIC_KEY_EXPORT_STATUS=EXPORTED"
     echo "ALIPAY_PUBLIC_KEY_FILE=~/.config/${APP_ID}-alipayPublicKey.keytext"
+  else
+    echo "ALIPAY_PUBLIC_KEY_EXPORT_STATUS=MANUAL_CONFIGURATION_REQUIRED"
   fi
+
+  return 0
 }
 
 # ─── app list: 查询已有应用 ──────────────────────────────────────────────────
@@ -422,7 +443,7 @@ app_list() {
     elif (.resultObj | type) == "array" then
       .resultObj
     else
-      []
+      null
     end
   ' 2>/dev/null)
   if [ -z "$APP_LIST" ] || ! echo "$APP_LIST" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -433,17 +454,32 @@ app_list() {
   APP_COUNT=$(echo "$APP_LIST" | jq 'length')
 
   if [ "$APP_COUNT" -eq 0 ]; then
-    echo "📋 暂无 ${APP_APPLICATION_TYPE} 应用，进入创建应用流程"
+    echo "📋 暂无 ${APP_APPLICATION_TYPE} 应用；记录新建候选分支，等待 Step 4 统一决策"
     echo "FLOW:CREATE_NEW"
   else
     # 实际返回的状态字段值是 "ON_LINE"（带下划线）
     ONLINE_APPS=$(echo "$APP_LIST" | jq -r '[.[] | select(.status == "ON_LINE")]')
+    NON_ONLINE_APPS=$(echo "$APP_LIST" | jq -r '[.[] | select(.status != "ON_LINE")]')
     ONLINE_COUNT=$(echo "$ONLINE_APPS" | jq 'length')
+    NON_ONLINE_COUNT=$(echo "$NON_ONLINE_APPS" | jq 'length')
     ONLINE_COUNT=${ONLINE_COUNT:-0}
+    NON_ONLINE_COUNT=${NON_ONLINE_COUNT:-0}
 
     if [ "$ONLINE_COUNT" -eq 0 ]; then
-      echo "📋 暂无上线 ${APP_APPLICATION_TYPE} 应用，进入创建应用流程"
-      echo "FLOW:CREATE_NEW"
+      echo "📋 当前已有以下尚未上线的 ${APP_APPLICATION_TYPE} 应用："
+      echo ""
+      echo "| 应用ID | 应用名称 | 实际状态 |"
+      echo "|--------|----------|----------|"
+      for i in $(seq 0 $((NON_ONLINE_COUNT-1))); do
+        APP=$(echo "$NON_ONLINE_APPS" | jq ".[$i]")
+        APP_ID=$(echo "$APP" | jq -r '.appId // "未知"')
+        APP_NAME=$(echo "$APP" | jq -r '.appName // "未知"')
+        APP_STATUS=$(echo "$APP" | jq -r '.status // "未知"')
+        echo "| $APP_ID | $APP_NAME | $APP_STATUS |"
+      done
+      echo ""
+      echo "以上应用当前不可复用。请等待应用上线，或在了解现有应用状态后明确选择新建。"
+      echo "FLOW:PENDING_APPLICATIONS"
     else
       echo "📋 发现您已有以下上线 ${APP_APPLICATION_TYPE} 应用："
       echo ""
@@ -456,6 +492,23 @@ app_list() {
         APP_NAME=$(echo "$APP" | jq -r '.appName // "未知"')
         echo "| $((i+1)) | $APP_ID | $APP_NAME | 已上线 |"
       done
+
+      if [ "$NON_ONLINE_COUNT" -gt 0 ]; then
+        echo ""
+        echo "另有以下尚未上线的同类型应用，当前不可复用："
+        echo ""
+        echo "| 应用ID | 应用名称 | 实际状态 |"
+        echo "|--------|----------|----------|"
+        for i in $(seq 0 $((NON_ONLINE_COUNT-1))); do
+          APP=$(echo "$NON_ONLINE_APPS" | jq ".[$i]")
+          APP_ID=$(echo "$APP" | jq -r '.appId // "未知"')
+          APP_NAME=$(echo "$APP" | jq -r '.appName // "未知"')
+          APP_STATUS=$(echo "$APP" | jq -r '.status // "未知"')
+          echo "| $APP_ID | $APP_NAME | $APP_STATUS |"
+        done
+        echo ""
+        echo "新建前请结合以上状态避免重复创建。"
+      fi
 
       echo ""
       echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -499,6 +552,11 @@ app_create() {
 
   if [ "$SUCCESS" = "true" ]; then
     APP_ID=$(echo "$BUSINESS" | jq -r '.resultObj.appId // .data.appId // empty')
+    if [ -z "$APP_ID" ]; then
+      echo "❌ 应用创建返回成功，但未解析到 appId，禁止进入公钥设置流程"
+      echo "FLOW:ERROR"
+      exit 1
+    fi
     echo "✅ 应用创建成功"
     echo "APPLICATION_TYPE=$APP_APPLICATION_TYPE"
     echo "APP_ID=$APP_ID"
@@ -511,6 +569,12 @@ app_create() {
 
 # ─── app key: 设置应用公钥 ───────────────────────────────────────────────────
 app_key() {
+  if [ "$#" -ne 2 ] || [[ "${1:-}" == --* ]]; then
+    echo "❌ 参数格式错误：key 使用位置参数 <appId> <publicKey>，不支持 --app-id 等未定义选项"
+    echo "用法: bash app.sh key <appId> <publicKey>"
+    exit 1
+  fi
+
   APP_ID="$1"
   PUBLIC_KEY="$2"
 
@@ -564,6 +628,12 @@ app_key() {
 
 # ─── app audit: 提交应用审核 ─────────────────────────────────────────────────
 app_audit() {
+  if [ "$#" -ne 1 ] || [[ "${1:-}" == --* ]]; then
+    echo "❌ 参数格式错误：audit 使用位置参数 <appId>，不支持 --app-id 等未定义选项"
+    echo "用法: bash app.sh audit <appId>"
+    exit 1
+  fi
+
   APP_ID="$1"
 
   if [ -z "$APP_ID" ]; then
@@ -572,7 +642,7 @@ app_audit() {
     exit 1
   fi
 
-  ensure_alipay_public_key_exported "$APP_ID" || exit 1
+  verify_key_and_export_alipay_public_key "$APP_ID" || exit 1
 
   REQUEST_JSON=$(jq -n --arg appId "$APP_ID" '{request:{appId:$appId}}')
 
@@ -602,6 +672,12 @@ app_audit() {
 
 # ─── app verify-key: 确认应用公钥已设置 ─────────────────────────────────────
 app_verify_key() {
+  if [ "$#" -lt 1 ] || [ "$#" -gt 2 ] || [[ "${1:-}" == --* ]]; then
+    echo "❌ 参数格式错误：verify-key 使用位置参数 <appId> [publicKey]，不支持 --app-id 等未定义选项"
+    echo "用法: bash app.sh verify-key <appId> [publicKey]"
+    exit 1
+  fi
+
   APP_ID="$1"
   PUBLIC_KEY="${2:-}"
 
@@ -623,6 +699,12 @@ app_verify_key() {
 
 # ─── app reuse: 复用已有应用（查询安全密钥） ──────────────────────────────────
 app_reuse() {
+  if [ "$#" -ne 1 ] || [[ "${1:-}" == --* ]]; then
+    echo "❌ 参数格式错误：reuse 使用位置参数 <appId>，不支持 --app-id 等未定义选项"
+    echo "用法: bash app.sh reuse <appId>"
+    exit 1
+  fi
+
   APP_ID="$1"
 
   if [ -z "$APP_ID" ]; then
@@ -644,20 +726,29 @@ app_reuse() {
   fi
 
   if query_security_key "$APP_ID"; then
-    RSA2_KEY_INFO=$(extract_rsa2_key_info)
-    ALIPAY_PUBLIC_KEY=$(echo "$RSA2_KEY_INFO" | jq -r '.alipayPublicKey // empty')
+    RSA2_KEY_INFO=$(extract_rsa2_application_key_info)
+    RSA2_ALIPAY_KEY_INFO=$(extract_rsa2_alipay_key_info)
+    ALIPAY_PUBLIC_KEY=$(extract_alipay_public_key "$RSA2_ALIPAY_KEY_INFO")
 
-    if [ -n "$ALIPAY_PUBLIC_KEY" ]; then
+    if ! is_rsa2_application_key_ready "$RSA2_KEY_INFO"; then
+      echo "⚠️ 未确认到已生效的 RSA2 应用公钥"
+      echo "FLOW:REUSE_NO_KEY"
+      exit 1
+    elif [ -n "$ALIPAY_PUBLIC_KEY" ]; then
       if write_alipay_public_key "$APP_ID" "$ALIPAY_PUBLIC_KEY"; then
         echo "✅ 已获取支付宝公钥"
         echo "支付宝公钥保存路径: ~/.config/${APP_ID}-alipayPublicKey.keytext"
+        echo "ALIPAY_PUBLIC_KEY_EXPORT_STATUS=EXPORTED"
         echo "ALIPAY_PUBLIC_KEY_FILE=~/.config/${APP_ID}-alipayPublicKey.keytext"
+      else
+        echo "ALIPAY_PUBLIC_KEY_EXPORT_STATUS=MANUAL_CONFIGURATION_REQUIRED"
       fi
       echo "APP_ID=$APP_ID"
       echo "FLOW:REUSE_SUCCESS"
     else
-      echo "⚠️ 未找到 RSA2 公钥，请先设置应用公钥"
-      echo "FLOW:REUSE_NO_KEY"
+      echo "❌ 已确认应用公钥生效，但未获取到 RSA2 支付宝公钥"
+      echo "FLOW:ERROR"
+      exit 1
     fi
   else
     echo "FLOW:ERROR"
@@ -666,7 +757,14 @@ app_reuse() {
 }
 
 # ─── 入口分发 ────────────────────────────────────────────────────────────────
-case "${1:-}" in
+APP_COMMAND="${1:-}"
+case "$APP_COMMAND" in
+  list|create|key|verify-key|audit|reuse)
+    require_command alipay-cli || exit 1
+    ;;
+esac
+
+case "$APP_COMMAND" in
   list)
     shift
     app_list "$@"
