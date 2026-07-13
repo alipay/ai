@@ -184,11 +184,11 @@ service_list() {
       SERVICE_NAME=$(echo "$SERVICE" | jq -r '.serviceName // "未知"')
       SERVICE_DESC=$(echo "$SERVICE" | jq -r '.serviceDesc // "无描述"')
       PRICING=$(echo "$SERVICE" | jq -r '.pricing // "未知"')
-      SERVICE_STATUS=$(echo "$SERVICE" | jq -r '.status // "未知"')
+      SERVICE_STATUS=$(echo "$SERVICE" | jq -r '.serviceStatus // .status // "未知"')
       RESOURCE_URL=$(echo "$SERVICE" | jq -r '.resourceUrl // "未知"')
 
       case "$SERVICE_STATUS" in
-        "ONLINE") STATUS_CN="已上架" ;;
+        "ACTIVE") STATUS_CN="已上线" ;;
         "PENDING") STATUS_CN="审核中" ;;
         "REJECTED") STATUS_CN="审核拒绝" ;;
         *) STATUS_CN="$SERVICE_STATUS" ;;
@@ -289,17 +289,37 @@ service_save() {
     exit 1
   fi
 
-  # 解包 MCP 信封后解析业务字段
+  # 解包 MCP 信封后按当前协议解析，并兼容旧 success/resultObj 协议。
   BUSINESS=$(unwrap_mcp "$RESULT")
-  SUCCESS=$(echo "$BUSINESS" | jq -r '.success // false')
+  SAVE_FORMAT=$(echo "$BUSINESS" | jq -r '
+    if ((.code | tostring) == "10000") and
+       ((.data | type) == "object") and
+       (.data.success == true) then
+      "current"
+    elif (.success == true) and
+         ((.resultObj | type) == "object") then
+      "legacy"
+    else
+      "invalid"
+    end
+  ' 2>/dev/null)
 
-  if [ "$SUCCESS" = "true" ]; then
-    OPERATION="上架"
+  if [ "$SAVE_FORMAT" = "current" ] || [ "$SAVE_FORMAT" = "legacy" ]; then
+    OPERATION="创建"
     if [ -n "$SERVICE_ID" ]; then
       OPERATION="修改"
     fi
-    # 使用 --arg 安全拼接回退值
-    NEW_SERVICE_ID=$(echo "$BUSINESS" | jq -r --arg fallback "${SERVICE_ID}" '.resultObj.serviceId // $fallback')
+
+    if [ "$SAVE_FORMAT" = "current" ]; then
+      NEW_SERVICE_ID=$(echo "$BUSINESS" | jq -r --arg fallback "${SERVICE_ID}" '
+        (.data.serviceId | select(type == "string" and length > 0)) // $fallback
+      ')
+    else
+      NEW_SERVICE_ID=$(echo "$BUSINESS" | jq -r --arg fallback "${SERVICE_ID}" '
+        (.resultObj.serviceId | select(type == "string" and length > 0)) // $fallback
+      ')
+    fi
+
     if [ -z "$NEW_SERVICE_ID" ]; then
       echo "❌ 服务创建返回成功，但未解析到 serviceId，禁止继续后续流程"
       exit 1
@@ -307,12 +327,21 @@ service_save() {
     echo "✅ 服务${OPERATION}成功"
     echo "📋 服务ID: $NEW_SERVICE_ID"
   else
-    ERROR_MSG=$(echo "$BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
-    OPERATION="上架"
+    OPERATION="创建"
     if [ -n "$SERVICE_ID" ]; then
       OPERATION="修改"
     fi
-    echo "❌ 服务${OPERATION}失败: $ERROR_MSG"
+
+    BUSINESS_CODE=$(echo "$BUSINESS" | jq -r 'if has("code") then (.code | tostring) else "" end' 2>/dev/null)
+    if [ -n "$BUSINESS_CODE" ] && [ "$BUSINESS_CODE" != "10000" ]; then
+      ERROR_MSG=$(echo "$BUSINESS" | jq -r '
+        .data.subMsg // .data.msg // .subMsg // .msg //
+        .error.message // .errorMessage // "未知错误"
+      ' 2>/dev/null)
+      echo "❌ 服务${OPERATION}失败: ${BUSINESS_CODE} / ${ERROR_MSG:-未知错误}"
+    else
+      echo "❌ 服务${OPERATION}返回结构异常，无法确认操作结果"
+    fi
     exit 1
   fi
 }

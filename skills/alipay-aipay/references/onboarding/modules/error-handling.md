@@ -13,7 +13,7 @@
 
 | 函数 | 说明 | 返回 |
 |------|------|------|
-| `unwrap_mcp` | MCP 信封解包，提取 `content[0].text` 中的业务 JSON；非信封结构原样透传 | 解包后的 JSON 字符串 |
+| `unwrap_mcp` | MCP 信封解包，通过单次状态扫描提取 `content[0].text` 中的业务 JSON；混合输出只从完整闭合结构形成候选，并只接受唯一可确定的 MCP 信封或 JSON，候选不唯一时不猜测结果，由错误检测阻断 | 解包后的 JSON 字符串或无法唯一解析的原始文本 |
 | `detect_error` | 统一错误检测入口，自动解包 MCP 信封后按优先级匹配所有错误类型 | `MCP_AUTH_ERROR` / `MCP_SERVICE_ERROR` / `AUTH_MISMATCH` / `SERVICE_UNSTABLE` / `ERROR:xxx` / `CLI_ERROR:xxx` / `SUCCESS` |
 | `handle_error` | 统一错误处理入口，调用 `detect_error` 后路由到对应 handler（内含 `unwrap_mcp` 自动解包信封） | `0`=成功, `1`=需用户干预 |
 | `handle_mcp_auth_error` | 处理 MCP 认证错误（HTTP 401），校验 logout 成功后再引导重新授权；logout 失败时阻断 | - |
@@ -152,11 +152,12 @@
 }
 ```
 
-> ⚠️ 有些 MCP 返回会把真实业务响应包在 `data.response` 或 `errorContext.errorStack[]` 下。错误检测必须优先定位业务错误对象：既要兼容 `errorCode: "xxx"`，也要兼容 `errorCode: { "code": "xxx", "desc": "...", "message": "...", "errorScene": "...", "errorSpecific": "..." }`。错误信息应从同一错误对象提取 `errorMessage` / `errorMsg` / `errorCode.desc` / `errorCode.message` / `bizTips` / `errorScene` / `errorSpecific`，不得只读取顶层字段后兜底为“未知错误”。
+> ⚠️ 有些 MCP 返回会把真实业务响应包在 `data.response` 或 `errorContext.errorStack[]` 下。错误检测必须优先定位业务错误对象：既要兼容 `errorCode: "xxx"`，也要兼容 `errorCode: { "code": "xxx", "desc": "...", "message": "...", "errorScene": "...", "errorSpecific": "..." }`。常规错误继续按 `errorMessage` / `errorMsg` / `errorCode.desc` / `errorCode.message` 等既有字段处理；只有已验证的当前服务写入协议 `data.success=false` 才优先读取 `data.subMsg` / `data.msg`，并忽略仅表示外层调用成功的顶层 `msg="Success"`。不得把该优先级扩展到其他响应结构，也不得丢弃真实业务错误后兜底为“未知错误”。
 
 ### 处理原则
 ```
 ✅ errorCode 存在 → 展示 errorMessage
+✅ data.success=false → 优先展示 data.subMsg / data.msg，不把顶层 msg="Success" 当作业务错误
 ✅ 如有 bizTips → 一并展示给用户
 ✅ 如有 checkedError → 逐条展示字段级校验错误描述
 ✅ 如有 errorScene / errorSpecific → 一并展示，便于技术支持定位
@@ -175,7 +176,7 @@
 
 > ⚠️ 各 `.sh` 脚本已内置错误检测（source `error_handler.sh` + 调用 `handle_error`）和 MCP 信封解包（`unwrap_mcp`），Agent 执行脚本时无需额外处理。
 
-在**直接执行 MCP 调用**（非通过脚本）的场景，需注意 `alipay-cli mcp call` 返回 MCP 协议信封，业务 JSON 被包在 `content[0].text` 里，必须先解包：
+在**直接执行 MCP 调用**（非通过脚本）的场景，需注意 `alipay-cli mcp call` 返回 MCP 协议信封，业务 JSON 被包在 `content[0].text` 里，必须先解包。CLI stdout 混有日志时，`unwrap_mcp` 只提取唯一可确定的信封或 JSON；存在多个候选时不猜测，保留原文并增加歧义标记，后续 `handle_error` 将按非 JSON 异常阻断：
 
 ```bash
 # ① 执行 MCP 调用
@@ -187,9 +188,10 @@ if ! handle_error "$RESULT"; then
   return 1
 fi
 
-# ③ 如果返回 0，解包信封后处理业务字段
+# ③ 如果返回 0，解包信封后按当前模块已确认的响应契约处理业务字段
 BUSINESS=$(unwrap_mcp "$RESULT")
-SUCCESS=$(echo "$BUSINESS" | jq -r '.success // false')
+# 不得统一假定成功字段位于 .success；例如服务写入的当前协议使用
+# code="10000"、data.success=true，并从 data.serviceId 读取服务 ID。
 ```
 
 ---
@@ -202,7 +204,7 @@ SUCCESS=$(echo "$BUSINESS" | jq -r '.success // false')
 ├─────────────────────────────────────────────────────────────────┤
 │ 📦 MCP 信封解包（unwrap_mcp）                                    │
 │   所有 mcp call 返回 {content:[{text:"<业务JSON>"}]}            │
-│   必须先 unwrap_mcp 解包，再解析 .success / .resultObj 等字段   │
+│   必须先 unwrap_mcp 解包，再按当前模块契约解析业务字段          │
 ├─────────────────────────────────────────────────────────────────┤
 │ 🔐 MCP_AUTH_ERROR                                               │
 │   关键词：HTTP 401 / Authorization is empty / 非法的认证信息     │

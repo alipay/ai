@@ -91,7 +91,7 @@
 
 | 序号 | 服务ID | 服务名称 | 描述 | 价格 | 实际状态 | 服务地址 |
 |------|--------|----------|------|------|----------|----------|
-| 1 | SVC001 | 天气查询 | 提供全球天气查询 | 0.01元/次 | 已上架 | https://api.example.com/weather |
+| 1 | SVC001 | 天气查询 | 提供全球天气查询 | 0.01元/次 | 已上线 | https://api.example.com/weather |
 | 2 | SVC002 | AI助手 | 智能对话服务 | 0.05元/次 | 审核中 | https://api.example.com/ai |
 
 请选择：
@@ -194,20 +194,22 @@ bash scripts/service.sh validate   --name "$SERVICE_NAME"   --desc "$SERVICE_DES
 ### 成功输出格式
 
 ```markdown
-✅ 服务上架成功
+✅ 服务创建成功
 
 | 项目 | 信息 |
 |------|------|
+| 服务ID | API_xxx |
 | 服务名称 | 天气查询 |
 | 服务描述 | 提供全球天气查询服务 |
 | 服务地址 | https://api.example.com/weather |
 | 服务单价 | 0.01 元/次 |
-| 状态 | 审核中 |
 ```
+
+`saveBazaarServiceForMcp` 的当前成功响应不包含服务状态。不得根据创建或修改成功推断为“审核中”“已上线”或其他状态。只有后续 `scripts/service.sh list` 只读查询成功并按 `serviceId` 匹配到该服务时，才能记录和展示实际状态；查询失败或尚未返回该服务时，将状态保留为“未取得”，不得因此重复执行 `save`。
 
 ### 按量付费集成产物
 
-服务创建、修改或复用成功后，必须记录并向用户说明以下字段：
+服务创建、修改或复用成功后，必须记录并向用户说明以下已取得字段：
 
 | 字段 | 用途 |
 |------|------|
@@ -215,7 +217,7 @@ bash scripts/service.sh validate   --name "$SERVICE_NAME"   --desc "$SERVICE_DES
 | 服务名称 | 用于核对收银台展示和用户识别 |
 | 服务地址 `resourceUrl` | 应与实际提供 402 服务的资源地址一致 |
 | 服务单价 `pricing` | 应与 `Payment-Needed.protocol.amount` 的业务定价保持一致 |
-| 服务状态 | 判断是否可用于正式上架和后续排查 |
+| 服务状态 | 仅在只读查询实际取得时记录，用于正式上线判断和后续排查 |
 
 如果服务注册成功但未解析到 `serviceId`，不要继续宣称按量付费入驻完成；应提示用户重新查询服务列表或根据服务名称定位服务。
 
@@ -245,6 +247,7 @@ bash scripts/service.sh validate   --name "$SERVICE_NAME"   --desc "$SERVICE_DES
 
 - MCP 信封先通过共享 `unwrap_mcp` 解包 `content[0].text`。
 - 当前成功协议以 `code="10000"` 判断，服务数组读取 `data.items`，分页读取 `data.pagination.limit/offset/total`。
+- 当前服务状态字段读取 `serviceStatus`，兼容旧响应中的 `status`；`ACTIVE` 表示已上线，其他未定义映射的状态值原样展示，不推断业务含义。
 - 脚本兼容旧成功协议中的 `success=true` 与 `resultObj.serviceList`，但不得用旧结构覆盖或猜测当前字段。
 - 只有明确取得成功响应中的空数组，才能判定没有已有服务；业务失败、字段缺失、分页不完整或候选缺少 `serviceId` 均必须阻断，禁止输出 `FLOW:CREATE_NEW` 或 `FLOW:SELECT`。
 
@@ -254,6 +257,15 @@ bash scripts/service.sh validate   --name "$SERVICE_NAME"   --desc "$SERVICE_DES
 |------|----------|------|
 | 创建新服务 | serviceName, serviceDesc, resourceUrl, pricing, schemaUrl | 无需传入 serviceId |
 | 修改已有服务 | **serviceId**, serviceName, serviceDesc, resourceUrl, pricing, schemaUrl | **必须传入 serviceId + 所有资料信息** |
+
+**写入返回处理：**
+
+- MCP 信封先通过共享 `unwrap_mcp` 解包 `content[0].text`。
+- 当前成功协议必须同时满足 `code="10000"` 和 `data.success=true`，服务 ID 读取 `data.serviceId`。
+- 脚本兼容旧成功协议中的 `success=true` 和 `resultObj.serviceId`；不得混用两套协议中的成功条件与服务 ID 路径。
+- 创建成功但未解析到 `serviceId` 时必须阻断后续流程；修改成功未返回新 ID 时，继续使用本次请求中已经确认的原 `serviceId`。
+- 业务失败优先展示 `data.subMsg` / `data.msg`，再读取顶层错误字段；响应结构不符合当前或兼容协议时不得宣称成功。
+- 当前保存成功响应不包含服务状态；不得从 `success=true` 推断审核或上线状态。
 
 其中 `schemaUrl` 按本模块约定传入序列化后的 JSON 请求示例。例如空请求示例的实际入参为：
 
@@ -299,11 +311,13 @@ export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call a2a-pay-service.saveBaza
 
 ## 服务状态说明
 
+当前列表响应优先读取 `serviceStatus`，旧响应兼容读取 `status`。下表以外的实际状态值必须原样展示；没有已验证依据时不得自行翻译、归类或推断是否可用。
+
 | 状态 | 说明 | 处理方式 |
 |------|------|----------|
 | `DRAFT` | 草稿 | 展示接口返回的实际状态，由用户决定后续操作 |
 | `PENDING` | 审核中 | 展示接口返回的实际状态，由用户决定后续操作 |
-| `ONLINE` | 已上架 | 展示接口返回的实际状态，由用户决定后续操作 |
+| `ACTIVE` | 已上线 | 展示接口返回的实际状态，由用户决定后续操作 |
 | `REJECTED` | 审核拒绝 | 展示接口返回的实际状态，由用户决定后续操作 |
 
 ---

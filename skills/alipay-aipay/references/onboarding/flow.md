@@ -392,7 +392,7 @@ bash modules/scripts/ar_sign_apply.sh --product apppay --sales-code "I1080300001
 
 #### 5.2 服务市场注册（仅按量付费）
 
-复用 Step 3.1 候选，按 `modules/service-registration.md` 执行复用、创建或修改分支。创建/修改前必须用完整五项资料通过该模块定义的 `validate`；只补齐或重新校验变化字段。成功后记录服务 ID、名称、地址、单价和状态，并将实际返回的 `serviceId` 作为 `productionServiceId` 交给后续生产配置。进入 integration 沙箱联调时，不得将该真实 ID 写入沙箱运行配置或为此再次询问用户；沙箱流程按固定 `api_mock_service_id` 自动执行，正式上线前再用 `productionServiceId` 替换。
+复用 Step 3.1 候选，按 `modules/service-registration.md` 执行复用、创建或修改分支。创建/修改前必须用完整五项资料通过该模块定义的 `validate`；只补齐或重新校验变化字段。成功后记录服务 ID、名称、地址和单价，并将实际返回的 `serviceId` 作为 `productionServiceId` 交给后续生产配置。保存成功响应不包含服务状态；只有后续服务列表只读查询成功并按 `serviceId` 匹配到该服务时才记录实际状态，查询失败或尚未返回时保持“状态未取得”，不得推断状态或重复执行 `save`。进入 integration 沙箱联调时，不得将该真实 ID 写入沙箱运行配置或为此再次询问用户；沙箱流程按固定 `api_mock_service_id` 自动执行，正式上线前再用 `productionServiceId` 替换。
 
 **固定命令契约**：复用已有服务不调用 `save`；创建不传 `--service-id`，修改必须传入用户从 Step 3.1 候选中选定的实际 `serviceId` 和全部字段：
 

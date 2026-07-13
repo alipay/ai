@@ -23,9 +23,87 @@ fi
 #   { "content": [ { "text": "<业务JSON>", "type": "text" } ] }
 # 业务 JSON（含 success / resultObj / errorCode）被包在 content[0].text 里。
 # 本函数负责解包：若检测到信封结构，提取 content[0].text；否则原样返回。
+# 当 stdout 混有日志时，只接受唯一可确定的 MCP 信封或 JSON；候选不唯一时
+# 保留原始文本，让后续错误检测安全阻断，禁止猜测业务响应。
 #
 # 对于非 mcp call 的命令（如 alipay-cli login / whoami），返回不带信封，
 # 保证这些命令的原样透传。
+extract_unique_json() {
+  local RAW="$1"
+  printf '%s' "$RAW" | jq -Rsc '
+    explode as $chars |
+    reduce range(0; ($chars | length)) as $index (
+      {
+        depth: 0,
+        start: null,
+        in_string: false,
+        escaped: false,
+        raw_candidates: []
+      };
+      ($chars[$index]) as $char |
+      if .depth == 0 then
+        if $char == 123 or $char == 91 then
+          .depth = 1 |
+          .start = $index |
+          .in_string = false |
+          .escaped = false
+        else
+          .
+        end
+      elif .in_string then
+        if .escaped then
+          .escaped = false
+        elif $char == 92 then
+          .escaped = true
+        elif $char == 34 then
+          .in_string = false
+        else
+          .
+        end
+      elif $char == 34 then
+        .in_string = true
+      elif $char == 123 or $char == 91 then
+        .depth += 1
+      elif $char == 125 or $char == 93 then
+        .depth -= 1 |
+        if .depth == 0 then
+          ($chars[.start:($index + 1)] | implode) as $candidate |
+          .raw_candidates += [$candidate] |
+          .start = null
+        else
+          .
+        end
+      else
+        .
+      end
+    ) |
+    [
+      .raw_candidates[] |
+      fromjson? |
+      select(type == "object" or type == "array")
+    ] |
+    unique as $candidates |
+    (
+      $candidates |
+      map(select(
+        type == "object" and
+        (.content | type) == "array" and
+        any(.content[]?; (.text? | type) == "string")
+      )) |
+      unique
+    ) as $envelopes |
+    if ($envelopes | length) == 1 then
+      {status: "ok", value: $envelopes[0]}
+    elif ($envelopes | length) == 0 and ($candidates | length) == 1 then
+      {status: "ok", value: $candidates[0]}
+    elif ($candidates | length) == 0 then
+      {status: "none"}
+    else
+      {status: "ambiguous"}
+    end
+  ' 2>/dev/null
+}
+
 unwrap_mcp() {
   local RAW="$1"
   if [ -z "$RAW" ]; then
@@ -33,17 +111,30 @@ unwrap_mcp() {
     return
   fi
 
-  if ! echo "$RAW" | jq -e . >/dev/null 2>&1; then
-    echo "$RAW"
-    return
-  fi
+  local ANALYSIS STATUS JSON
+  ANALYSIS=$(extract_unique_json "$RAW")
+  STATUS=$(echo "$ANALYSIS" | jq -r '.status // "none"' 2>/dev/null)
+  case "$STATUS" in
+    ok)
+      JSON=$(echo "$ANALYSIS" | jq -c '.value' 2>/dev/null)
+      ;;
+    ambiguous)
+      echo "CLI 输出包含多个 JSON 候选，无法唯一解析"
+      echo "$RAW"
+      return
+      ;;
+    *)
+      echo "$RAW"
+      return
+      ;;
+  esac
 
   local TEXT
-  TEXT=$(echo "$RAW" | jq -r 'if (.content | type == "array") and (.content[0].text != null) then .content[0].text else empty end' 2>/dev/null)
+  TEXT=$(echo "$JSON" | jq -r 'if (.content | type == "array") and (.content[0].text != null) then .content[0].text else empty end' 2>/dev/null)
   if [ -n "$TEXT" ]; then
     echo "$TEXT"
   else
-    echo "$RAW"
+    echo "$JSON"
   fi
 }
 
@@ -103,11 +194,36 @@ extract_error_message() {
   fi
 
   echo "$JSON" | jq -r '
-    [
-      .. | objects |
-      (.errorMessage?, .errorMsg?, .message?, (.error? | objects | .message?)) |
-      select(. != null and (tostring != ""))
-    ][0] // "未知错误"
+    if .data.success? == false then
+      [
+        .data.subMsg?,
+        .data.msg?,
+        .subMsg?,
+        .errorMessage?,
+        .errorMsg?,
+        .message?,
+        (.error? | objects | .message?),
+        .msg?,
+        (
+          .. | objects |
+          (.errorMessage?, .errorMsg?, .message?, (.error? | objects | .message?))
+        )
+      ] |
+      [
+        .[] |
+        select(
+          . != null and
+          (tostring != "") and
+          ((tostring | ascii_downcase) != "success")
+        )
+      ][0] // "未知错误"
+    else
+      [
+        .. | objects |
+        (.errorMessage?, .errorMsg?, .message?, (.error? | objects | .message?)) |
+        select(. != null and (tostring != ""))
+      ][0] // "未知错误"
+    end
   ' 2>/dev/null
 }
 
