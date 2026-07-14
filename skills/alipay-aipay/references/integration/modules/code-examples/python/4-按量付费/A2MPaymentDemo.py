@@ -470,7 +470,7 @@ def send_fulfillment_confirm(trade_no):
 # ==================== 启动服务 ====================
 
 if __name__ == '__main__':
-    print(f"A2M 智能收服务已启动：http://localhost:5000{RESOURCE_CONFIG['path']}")
+    print(f"A2M 按量付费服务已启动：http://localhost:5000{RESOURCE_CONFIG['path']}")
     print('测试步骤：')
     print(f'1. 无 Payment-Proof Header: curl http://localhost:5000{RESOURCE_CONFIG["path"]}')
     print(f'2. 有 Payment-Proof Header: curl -H "Payment-Proof: <value>" http://localhost:5000{RESOURCE_CONFIG["path"]}')

@@ -483,7 +483,7 @@ async function sendFulfillmentConfirm(tradeNo) {
 
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`A2M 智能收服务已启动：http://localhost:${PORT}${CONFIG.resource.path}`);
+    console.log(`A2M 按量付费服务已启动：http://localhost:${PORT}${CONFIG.resource.path}`);
     console.log('测试步骤：');
     console.log('1. 无 Payment-Proof Header: curl http://localhost:3000/demo/a2m/resource');
     console.log('2. 有 Payment-Proof Header: curl -H "Payment-Proof: <value>" http://localhost:3000/demo/a2m/resource');

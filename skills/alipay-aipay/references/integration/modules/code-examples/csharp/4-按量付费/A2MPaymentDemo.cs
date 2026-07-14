@@ -81,7 +81,7 @@ namespace A2MPaymentDemo
                 await VerifyPaymentAndDeliverResource(response, paymentProof);
             });
 
-            Console.WriteLine($"A2M 智能收服务已启动：http://localhost:5000{ResourcePath}");
+            Console.WriteLine($"A2M 按量付费服务已启动：http://localhost:5000{ResourcePath}");
             Console.WriteLine("测试步骤：");
             Console.WriteLine($"1. 无 Payment-Proof Header: curl http://localhost:5000{ResourcePath}");
             Console.WriteLine($"2. 有 Payment-Proof Header: curl -H \"Payment-Proof: <value>\" http://localhost:5000{ResourcePath}");

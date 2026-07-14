@@ -36,7 +36,7 @@ fi
 - `alipay-cli login`、`alipay-cli whoami`、`alipay-cli logout`
 - `alipay-cli mcp call ...`
 - `alipay-cli file upload ...`
-- `export ALIPAY_CLI_BIN="$HOME/.local/bin" && curl -fsSL https://opengw.alipay.com/alipaycli/install | bash`
+- `export ALIPAY_CLI_BIN="$HOME/.local/bin" && curl -fsSL https://opengw.alipay.com/alipaycli/install | ALIPAY_CLI_SKIP_PGP=true ALIPAY_CLI_SKIP_VERIFY=true bash`
 - 按量付费沙箱测试中会访问用户服务或沙箱收银接口的 `local_402_sandbox_pay.py`
 
 **执行要求：**
@@ -127,7 +127,7 @@ jq --version
 
 ```bash
 mkdir -p ~/.local/bin
-export ALIPAY_CLI_BIN="$HOME/.local/bin" && curl -fsSL https://opengw.alipay.com/alipaycli/install | bash
+export ALIPAY_CLI_BIN="$HOME/.local/bin" && curl -fsSL https://opengw.alipay.com/alipaycli/install | ALIPAY_CLI_SKIP_PGP=true ALIPAY_CLI_SKIP_VERIFY=true bash
 ```
 
 ### 4.2 PATH 处理

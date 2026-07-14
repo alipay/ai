@@ -14,7 +14,7 @@ which alipay-cli 2>/dev/null && alipay-cli version
 
 ## 2. 创建快速沙箱
 
-**重要：工具返回的 `data` 只是候选沙箱配置；必须先按 `sandbox-setup-guide.md` 完成字段完整性校验，校验通过后再写入正式本地配置文件。对话中按该指南展示关键字段摘要、配置文件路径，以及工具实际返回的沙箱测试账号登录密码和支付密码；privateKey、publicKey 等密钥字段不得展开。**
+**重要：工具返回的 `data` 只是候选沙箱配置；必须先按 `sandbox-setup-guide.md` 完成字段完整性校验，校验通过后再写入正式本地配置文件。字段无缺失时，不对客输出字段核对表或独立校验结论，只按该指南输出一张沙箱环境摘要表；该结果不代表沙箱支付测试通过。privateKey、publicKey 等密钥字段不得展开。**
 
 `createAnonymousSandbox` 的 MCP 请求体只有业务入参 `request.appType`。`PLATFORM`、`PRODUCT` 是 alipay-cli 上下文环境变量，禁止写入 `--data` 的 JSON。
 
@@ -55,7 +55,7 @@ alipay-cli mcp call alipay-anonymous-sandbox.createAnonymousSandbox \
 
 1. 取 `result.content[0].text`，去转义还原 JSON
 2. `success === true` → 提取 `data` 字段作为候选沙箱配置，先按 [沙箱环境初始化](sandbox-setup-guide.md) 的必含字段清单做完整性校验
-3. 字段完整性校验通过 → 将 `data` 字段完整写入正式本地配置文件，并按摘要输出格式展示关键字段及沙箱测试账号密码；保持本地文件中的原始字段值不变，不在对话中复述密钥等长字段
+3. 字段完整性校验通过 → 将 `data` 字段完整写入正式本地配置文件，并按 `sandbox-setup-guide.md` 只输出一张沙箱环境摘要表；不输出字段核对表、独立校验结论或“沙箱测试通过”等表述，保持本地文件中的原始字段值不变，不在对话中复述密钥等长字段
 4. `success !== true` 或 `data` 字段缺失/字段不完整 → 按错误处理流程阻断；不得写入正式 `.alipay-sandbox.json`
 
 ## 3. 错误处理

@@ -66,7 +66,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 统一收单下单并支付页面接口 | [文档](https://ideservice.alipay.com/cms/site/0iztfv) | [示例](./code-examples/java/2-网站支付/统一收单下单并支付页面接口代码示例.md) | [示例](./code-examples/python/2-网站支付/统一收单下单并支付页面接口代码示例.md) | [示例](./code-examples/nodejs/2-网站支付/统一收单下单并支付页面接口代码示例.md) | [示例](./code-examples/php/2-网站支付/统一收单下单并支付页面接口代码示例.md) | [示例](./code-examples/csharp/2-网站支付/统一收单下单并支付页面接口代码示例.md) |
 
-> **说明**：网站支付使用统一收单下单并支付页面接口 `alipay.trade.page.pay`，适用于电脑网页与手机网页场景。
+> **说明**：网站支付使用统一收单下单并支付页面接口 `alipay.trade.page.pay`，适用于电脑网页与手机网页场景。上表仅是接口调用示例，实际集成不得止于设置 `return_url`；用户未明确关闭同步回跳时，必须继续按 `alipay-sdk-reminder.md` 的“网站支付同步回跳”实现并验证结果页。
 
 ### APP支付 API
 
