@@ -3,7 +3,7 @@
 > ⚠️ **全流程错误参考文档**：本文档涵盖签约全流程（Step 1~Step 6）各步骤可能出现的错误及处理方式。**当任何 Step 执行过程中遇到错误时，均可查阅本文档进行问题排查**。
 > 本文档位于 `references/onboarding/modules/`，文中的 `scripts/...` 路径相对本目录；从技能包根目录执行时对应 `references/onboarding/modules/scripts/...`。
 >
-> 📎 **可执行版本**：shell 公共函数位于 `../../../normal/scripts/common.sh`，错误检测和处理函数位于 `scripts/error_handler.sh`。各签约 `.sh` 脚本通过 `source scripts/error_handler.sh` 间接完成 `DEV_TOOL_NAME` 初始化，并在每次 MCP 调用后执行错误处理。**本文档为说明参考，实际执行以脚本为准。**
+> 📎 **可执行版本**：shell 公共函数位于 `../../normal/scripts/common.sh`，错误检测和处理函数位于 `scripts/error_handler.sh`。`scripts/network_retry.sh` 只在原命令外围处理网络尝试、stdout/stderr 分离和写后核验信号；各签约 `.sh` 脚本仍在每次 MCP 调用后使用原错误处理和业务解析。**本文档为说明参考，实际执行以脚本为准。**
 
 ---
 
@@ -16,10 +16,10 @@
 | `unwrap_mcp` | MCP 信封解包，通过单次状态扫描提取 `content[0].text` 中的业务 JSON；混合输出只从完整闭合结构形成候选，并只接受唯一可确定的 MCP 信封或 JSON，候选不唯一时不猜测结果，由错误检测阻断 | 解包后的 JSON 字符串或无法唯一解析的原始文本 |
 | `detect_error` | 统一错误检测入口，自动解包 MCP 信封后按优先级匹配所有错误类型 | `MCP_AUTH_ERROR` / `MCP_SERVICE_ERROR` / `AUTH_MISMATCH` / `SERVICE_UNSTABLE` / `ERROR:xxx` / `CLI_ERROR:xxx` / `SUCCESS` |
 | `handle_error` | 统一错误处理入口，调用 `detect_error` 后路由到对应 handler（内含 `unwrap_mcp` 自动解包信封） | `0`=成功, `1`=需用户干预 |
-| `handle_mcp_auth_error` | 处理 MCP 认证错误（HTTP 401），校验 logout 成功后再引导重新授权；logout 失败时阻断 | - |
-| `handle_mcp_service_error` | 处理 MCP 服务不可用（网络/连接错误）；沙箱化 Agent 环境提示申请可联网权限重试同一命令，其他环境提示检查网络 | - |
+| `handle_mcp_auth_error` | 处理 MCP 认证错误（HTTP 401），校验 logout 成功后再引导重新授权；logout 返回合法失败时阻断；当前 Agent 执行环境无法确认 logout 结果时要求联网重试同一动作 | - |
+| `handle_mcp_service_error` | 处理 MCP 服务不可用（网络/连接错误）；网络重试预算耗尽后记录受影响分支，独立分支继续，最终统一收口 | - |
 | `handle_auth_mismatch` | 识别授权不匹配（MCC/产品/scope），停止当前操作并引导调用 `auth.sh mismatch` | - |
-| `handle_service_unstable` | 处理 MCP 服务不稳定，提示稍后重试 | - |
+| `handle_service_unstable` | 处理 MCP 服务不稳定；停止当前动作并交由主流程最终统一收口 | - |
 | `handle_backend_error` | 处理后端业务错误（errorCode），展示错误信息、bizTips、checkedError | - |
 
 ---
@@ -39,7 +39,8 @@
 ### 处理原则
 ```
 ✅ 检测到 HTTP 401 → 执行并校验 logout → 仅退出成功后引导用户重新授权
-❌ logout 失败 → 明确报错并停止重新授权，禁止宣称已退出登录
+❌ logout 返回合法失败 → 明确报错并停止重新授权，禁止宣称已退出登录
+✅ logout 输出不可唯一解析或疑似 Agent 环境无联网权限 → 表述为“无法确认退出登录结果”，要求 Agent 申请联网权限后重试同一动作；禁止解释为用户本机 logout 失败或支付宝业务失败
 ✅ 清理对话上下文中的授权相关数据
 ✅ 提供清晰的错误说明和下一步操作指引
 ❌ 禁止自动重试 MCP 调用（会导致相同的认证错误）
@@ -77,13 +78,20 @@
 
 ### 处理原则
 ```
-✅ 检测到网络错误 → 沙箱化 Agent 环境提示申请可联网权限重试同一命令，其他环境提示用户检查网络
-✅ 提供网络排查指引
-❌ 禁止自动重试多次（会加剧服务器压力）
+✅ 只读调用检测到 MCP_SERVICE_ERROR / SERVICE_UNSTABLE → 同一参数最多自动重试 2 次，每次等待 3 秒
+✅ 写调用只有明确 NOT_SENT 时直接使用相同预算；MAYBE_SENT 先走现有只读核验，无法确认时标记 UNKNOWN
+✅ 重试预算耗尽 → 停止当前动作并记录失败事实；依赖允许时继续其他独立分支；全部可推进动作结束后，在 Step 6 逐分支结果中一次说明失败动作和恢复方式
+✅ 沙箱化 Agent 的宿主网络授权仍按环境权限机制处理，不能伪装成业务确认
+❌ 禁止因重试重新生成 REQUEST_JSON、bizRequestNo、资源名称或其他动态字段
+❌ 禁止业务错误、认证错误、授权不匹配、参数错误或结构歧义进入网络重试
 ❌ 禁止静默忽略错误
 ```
 
 > 📎 处理脚本：见 `error_handler.sh` → `handle_mcp_service_error()`、`handle_service_unstable()`
+
+`MCP_SERVICE_ERROR` 和 `SERVICE_UNSTABLE` 是现有错误处理脚本的内部分类，不是支付宝外部业务错误码。执行器保持 `detect_error`、`unwrap_mcp`、`handle_error` 和业务字段解析不变，只重复同一组已分词 CLI argv；stdout 仍单独交给原解析，stderr 不拼入 MCP JSON。
+
+写操作的保守判定固定为：DNS 解析失败、connection refused、宿主在连接前明确拒绝网络访问可记为 `NOT_SENT`；timeout、连接中断、`SERVICE_UNSTABLE` 或发送阶段不明一律为 `MAYBE_SENT`。签约提交使用现有签约查询核验；服务修改只有列表按 `serviceId` 精确匹配完整五项资料才算成功；服务新建和应用创建不能按同名候选猜测；公钥确认页没有可用核验查询；应用提审只使用现有应用信息状态。无法证明成功或未生效时禁止重复写入。
 
 ---
 
@@ -162,7 +170,7 @@
 ✅ 如有 checkedError → 逐条展示字段级校验错误描述
 ✅ 如有 errorScene / errorSpecific → 一并展示，便于技术支持定位
 ✅ createApplication 返回 APP_MAX_ERROR → 告知用户应用数量达到上限，引导复用已有上线应用或前往支付宝开放平台处理配额
-✅ needRetry=true → 告知用户可以重试
+✅ needRetry=true 仍属于业务错误提示 → 展示实际错误与 bizTips，但不自动重试、不立即询问“重试/退出”；业务条件修正后才能重新执行受影响动作
 ❌ 禁止：忽略 errorCode 继续执行
 ❌ 禁止：向用户暴露技术性内部错误
 ❌ 禁止：只输出"未知错误"而丢弃 errorCode / bizTips / checkedError
@@ -172,27 +180,13 @@
 
 ---
 
-## 六、快速集成用法
+## 六、脚本内错误处理契约
 
-> ⚠️ 各 `.sh` 脚本已内置错误检测（source `error_handler.sh` + 调用 `handle_error`）和 MCP 信封解包（`unwrap_mcp`），Agent 执行脚本时无需额外处理。
+当前 onboarding 主流程的 MCP 调用全部由已登记 `.sh` 脚本封装。运行时 Agent 只执行 flow 中的脚本入口，不直调 MCP、不追加 `handle_error` / `unwrap_mcp` 命令，也不在脚本成功后重新解析 stdout。
 
-在**直接执行 MCP 调用**（非通过脚本）的场景，需注意 `alipay-cli mcp call` 返回 MCP 协议信封，业务 JSON 被包在 `content[0].text` 里，必须先解包。CLI stdout 混有日志时，`unwrap_mcp` 只提取唯一可确定的信封或 JSON；存在多个候选时不猜测，保留原文并增加歧义标记，后续 `handle_error` 将按非 JSON 异常阻断：
+维护脚本时保持既有顺序：每次 MCP 调用先把原始 stdout 交给 `handle_error`；只有返回 0 才调用 `unwrap_mcp`，然后按当前模块已经确认的响应契约解析业务字段。CLI stdout 混有日志时，`unwrap_mcp` 只接受唯一可确定的 MCP 信封或 JSON；存在多个候选时不猜测、不回显原始响应，并由错误检测阻断。不得统一假定成功字段位于 `.success`；例如服务写入的当前协议使用 `code="10000"`、`data.success=true`，并从 `data.serviceId` 读取服务 ID。
 
-```bash
-# ① 执行 MCP 调用
-RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call <METHOD> -d '<JSON>' --json 2>/dev/null)
-
-# ② 调用 handle_error 自动处理（内含信封解包）
-if ! handle_error "$RESULT"; then
-  # handle_error 已输出用户提示，返回 1 表示需要用户干预
-  return 1
-fi
-
-# ③ 如果返回 0，解包信封后按当前模块已确认的响应契约处理业务字段
-BUSINESS=$(unwrap_mcp "$RESULT")
-# 不得统一假定成功字段位于 .success；例如服务写入的当前协议使用
-# code="10000"、data.success=true，并从 data.serviceId 读取服务 ID。
-```
+新增尚未封装的 MCP 调用不属于运行时排障动作。必须先取得确定 schema，并同步脚本、模块、flow 和契约测试后才能进入主流程；禁止用占位方法名或通用 JSON 模板临场试调。
 
 ---
 
@@ -238,7 +232,7 @@ BUSINESS=$(unwrap_mcp "$RESULT")
 | Step 3 登录授权 | whoami / login / login --complete / logout | 由 `auth.sh` 内置处理 |
 | Step 3.1 状态与资源查询（签约状态） | ar-query.queryArInfosBySalesProd | 由 `query_sign_status.sh` 内置（source error_handler.sh；建议设置 PRODUCT_TYPE 做产品码一致性校验） |
 | Step 3.1 应用/服务资源查询 | apprelease.queryApplicationList / a2a-pay-service.discoverBazaarServicesForMcp | 分别由 `app.sh list` / `service.sh list` 内置，禁止将失败结果当作空列表 |
-| Step 4 一次性资料与资源决策 | file upload | 由 `upload_screenshots.sh` 内置（source error_handler.sh + unwrap_mcp 解包信封） |
+| Step 4 签约材料类别 | file upload | 由 `upload_screenshots.sh` 内置（source error_handler.sh + unwrap_mcp 解包信封） |
 | Step 5.1 产品签约 | ar-sign.apply | 由 `ar_sign_apply.sh` 内置（source error_handler.sh） |
 | Step 5.2 服务注册 | a2a-pay-service.* | 由 `service.sh` 内置（source error_handler.sh） |
 | Step 5.3 应用发布 | apprelease.* | 由 `app.sh` 内置（source error_handler.sh） |

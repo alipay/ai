@@ -1,0 +1,782 @@
+{
+  "schemaVersion": 1,
+  "interactionPrompts": {
+    "confirmInputHint": "如确认，请输入 1；如需调整，请说明。",
+    "authorizationCompletionInputHint": "授权完成后请输入 1",
+    "publicKeyConfirmationCompletionInputHint": "支付宝扫码确认应用公钥完成后请输入 1",
+    "completionInputHint": "完成后请输入 1，或者输入其他内容。"
+  },
+  "messages": [
+    {
+      "messageId": "product.unsupported",
+      "owner": "catalog_owned",
+      "trigger": "route.unsupported_product",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "productName", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-MCP-CONTRACT-FROZEN"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["当前 Skill 只支持接入按量付费、网站支付和 APP 支付，不支持 `{{productName}}`。", "", "- 查看支付宝其他收单产品请前往：[支付宝开放平台](https://open.alipay.com)", "- 开通支付宝其他收单产品请前往：[支付宝商家平台](https://b.alipay.com/page/portal/home)"] }
+      }
+    },
+    {
+      "messageId": "onboarding.enterprise.unsupported",
+      "owner": "catalog_owned",
+      "trigger": "onboarding.enterprise_account",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": {
+        "ONBOARDING_ONLY": { "templateLines": ["暂不支持企业账号通过 Skill 完成产品开通。", "", "请前往支付宝商家平台开通：https://b.alipay.com/page/portal/home", "", "如需继续进行代码开发，试试对 Agent 说：为我集成网站支付/APP 支付/按量付费"] },
+        "FULL_PROCESS": { "templateLines": ["暂不支持企业账号通过 Skill 完成产品开通。", "", "请前往支付宝商家平台开通：https://b.alipay.com/page/portal/home"] }
+      }
+    },
+    {
+      "messageId": "product.clarify",
+      "owner": "catalog_owned",
+      "trigger": "route.product_unclear",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": {
+        "DEFAULT": { "templateLines": ["请确认您的业务场景：", "", "1. 按量付费：买家通过 Agent 使用支付宝完成支付，适用于 API、MCP、算力资源等按调用付费。", "2. 网站支付：买家在电脑网页或手机浏览器页面使用支付宝付款。", "3. APP 支付：买家在 APP 内调起支付宝完成付款。"] }
+      }
+    },
+    {
+      "messageId": "onboarding.mcc.clarify",
+      "owner": "catalog_owned",
+      "trigger": "onboarding.mcc_unclear",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "variables": [
+        { "name": "productName", "type": "enum", "required": true, "values": ["按量付费", "网站支付", "APP 支付"] }
+      ],
+      "requiredPolicyIds": [],
+      "variants": {
+        "DEFAULT": { "templateLines": ["MCC 与经营类目强相关，无法仅从“{{productName}}”确定。", "", "请补充本次接入的经营内容，例如：", "", "- 电商购物（实物商品销售）", "- 虚拟服务、会员或数字内容", "- 教育或培训课程", "- 其他具体经营场景", "", "也可以直接提供你已知的 MCC 二级类目名称或编码。"] }
+      }
+    },
+    {
+      "messageId": "integration.start.confirm",
+      "owner": "catalog_owned",
+      "trigger": "integration.step2.ready",
+      "blocking": true,
+      "allowedReplies": ["1"],
+      "inputHintType": "confirm",
+      "expiresWithPrompt": true,
+      "variables": [
+        { "name": "productName", "type": "enum", "required": true, "values": ["按量付费", "网站支付", "APP 支付"] },
+        { "name": "projectPath", "type": "path", "required": true },
+        { "name": "projectOriginLabel", "type": "enum", "required": true, "values": ["现有项目", "本轮新建项目"] },
+        { "name": "integrationStatus", "type": "enum", "required": true, "values": ["TARGET_PARTIAL", "OTHER_PRODUCT_ONLY", "NO_PAYMENT"] },
+        { "name": "otherProducts", "type": "singleLine", "required": false },
+        { "name": "language", "type": "singleLine", "required": true },
+        { "name": "framework", "type": "singleLine", "required": true },
+        { "name": "nextFlow", "type": "enum", "required": true, "values": ["integration"] }
+      ],
+      "requiredPolicyIds": ["P-PROJECT-PROTECT", "P-SENSITIVE-STATE"],
+      "variants": {
+        "AIPAY": { "templateLines": [
+          "请确认代码开发方案：",
+          "",
+          "| 项目 | 内容 |",
+          "|---|---|",
+          "| 目标产品 | {{productName}} |",
+          "| 项目路径 | `{{projectPath}}` |",
+          "| 项目来源 | {{projectOriginLabel}} |",
+          "| 代码开发状态 | {{integrationStatus}} |",
+          "| 检测到的其他支付产品 | {{otherProducts}} |",
+          "| 语言 / 框架 | {{language}} / {{framework}} |",
+          "",
+          "服务声明：",
+          "1. 使用本服务需遵守法律法规、自行审核测试并承担使用责任，我方不对使用效果、正确性担保。",
+          "2. 生产环境账号密码、API Keys、应用私钥等敏感信息切勿暴露给 Agent；仅沙箱环境信息可按本 Skill 的沙箱配置流程提供和使用。"
+        ] },
+        "WEBPAY": { "templateLines": [
+          "请确认代码开发方案：", "", "| 项目 | 内容 |", "|---|---|",
+          "| 目标产品 | 网站支付 |", "| 项目路径 | `{{projectPath}}` |", "| 项目来源 | {{projectOriginLabel}} |",
+          "| 代码开发状态 | {{integrationStatus}} |", "| 检测到的其他支付产品 | {{otherProducts}} |",
+          "| 语言 / 框架 | {{language}} / {{framework}} |",
+          "", "服务声明：",
+          "1. 使用本服务需遵守法律法规、自行审核测试并承担使用责任，我方不对使用效果、正确性担保。",
+          "2. 生产环境账号密码、API Keys、应用私钥等敏感信息切勿暴露给 Agent；仅沙箱环境信息可按本 Skill 的沙箱配置流程提供和使用。"
+        ] },
+        "APPPAY": { "templateLines": [
+          "请确认代码开发方案：", "", "| 项目 | 内容 |", "|---|---|",
+          "| 目标产品 | APP 支付 |", "| 项目路径 | `{{projectPath}}` |", "| 项目来源 | {{projectOriginLabel}} |",
+          "| 代码开发状态 | {{integrationStatus}} |", "| 检测到的其他支付产品 | {{otherProducts}} |",
+          "| 语言 / 框架 | {{language}} / {{framework}} |",
+          "",
+          "【前置提醒】接 APP 支付需要你有自己的 APP，本轮代码开发主要覆盖商家服务端支付接口的实现，APP 还需接入支付宝客户端 SDK 后才能调起支付。你可以在当前 APP 支付服务端代码开发完毕后，对 Agent 说：“给我做个 APP /给我的 APP 接支付宝客户端 SDK /把我的 APP 客户端和接了支付宝的服务端联动起来”。",
+          "", "服务声明：",
+          "1. 使用本服务需遵守法律法规、自行审核测试并承担使用责任，我方不对使用效果、正确性担保。",
+          "2. 生产环境账号密码、API Keys、应用私钥等敏感信息切勿暴露给 Agent；仅沙箱环境信息可按本 Skill 的沙箱配置流程提供和使用。"
+        ] }
+      }
+    },
+    {
+      "messageId": "onboarding.plan.confirm",
+      "owner": "catalog_owned",
+      "trigger": "onboarding.step2.ready",
+      "blocking": true,
+      "allowedReplies": ["1"],
+      "inputHintType": "confirm",
+      "expiresWithPrompt": true,
+      "variables": [
+        { "name": "mccCode", "type": "mccCode", "required": true },
+        { "name": "mccName", "type": "singleLine", "required": true },
+        { "name": "mccQualification", "type": "singleLine", "required": true }
+      ],
+      "requiredPolicyIds": ["P-AUTH-BEFORE-ONBOARDING", "P-URL-AUTO-OPEN"],
+      "variants": {
+        "AIPAY": { "templateLines": [
+          "请确认产品开通方案：",
+          "",
+          "| 项目 | 内容 |",
+          "|---|---|",
+          "| 产品 | 按量付费 |",
+          "| 产品码 | `I1080300001000160457` |",
+          "| 经营类目 | {{mccName}} (`{{mccCode}}`) |",
+          "| 特殊资质 | {{mccQualification}} |",
+          "| 授权范围 | `app:all,machine_pay:write,agmnt:write` |",
+          "| 材料预告 | 1、签约申请无需页面截图；2、新建或修改服务时收集服务资料；3、新建应用设置应用公钥时由用户提供 |",
+          "",
+          "你也可以选择前往支付宝 AI 付站点完成产品开通：",
+          "https://aipay.alipay.com/?from=alipay-aipay-skill",
+          "",
+          "暂不支持企业账号通过 Skill 完成产品开通，企业账号如需开通请前往支付宝商家平台（https://b.alipay.com/page/portal/home）"
+        ] },
+        "WEBPAY": { "templateLines": [
+          "请确认产品开通方案：", "", "| 项目 | 内容 |", "|---|---|",
+          "| 产品 | 网站支付 |", "| 产品码 | `I1080300001000041203` |", "| 经营类目 | {{mccName}} (`{{mccCode}}`) |", "| 特殊资质 | {{mccQualification}} |",
+          "| 授权范围 | `app:all,fast_instant_trade_pay:write` |",
+          "| 材料预告 | 1、未签约时收集首页、商品页、支付页 3 张截图；支付页是展示支付宝付款方式，等待用户去支付的页面；2、新建应用设置应用公钥时由用户提供 |",
+          "",
+          "你也可以选择前往支付宝 AI 付站点完成产品开通：",
+          "https://aipay.alipay.com/?from=alipay-aipay-skill",
+          "",
+          "暂不支持企业账号通过 Skill 完成产品开通，企业账号如需开通请前往支付宝商家平台（https://b.alipay.com/page/portal/home）"
+        ] },
+        "APPPAY": {
+          "templateLines": [
+          "请确认产品开通方案：", "", "| 项目 | 内容 |", "|---|---|",
+          "| 产品 | APP 支付 |", "| 产品码 | `I1080300001000041313` |", "| 经营类目 | {{mccName}} (`{{mccCode}}`) |", "| 特殊资质 | {{mccQualification}} |",
+          "| 授权范围 | `app:all,auth_alipay_apppay:write` |",
+          "| 材料预告 | 1、未签约时收集 APP 名称和首页、商品页、支付页 3 张截图；支付页是展示支付宝付款方式，等待用户去支付的页面；2、新建应用支持 iOS、Android 或 ALL（二者同时）；3、新建应用设置应用公钥时由用户提供 |",
+          "| 特别提醒 | 鸿蒙系统移动应用暂不支持通过 Skill 创建，请前往支付宝开放平台（https://open.alipay.com/）-控制台手动创建 |",
+          "",
+          "你也可以选择前往支付宝 AI 付站点完成产品开通：",
+          "https://aipay.alipay.com/?from=alipay-aipay-skill",
+          "",
+          "暂不支持企业账号通过 Skill 完成产品开通，企业账号如需开通请前往支付宝商家平台（https://b.alipay.com/page/portal/home）"
+        ]
+        }
+      }
+    },
+    {
+      "messageId": "auth.page",
+      "owner": "catalog_owned",
+      "trigger": "AUTH_FLOW:READY",
+      "blocking": true,
+      "allowedReplies": ["1"],
+      "inputHintType": "authorizationComplete",
+      "expiresWithPrompt": true,
+      "variables": [
+        { "name": "productName", "type": "enum", "required": true, "values": ["按量付费", "网站支付", "APP 支付"] },
+        { "name": "deviceCode", "type": "singleLine", "required": true },
+        { "name": "mccCode", "type": "mccCode", "required": true },
+        { "name": "mccName", "type": "singleLine", "required": true },
+        { "name": "verificationCode", "type": "singleLine", "required": true },
+        { "name": "expiresDisplay", "type": "singleLine", "required": true },
+        { "name": "officialUrl", "type": "officialTemporaryUrl", "required": true, "urlKind": "authorization" }
+      ],
+      "requiredPolicyIds": ["P-AUTH-URL", "P-URL-AUTO-OPEN"],
+      "variants": {
+        "DEFAULT": { "templateLines": [
+          "已尝试在浏览器自动打开支付宝扫码授权页面。",
+          "",
+          "| 授权信息 | 内容 |",
+          "|---|---|",
+          "| 产品类型 | {{productName}} |",
+          "| 经营类目 | {{mccName}} (`{{mccCode}}`) |",
+          "| 确认码 | {{verificationCode}} |",
+          "| 授权链接有效期 | {{expiresDisplay}} |",
+          "",
+          "安全提示：支付宝扫码后，请核对授权页面显示的确认码是否与上方一致；如不一致，请勿授权并立即停止操作。确认码只用于核对，不需要输入。",
+          "",
+          "无法跳链时，请复制下方链接到网页浏览器打开。",
+          "授权链接：",
+          "{{officialUrl}}"
+        ] }
+      }
+    },
+    {
+      "messageId": "application.key.page",
+      "owner": "catalog_owned",
+      "trigger": "application.key_page.ready",
+      "blocking": true,
+      "allowedReplies": ["1"],
+      "inputHintType": "publicKeyConfirmationComplete",
+      "expiresWithPrompt": true,
+      "variables": [
+        { "name": "appId", "type": "singleLine", "required": true },
+        { "name": "officialUrl", "type": "officialTemporaryUrl", "required": true, "urlKind": "publicKeyConfirmation" }
+      ],
+      "requiredPolicyIds": ["P-KEY-URL", "P-URL-AUTO-OPEN"],
+      "variants": {
+        "OPENED": { "templateLines": ["应用 `{{appId}}` 的公钥确认页面已打开，请打开支付宝扫码确认应用公钥。", "", "无法跳链时，请复制下方链接到网页浏览器打开。", "公钥确认链接：", "{{officialUrl}}"] },
+        "OPEN_FAILED": { "templateLines": ["未能自动打开应用 `{{appId}}` 的公钥确认页面。", "", "无法跳链时，请复制下方链接到网页浏览器打开。", "公钥确认链接：", "{{officialUrl}}"] }
+      }
+    },
+    {
+      "messageId": "onboarding.discovery.summary",
+      "owner": "catalog_owned",
+      "trigger": "onboarding.discovery.finished",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "signingStatus", "type": "enum", "required": true, "values": ["未签约", "已提交待生效", "已生效", "其他状态待核验", "查询失败"] },
+        { "name": "serviceStatus", "type": "enum", "required": false, "values": ["无已有服务", "已有服务候选", "查询失败"] },
+        { "name": "applicationStatus", "type": "enum", "required": true, "values": ["无同类型应用", "有上线应用可复用", "仅有未上线应用", "查询失败"] }
+      ],
+      "requiredPolicyIds": ["P-PARTIAL-RESULT", "P-MATERIAL-CATEGORY"],
+      "variants": {
+        "AIPAY": { "templateLines": ["当前查询结果：", "", "| 流程 | 当前状态 |", "|---|---|", "| 产品签约 | {{signingStatus}} |", "| 服务市场 | {{serviceStatus}} |", "| 应用发布 | {{applicationStatus}} |"] },
+        "WEBPAY": { "templateLines": ["当前查询结果：", "", "| 流程 | 当前状态 |", "|---|---|", "| 产品签约 | {{signingStatus}} |", "| 服务市场 | 无需处理 |", "| 应用发布 | {{applicationStatus}} |"] },
+        "APPPAY": { "templateLines": ["当前查询结果：", "", "| 流程 | 当前状态 |", "|---|---|", "| 产品签约 | {{signingStatus}} |", "| 服务市场 | 无需处理 |", "| 应用发布 | {{applicationStatus}} |"] }
+      }
+    },
+    {
+      "messageId": "materials.category.collect",
+      "owner": "catalog_owned",
+      "trigger": "materials.category.ready",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "expiresWithPrompt": true,
+      "variables": [
+        { "name": "categoryName", "type": "enum", "required": true, "values": ["签约材料", "服务资料", "应用资料"] },
+        { "name": "currentStatus", "type": "enum", "required": true, "values": ["待补充", "部分已提供，待补充", "校验失败，需更正"] },
+        { "name": "missingFields", "type": "enumList", "required": true, "values": ["APP名称", "首页截图", "商品页截图", "支付页截图", "服务名称", "服务描述", "服务地址", "服务单价", "请求示例JSON", "应用平台和对应资料", "iOS Bundle ID（bundleId）", "Android 应用包名（appPackage）", "Android 应用签名摘要（appSign）", "应用公钥"] },
+        { "name": "paymentPageHint", "type": "string", "derived": true, "values": ["支付页说明：支付页是展示支付宝付款方式，等待用户去支付的页面，不是支付成功页。"] }
+      ],
+      "requiredPolicyIds": ["P-MATERIAL-CATEGORY"],
+      "variants": {
+        "INITIAL": { "templateLines": ["当前收集类别：{{categoryName}}", "", "请在一条回复中提供：{{missingFields}}。", "{{paymentPageHint}}", "你也可以提前提供后续类别材料，我会直接接收并在对应类别复用。"] },
+        "APP_MOBILE_INITIAL": { "templateLines": ["当前收集类别：应用资料", "", "请在一条回复中选择要创建的应用平台，并提供对应资料：", "", "- iOS：回复 `IOS`，并提供 iOS Bundle ID（bundleId）。", "- Android：回复 `ANDROID`，并提供 Android 应用包名（appPackage）和 Android 应用签名摘要（appSign，不是应用公钥）。", "- iOS + Android：回复 `ALL`，并提供以上三项资料。", "", "如已准备应用公钥，也可以在同一条回复中一并提供；未准备不影响创建应用。请勿提供应用私钥。", "", "鸿蒙系统移动应用暂不支持通过 Skill 创建，请前往支付宝开放平台（https://open.alipay.com/）-控制台手动创建。"] },
+        "PARTIAL": { "templateLines": ["当前收集类别：{{categoryName}}", "", "还需补充：{{missingFields}}。", "{{paymentPageHint}}", "已校验字段无需重复提供；你也可以提前提供后续类别材料，我会直接接收并在对应类别复用。"] },
+        "INVALID": { "templateLines": ["当前收集类别：{{categoryName}}", "", "以下内容需要更正：{{missingFields}}。", "{{paymentPageHint}}", "已校验字段无需重复提供；你也可以提前提供后续类别材料，我会直接接收并在对应类别复用。"] }
+      }
+    },
+    {
+      "messageId": "service.create.summary",
+      "owner": "catalog_owned",
+      "trigger": "service.create.ready",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "serviceName", "type": "singleLine", "required": true },
+        { "name": "serviceDescription", "type": "singleLine", "required": true },
+        { "name": "serviceUrl", "type": "runtimeUrl", "required": true },
+        { "name": "servicePricing", "type": "singleLine", "required": true },
+        { "name": "serviceSchema", "type": "string", "required": true }
+      ],
+      "requiredPolicyIds": ["P-WRITE-CONFIRM", "P-WRITE-UNKNOWN"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["将创建以下按量付费服务：", "", "服务名称：{{serviceName}}", "服务描述：{{serviceDescription}}", "服务地址：`{{serviceUrl}}`", "服务单价：{{servicePricing}} 元/次", "请求示例 JSON：", "```json", "{{serviceSchema}}", "```"] }
+      }
+    },
+    {
+      "messageId": "onboarding.write.confirm",
+      "owner": "catalog_owned",
+      "trigger": "external_write.ready",
+      "blocking": true,
+      "allowedReplies": ["1"],
+      "inputHintType": "confirm",
+      "expiresWithPrompt": true,
+      "variables": [
+        { "name": "sessionSummary", "type": "singleLine", "required": true },
+        { "name": "subjectSummary", "type": "singleLine", "required": true },
+        { "name": "productName", "type": "enum", "required": true, "values": ["按量付费", "网站支付", "APP 支付"] },
+        { "name": "actionTypes", "type": "enumList", "required": true, "values": ["服务修改"] },
+        { "name": "serviceId", "type": "singleLine", "required": false },
+        { "name": "serviceName", "type": "singleLine", "required": false },
+        { "name": "serviceDescription", "type": "singleLine", "required": false },
+        { "name": "serviceUrl", "type": "runtimeUrl", "required": false },
+        { "name": "servicePricing", "type": "singleLine", "required": false },
+        { "name": "serviceSchema", "type": "string", "required": false }
+      ],
+      "requiredPolicyIds": ["P-WRITE-CONFIRM", "P-WRITE-UNKNOWN"],
+      "variants": {
+        "SERVICE_UPDATE_ONLY": { "templateLines": ["请确认以下支付宝操作：", "", "- 当前会话：{{sessionSummary}}", "- 操作主体：{{subjectSummary}}", "- 产品：按量付费", "- 动作：服务修改", "", "服务ID：`{{serviceId}}`", "服务名称：{{serviceName}}", "服务描述：{{serviceDescription}}", "服务地址：`{{serviceUrl}}`", "服务单价：{{servicePricing}} 元/次", "请求示例 JSON：", "```json", "{{serviceSchema}}", "```", "", "本次只执行上述服务修改；签约、应用创建、公钥设置和应用提审不包含在本确认中。"] }
+      }
+    },
+    {
+      "messageId": "process.partial_result",
+      "owner": "catalog_owned",
+      "trigger": "process.current_endpoint",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "productName", "type": "enum", "required": true, "values": ["按量付费", "网站支付", "APP 支付"] },
+        { "name": "processResultTitle", "type": "enum", "required": true, "values": ["支付产品-产品开通已完成", "流程进展"] },
+        { "name": "integrationResult", "type": "enum", "required": true, "values": ["不在本轮执行范围", "已完成", "部分完成，沙箱配置待完成", "部分完成，人工待验证", "未完成", "结果未知"] },
+        { "name": "sandboxConfigState", "type": "enum", "required": false, "values": ["READY", "CREATE_PENDING", "VERIFY_PENDING"] },
+        { "name": "signingResult", "type": "enum", "required": true, "values": ["未签约", "已提交，等待生效", "已生效", "失败", "结果未知"] },
+        { "name": "serviceResult", "type": "enum", "required": true, "values": ["无需处理", "已复用", "创建成功，状态未取得", "修改成功，状态未取得", "已完成", "失败", "结果未知"] },
+        { "name": "applicationResult", "type": "enum", "required": true, "values": ["待选择", "已创建，待设置公钥", "公钥待确认", "HarmonyOS 应用待平台侧创建、配置或上线", "已提交审核，等待上线", "已上线且配置完整", "需人工配置", "失败", "结果未知"] },
+        { "name": "remainingActions", "type": "singleLine", "required": true },
+        { "name": "manualVerificationItems", "type": "singleLine", "required": false },
+        { "name": "applicationOperationAppId", "type": "singleLine", "required": false },
+        { "name": "applicationOperationActualStatus", "type": "singleLine", "required": false },
+        { "name": "applicationOperationNextAction", "type": "singleLine", "required": false },
+        { "name": "applicationOperationBlock", "type": "string", "required": false, "derived": true, "values": ["renderer"] },
+        { "name": "manualVerificationLine", "type": "string", "required": false, "derived": true, "values": ["renderer"] },
+        { "name": "productionReadinessBlock", "type": "string", "required": false, "derived": true, "values": ["renderer"] },
+        { "name": "statusQueryHint", "type": "enum", "required": false, "derived": true, "values": ["。这期间，你也可以试着对 Agent 说：“帮我查询产品签约状态”或“帮我查询应用状态”。"] },
+        { "name": "sandboxRecoveryHint", "type": "string", "required": false, "derived": true, "values": ["renderer"] },
+        { "name": "nextFlowReminderLine", "type": "string", "required": false, "derived": true, "values": ["renderer"] },
+        { "name": "nextFlowReminder", "type": "enum", "required": true, "values": ["还需完成支付产品-代码开发，才能在业务系统中实际发起支付。", "代码开发已在本轮执行；后续只按上表实际待办继续。"] }
+      ],
+      "requiredPolicyIds": ["P-PARTIAL-RESULT"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["{{processResultTitle}}：", "", "| 分支 | 实际结果 |", "|---|---|", "| 产品 | {{productName}} |", "| 代码开发 | {{integrationResult}} |", "| 产品开通 | {{signingResult}} |", "| 服务市场 | {{serviceResult}} |", "| 应用发布 | {{applicationResult}} |", "", "本轮流程仍需处理：{{remainingActions}}{{statusQueryHint}}", "{{manualVerificationLine}}", "{{sandboxRecoveryHint}}", "{{applicationOperationBlock}}", "", "{{productionReadinessBlock}}", "", "{{nextFlowReminderLine}}"] }
+      }
+    },
+    {
+      "messageId": "key_tool.download.result",
+      "owner": "catalog_owned",
+      "trigger": "key_tool.download.finished",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "downloadPath", "type": "existingPath", "required": true }],
+      "requiredPolicyIds": ["P-KEY-TOOL-DOWNLOAD"],
+      "fallbackMessageId": "key_tool.download.fallback",
+      "variants": { "DOWNLOADED": { "templateLines": ["支付宝开放平台密钥工具已下载到：`{{downloadPath}}`。", "", "请打开该安装包并按页面引导完成安装；Agent 不会自动安装、启动工具或生成密钥。生成后只向 Agent 提供【应用公钥】，应用私钥请自行妥善保管。", "", "如未找到安装包或自动下载未成功，请前往支付宝开放平台自行下载安装：", "", "https://opendocs.alipay.com/isv/02kipk"] } }
+    },
+    {
+      "messageId": "key_tool.download.fallback",
+      "owner": "catalog_owned",
+      "trigger": "key_tool.download.fallback",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": ["P-KEY-TOOL-DOWNLOAD"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["未能完成自动下载，可能是当前环境不支持、无法访问下载源、本地目录不可写或安装包校验未通过。请访问支付宝开放平台手动下载支付宝开放平台密钥工具：", "", "https://opendocs.alipay.com/isv/02kipk", "", "仅向 Agent 提供【应用公钥】，应用私钥请自行妥善保管。"] }
+      }
+    },
+    {
+      "messageId": "sandbox.windows.manual_setup",
+      "owner": "catalog_owned",
+      "trigger": "integration.sandbox.windows.manual_setup",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "variables": [],
+      "requiredPolicyIds": ["P-SANDBOX-CREDENTIAL-EXCEPTION", "P-SENSITIVE-STATE"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["当前 Windows 环境暂不支持自动创建快速沙箱，请前往支付宝开放平台（https://open.alipay.com/）-控制台获取沙箱应用。", "", "请把沙箱应用的 APPID、支付宝公钥、应用公钥、与当前开发语言（JAVA语言/非JAVA语言）匹配的应用私钥、沙箱账号信息告诉我，我会帮你完成项目配置，并继续进行支付产品代码开发。", "", "生产环境应用私钥和密码切勿暴露给 Agent。"] }
+      }
+    },
+    {
+      "messageId": "sandbox.environment.summary",
+      "owner": "catalog_owned",
+      "trigger": "integration.sandbox.persisted",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "productName", "type": "enum", "required": true, "values": ["按量付费", "网站支付", "APP 支付"] },
+        { "name": "configPath", "type": "existingPath", "required": true },
+        { "name": "environmentRows", "type": "sandboxTableRows", "required": true }
+      ],
+      "requiredPolicyIds": ["P-SANDBOX-CREDENTIAL-EXCEPTION", "P-SENSITIVE-STATE"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["沙箱环境摘要", "", "| 项目 | 信息 |", "|---|---|", "| 产品 | {{productName}} |", "| 配置文件目录 | `{{configPath}}` |", "{{environmentRows}}", "| 密钥字段 | 已写入本地配置文件，默认不在对话中展开 |"] }
+      }
+    },
+    {
+      "messageId": "sandbox.configuration.pending",
+      "owner": "catalog_owned",
+      "trigger": "integration.sandbox.pending",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": ["P-SENSITIVE-STATE"],
+      "variants": {
+        "CREATE": { "templateLines": ["快速沙箱暂未创建成功，当前沙箱配置尚未完成。", "", "本轮将继续代码开发。代码开发完成后，请对 Agent 说：“重新创建并配置沙箱”。"] },
+        "VERIFY": { "templateLines": ["快速沙箱配置复核未通过，当前沙箱配置尚未完成。", "", "本轮将继续代码开发。代码开发完成后，请对 Agent 说：“重新创建并配置沙箱”。"] }
+      }
+    },
+    {
+      "messageId": "sandbox.create.failure",
+      "owner": "catalog_owned",
+      "trigger": "integration.sandbox.failed",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "failureReason", "type": "singleLine", "required": true },
+        { "name": "recoveryAction", "type": "singleLine", "required": true }
+      ],
+      "requiredPolicyIds": ["P-SENSITIVE-STATE"],
+      "variants": {
+        "WINDOWS": { "templateLines": ["Windows 沙箱本地配置未准备完成：{{failureReason}}", "", "恢复动作：{{recoveryAction}}", "", "字段缺失、来源不明或本地保护未完成时不能继续，也不能把当前配置表述为可用。"] }
+      }
+    },
+    {
+      "messageId": "sandbox.environment.reminder",
+      "owner": "catalog_owned",
+      "trigger": "integration.sandbox.persisted.reminder",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": ["P-A2M-SANDBOX", "P-SENSITIVE-STATE"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["快速沙箱环境配置已准备完成。", "", "- 当前环境仅供测试，不涉及真实资金。", "- 完整配置已写入本地文件；不要在项目日志、对话总结或公共代码仓库中打印或提交密钥和沙箱账号。", "- 迁移配置时从受限权限的本地文件读取，不通过对话传递密钥原文。", "- 正式上线前使用同一套生产 `appId`、应用公钥、应用私钥和支付宝公钥，并按开发语言确认私钥格式；格式不匹配时只使用支付宝官方密钥工具转换。", "- 沙箱网关为 https://openapi-sandbox.dl.alipaydev.com/gateway.do，生产网关为 https://openapi.alipay.com/gateway.do；禁止在沙箱配置中提前使用生产网关。", "- 按量付费沙箱 `serviceId` 固定为 `api_mock_service_id`，生产前必须替换为服务市场实际 `serviceId`。"] },
+        "WINDOWS": { "templateLines": ["Windows 沙箱本地配置已准备完成。", "", "- 当前环境仅供测试，不涉及真实资金。", "- 不要在项目日志、对话总结或公共代码仓库中打印或提交密钥和沙箱账号。", "- 本轮提供的沙箱密钥和账号只用于当前项目配置；Agent 不得在回复中复述。", "- 生产环境应用私钥和密码切勿暴露给 Agent。", "- 正式上线前使用同一套生产 `appId`、应用公钥、应用私钥和支付宝公钥，并按开发语言确认私钥格式；格式不匹配时只使用支付宝官方密钥工具转换。", "- 沙箱网关为 https://openapi-sandbox.dl.alipaydev.com/gateway.do，生产网关为 https://openapi.alipay.com/gateway.do；禁止在沙箱配置中提前使用生产网关。", "- 按量付费沙箱 `serviceId` 固定为 `api_mock_service_id`，生产前必须替换为服务市场实际 `serviceId`。"] }
+      }
+    },
+    {
+      "messageId": "a2m.test.start",
+      "owner": "catalog_owned",
+      "trigger": "integration.a2m.test.start",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": ["P-A2M-SANDBOX", "P-A2M-SUCCESS"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["开始执行按量付费沙箱服务端联调。", "", "我将连续验证 `402 Payment-Needed`、沙箱收银、`Payment-Proof` 重试和资源交付，完成后输出实际结论；这里不需要额外确认。"] }
+      }
+    },
+    {
+      "messageId": "a2m.test.result",
+      "owner": "catalog_owned",
+      "trigger": "integration.a2m.test.finished",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "evidenceSummary", "type": "singleLine", "required": true },
+        { "name": "recoveryAction", "type": "singleLine", "required": false }
+      ],
+      "requiredPolicyIds": ["P-A2M-SUCCESS", "P-SENSITIVE-STATE"],
+      "variants": {
+        "PASSED": { "templateLines": ["按量付费沙箱服务端联调通过。", "", "通过证据：{{evidenceSummary}}"] },
+        "FAILED": { "templateLines": ["按量付费沙箱服务端联调未通过。", "", "实际证据：{{evidenceSummary}}", "", "恢复动作：{{recoveryAction}}"] }
+      }
+    },
+    {
+      "messageId": "a2m.payment.experience",
+      "owner": "catalog_owned",
+      "trigger": "integration.a2m.optional_payment_experience",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "paymentUrl", "type": "runtimeUrl", "required": true },
+        { "name": "buyerAccount", "type": "singleLine", "required": true },
+        { "name": "buyerLoginPassword", "type": "sandboxCredential", "required": true },
+        { "name": "buyerPayPassword", "type": "sandboxCredential", "required": true }
+      ],
+      "requiredPolicyIds": ["P-SANDBOX-CREDENTIAL-EXCEPTION"],
+      "variants": {
+        "FULL": { "templateLines": ["可选：体验按量付费沙箱付款", "", "付款链接（复制到网页浏览器打开）：{{paymentUrl}}", "沙箱买家账号：{{buyerAccount}}", "登录密码：{{buyerLoginPassword}}", "支付密码：{{buyerPayPassword}}"] }
+      }
+    },
+    {
+      "messageId": "webpay.sandbox.experience",
+      "owner": "catalog_owned",
+      "trigger": "integration.webpay.sandbox_experience",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "startCommand", "type": "command", "required": true },
+        { "name": "paymentUrl", "type": "runtimeUrl", "required": true },
+        { "name": "buyerAccount", "type": "singleLine", "required": true },
+        { "name": "buyerLoginPassword", "type": "sandboxCredential", "required": true },
+        { "name": "buyerPayPassword", "type": "sandboxCredential", "required": true },
+        { "name": "resultPageInstruction", "type": "enum", "required": true, "values": ["付款后确认浏览器自动返回商户结果页，页面可正常展示并通过服务端查询呈现订单状态。", "付款后不会自动返回商户网站；请手动返回商户订单查询页并刷新或查询订单状态。"] }
+      ],
+      "requiredPolicyIds": ["P-SANDBOX-CREDENTIAL-EXCEPTION"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["网站支付沙箱付款指引", "", "1. 启动服务：`{{startCommand}}`", "2. 在浏览器打开：{{paymentUrl}}", "3. 在沙箱收银台二选一：使用沙箱买家账号登录，或仅在 Android 沙箱支付宝中扫描收银台页面二维码。", "4. 沙箱买家账号：{{buyerAccount}}", "5. 登录密码：{{buyerLoginPassword}}", "6. 支付密码：{{buyerPayPassword}}", "7. {{resultPageInstruction}}", "", "沙箱测试环境不稳定，可能出现跳转到支付宝收银台页面后报错，如：504 Gateway Time-out；输入完测试买家账号后展示系统繁忙；输入完测试买家支付密码后展示系统繁忙。您可以回到支付页重新发起支付以完成沙箱测试。", "", "前台页面和同步回跳参数不是支付成功依据，最终以验签通过的异步通知或交易查询为准。用户暂不付款只记为待体验，不得表述为沙箱测试通过。"] }
+      }
+    },
+    {
+      "messageId": "sandbox.android.client",
+      "owner": "catalog_owned",
+      "trigger": "integration.sandbox_android_client",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": {
+        "DEFAULT": { "templateLines": ["沙箱支付宝当前仅支持 Android。请复制以下支付宝官方地址到网页浏览器打开，并扫描屏幕二维码下载沙箱版支付宝安装包：", "", "https://mdn.alipayobjects.com/sandboxsys/afts/img/_itHRrdOD9oAAAAAAAAAAAAADgSLAQBr/original", "", "如果直链或页面二维码无法打开，请前往支付宝开放平台-沙箱工具页下载：", "", "https://open.alipay.com/develop/sandbox/tool"] }
+      }
+    },
+    {
+      "messageId": "webpay.sandbox.experience.windows",
+      "owner": "catalog_owned",
+      "trigger": "integration.webpay.sandbox_experience.windows",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "startCommand", "type": "command", "required": true },
+        { "name": "paymentUrl", "type": "runtimeUrl", "required": true },
+        { "name": "resultPageInstruction", "type": "enum", "required": true, "values": ["付款后确认浏览器自动返回商户结果页，页面可正常展示并通过服务端查询呈现订单状态。", "付款后不会自动返回商户网站；请手动返回商户订单查询页并刷新或查询订单状态。"] }
+      ],
+      "requiredPolicyIds": ["P-SENSITIVE-STATE"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["网站支付沙箱付款指引", "", "1. 启动服务：`{{startCommand}}`", "2. 在浏览器打开：{{paymentUrl}}", "3. 在沙箱收银台使用支付宝开放平台控制台中的沙箱买家账号登录，或仅在 Android 沙箱支付宝中扫描收银台页面二维码。", "4. 登录密码和支付密码请直接从本机保存的信息或支付宝开放平台控制台取得，无需再次提供给 Agent。", "5. {{resultPageInstruction}}", "", "沙箱测试环境不稳定，可能出现跳转到支付宝收银台页面后报错，如：504 Gateway Time-out；输入完测试买家账号后展示系统繁忙；输入完测试买家支付密码后展示系统繁忙。您可以回到支付页重新发起支付以完成沙箱测试。", "", "前台页面和同步回跳参数不是支付成功依据，最终以验签通过的异步通知或交易查询为准。用户暂不付款只记为待体验，不得表述为沙箱测试通过。"] }
+      }
+    },
+    {
+      "messageId": "integration.safety.closeout",
+      "owner": "catalog_owned",
+      "trigger": "integration.step7.safety",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "acceptanceSummary", "type": "singleLine", "required": true }
+      ],
+      "requiredPolicyIds": ["P-SENSITIVE-STATE"],
+      "variants": {
+        "AIPAY": { "templateLines": ["代码开发安全与上线提醒", "", "- 私钥只保存在商家服务端，禁止写入客户端、日志或公共仓库。", "- `Payment-Proof` 必须调用 `alipay.aipay.agent.payment.verify` 验证；无效或过期凭证拒绝服务，结果不明时不得要求用户重复付款。", "- 资源交付后必须调用 `alipay.aipay.agent.fulfillment.confirm`；履约确认失败必须可重试且保持幂等。", "- 沙箱配置仅用于开发调试；正式上线前必须替换为同一套生产 `appId`、应用公钥、应用私钥和支付宝公钥，并将 `api_mock_service_id` 替换为真实 `serviceId`。`serviceId` 获取方式：支付宝扫码登录支付宝 AI 付站点 https://aipay.alipay.com/ → 控制台 → 服务管理 → 复制审核已通过的服务 ID。", "- 收款商户 PID/2088 获取方式：支付宝扫码登录支付宝商家平台 https://b.alipay.com/page/portal/home → 点击头像 → 复制账户名下方 2088 开头的商家 ID；该值用于按量付费 `seller_id` 和 `seller_unique_id`，不由 Agent 猜测。", "- 生产环境必须严格校验本地订单、金额与资源关系；按量付费不使用网站支付/APP 支付的 `notify_url`，正式收款依赖 `Payment-Proof` 验付和异步履约回执确认。", "- 上线前必须完成人工代码审查；Java 使用 `PKCS#8` 私钥，非 Java 使用 `PKCS#1` 私钥，格式不匹配时只用支付宝官方密钥工具转换。", "", "补充说明：", "- 若忘记代码开发过程中获取的沙箱配置，可以试试对 Agent 说：“沙箱测试买家账号和密码是什么？”。", "- 当前沙箱版支付宝【仅支持 Android 端】，下载地址：https://mdn.alipayobjects.com/sandboxsys/afts/img/_itHRrdOD9oAAAAAAAAAAAAADgSLAQBr/original。可以自行前往网页浏览器打开，扫码下载。", "", "当前验收口径：{{acceptanceSummary}}"] },
+        "WEBPAY": { "templateLines": ["代码开发安全与上线提醒", "", "- 私钥只保存在商家服务端，禁止写入客户端、日志或公共仓库。", "- 同步回跳和前台结果不作为支付成功依据；必须以验签通过的异步通知或交易查询为准。", "- 异步通知必须先验签、校验关键字段、幂等处理并返回 `success`；支付结果不明时不得要求用户重复付款。", "- 沙箱配置仅用于开发调试；正式上线前必须替换为同一套生产 `appId`、应用公钥、应用私钥和支付宝公钥。", "- 网站支付生产上线必须配置公网 HTTPS `notify_url`，完成验签、幂等、关键字段校验、成功回写和补偿查询；localhost、局域网地址或其他不可公网访问的地址只能标记为人工待验证。", "- 本地生产参数验收可暂缓公网通知联调；未完成公网 HTTPS `notify_url` 联调时，只能表述为“本地正式验收 / 本地生产参数验收，公网异步通知待补齐”，不能表述为生产就绪。", "- Java 使用 `PKCS#8` 私钥，非 Java 使用 `PKCS#1` 私钥，格式不匹配时只用支付宝官方密钥工具转换。", "", "补充说明：", "- 若忘记代码开发过程中获取的沙箱配置，可以试试对 Agent 说：“沙箱测试买家账号和密码是什么？”。", "- 当前沙箱版支付宝【仅支持 Android 端】，下载地址：https://mdn.alipayobjects.com/sandboxsys/afts/img/_itHRrdOD9oAAAAAAAAAAAAADgSLAQBr/original。可以自行前往网页浏览器打开，扫码下载。", "", "当前验收口径：{{acceptanceSummary}}"] },
+        "APPPAY": { "templateLines": ["代码开发安全与上线提醒", "", "- 私钥只保存在商家服务端，禁止写入 APP 客户端、日志或公共仓库。", "- 客户端支付结果不作为成功依据；必须以验签通过的异步通知或服务端交易查询为准。", "- 异步通知必须先验签、校验关键字段、幂等处理并返回 `success`；支付结果不明时不得要求用户重复付款。", "- APP 支付生产上线必须配置公网 HTTPS `notify_url`，完成验签、幂等、关键字段校验、成功回写和补偿查询；localhost、局域网地址或其他不可公网访问的地址只能标记为人工待验证。", "- 本地生产参数验收可暂缓公网通知联调；未完成公网 HTTPS `notify_url` 联调时，只能表述为“本地正式验收 / 本地生产参数验收，公网异步通知待补齐”，不能表述为生产就绪。", "- Java 使用 `PKCS#8` 私钥，非 Java 使用 `PKCS#1` 私钥，格式不匹配时只用支付宝官方密钥工具转换。", "- 沙箱配置仅用于开发调试；正式上线前必须替换为同一套生产 `appId`、应用公钥、应用私钥和支付宝公钥。", "- 本轮代码开发覆盖商家服务端支付能力；APP 客户端还需接入支付宝客户端 SDK，使用服务端返回的 `orderStr` 调起支付，并完成客户端支付结果展示与服务端异步通知/交易查询的联动测试。若 APP 尚未接入，可以试试继续对 Agent 说：“给我的 APP 接支付宝客户端 SDK，我要做服务端和客户端的联调”（请确保此时你已经有一个开发完毕的 APP）。", "", "补充说明：", "- 若忘记代码开发过程中获取的沙箱配置，可以试试对 Agent 说：“沙箱测试买家账号和密码是什么？”。", "- 当前沙箱版支付宝【仅支持 Android 端】，下载地址：https://mdn.alipayobjects.com/sandboxsys/afts/img/_itHRrdOD9oAAAAAAAAAAAAADgSLAQBr/original。可以自行前往网页浏览器打开，扫码下载；或试试让 Agent 帮你解析该地址包含的二维码并下载沙箱版支付宝。", "- 【友情提醒】如果你当前还没有开发 APP，可以试着让 Agent 帮你安装手机客户端模拟器、开发 APP、接入支付宝客户端 SDK 并安装沙箱版支付宝供测试使用。", "", "当前验收口径：{{acceptanceSummary}}"] }
+      }
+    },
+    {
+      "messageId": "integration.checklist.result",
+      "owner": "catalog_owned",
+      "trigger": "integration.checklist.finished",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "overallResult", "type": "enum", "required": true, "values": ["通过", "部分通过", "未通过"] },
+        { "name": "failedItems", "type": "singleLine", "required": true },
+        { "name": "manualItems", "type": "singleLine", "required": true },
+        { "name": "sandboxResult", "type": "enum", "required": false, "values": ["按量付费沙箱服务端联调通过", "按量付费沙箱服务端联调未通过"] },
+        { "name": "webpayExperienceResult", "type": "enum", "required": false, "values": ["已提供浏览器付款入口和操作指引，实际付款及结果验证仍以用户完成情况为准", "未提供浏览器付款入口或完整操作指引，需先补齐", "已提供浏览器付款入口和操作指引；用户已完成一笔沙箱付款，结果只按实际核验证据记录"] },
+        { "name": "sandboxConfigState", "type": "enum", "required": true, "values": ["READY", "CREATE_PENDING", "VERIFY_PENDING"] },
+        { "name": "blockingDefectState", "type": "enum", "required": true, "values": ["NONE", "PRESENT"] },
+        { "name": "executionMode", "type": "enum", "required": true, "values": ["仅代码开发", "完整接入"] },
+        { "name": "nextFlowReminder", "type": "enum", "required": true, "values": ["正式上线前还需完成支付产品-产品开通。", "代码开发校验通过后将自动进入支付产品-产品开通；未通过时停留在代码开发。", "沙箱配置尚未完成，但不阻塞本轮继续支付产品-产品开通；完成配置后再进行沙箱测试。", "代码开发自动校验已完成，仍有人工待验证项；本轮继续产品开通。"] }
+      ],
+      "requiredPolicyIds": [],
+      "variants": {
+        "AIPAY_PASSED": { "templateLines": ["按量付费代码开发校验通过。", "", "{{nextFlowReminder}}"] },
+        "AIPAY_INCOMPLETE": { "templateLines": ["按量付费代码开发校验：{{overallResult}}。", "", "未完成项：{{failedItems}}", "人工待验证：{{manualItems}}", "", "{{nextFlowReminder}}"] },
+        "WEBPAY_PASSED": { "templateLines": ["网站支付代码开发校验通过。", "", "{{nextFlowReminder}}"] },
+        "WEBPAY_INCOMPLETE": { "templateLines": ["网站支付代码开发校验：{{overallResult}}。", "", "未完成项：{{failedItems}}", "人工待验证：{{manualItems}}", "", "{{nextFlowReminder}}"] },
+        "APPPAY_PASSED": {
+          "maintenanceTodo": "TODO: 后续确定 APP 支付沙箱测试的对客引导动作后，在本变体补充；同步 integration flow、checklist 和测试。",
+          "templateLines": ["APP 支付代码开发校验通过。", "", "{{nextFlowReminder}}"]
+        },
+        "APPPAY_INCOMPLETE": {
+          "maintenanceTodo": "TODO: 后续确定 APP 支付沙箱测试的对客引导动作后，在本变体补充；同步 integration flow、checklist 和测试。",
+          "templateLines": ["APP 支付代码开发校验：{{overallResult}}。", "", "未完成项：{{failedItems}}", "人工待验证：{{manualItems}}", "", "{{nextFlowReminder}}"]
+        }
+      }
+    },
+    {
+      "messageId": "auth.pending",
+      "owner": "catalog_owned",
+      "trigger": "AUTH_FLOW:PENDING",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": ["P-AUTH-BEFORE-ONBOARDING"],
+      "variants": { "DEFAULT": { "templateLines": ["支付宝授权尚未完成。当前流程保持等待，不会进入查询、材料或写操作；请在已打开的授权页面完成后，再回复当前授权提示。"] } }
+    },
+    {
+      "messageId": "auth.expired",
+      "owner": "catalog_owned",
+      "trigger": "AUTH_FLOW:EXPIRED",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": ["P-AUTH-BEFORE-ONBOARDING"],
+      "variants": { "DEFAULT": { "templateLines": ["本次支付宝授权链接已过期，旧链接和旧回复均已失效。正在重新生成授权链接，请使用新的授权页面完成授权。"] } }
+    },
+    {
+      "messageId": "auth.mismatch",
+      "owner": "catalog_owned",
+      "trigger": "AUTH_FLOW:SCOPE_MISMATCH|MCC_MISMATCH",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "mismatchType", "type": "enum", "required": true, "values": ["SCOPE_MISMATCH", "MCC_MISMATCH"] }],
+      "requiredPolicyIds": ["P-AUTH-BEFORE-ONBOARDING"],
+      "variants": { "DEFAULT": { "templateLines": ["当前授权范围或经营类目不匹配，需要退出当前登录并重新生成授权页面。"] } }
+    },
+    {
+      "messageId": "integration.service.not_ready",
+      "owner": "catalog_owned",
+      "trigger": "integration.a2m.service_not_ready",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "recoveryAction", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-A2M-SUCCESS"],
+      "variants": { "DEFAULT": { "templateLines": ["按量付费本地服务尚未达到自动联调前置条件。", "", "需要处理：{{recoveryAction}}", "", "该条件未满足前不会运行自动联调，也不会把服务标记为可用。"] } }
+    },
+    {
+      "messageId": "application.key.page.expired",
+      "owner": "catalog_owned",
+      "trigger": "application.key_page.expired",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "appId", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-KEY-URL"],
+      "variants": { "DEFAULT": { "templateLines": ["应用 `{{appId}}` 的公钥确认链接已过期，旧链接和旧回复均已失效。需要重新查询公钥状态并生成新的确认页，不能依据旧页面推定公钥已生效。"] } }
+    },
+    {
+      "messageId": "integration.project_path.required",
+      "owner": "catalog_owned",
+      "trigger": "integration.project_path.unresolved",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": { "DEFAULT": { "templateLines": ["现有项目及文件保持不变。请在一条回复中说明新项目要放在哪里；可以说“在当前目录新建 pay-demo”、提供当前目录下的新子目录名，或提供电脑上的完整路径。若不想指定位置，可以说“新建项目”或“帮我新建默认项目”，我会在用户目录下选择安全的新目录并告知项目地址。路径解析和确认完成前不会创建或修改文件。"] } }
+    },
+    {
+      "messageId": "integration.context.required",
+      "owner": "catalog_owned",
+      "trigger": "integration.context.unresolved",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "variables": [
+        { "name": "missingItems", "type": "enumList", "required": true, "values": ["项目路径", "技术栈"] }
+      ],
+      "requiredPolicyIds": ["P-PROJECT-PROTECT"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["为继续代码开发，请先确定：{{missingItems}}。", "", "- 要新建项目：可以说“在当前目录新建 pay-demo”，或提供一个新的文件夹位置；不想指定位置时，可以说“新建项目”或“帮我新建默认项目”。", "- 要复用已有项目：请告诉我项目文件夹；如果不知道在哪，可以说“帮我在当前目录下找项目”；如果大概知道在哪，可以说“帮我在 server 下找项目”。我会先定位候选目录，再让你选择。", "- “当前项目/当前目录”只有在当前目录本身就是可识别项目根时才会使用；否则不会扫描整个大目录。", "- 技术栈：例如 Node.js + Express、Java + Spring Boot、Python + Flask、PHP + Laravel、C# + ASP.NET；不确定时可以说“请推荐默认技术栈”。", "", "项目和技术栈明确前，不会创建或修改文件。"] }
+      }
+    },
+    {
+      "messageId": "integration.project_candidates.select",
+      "owner": "catalog_owned",
+      "trigger": "integration.project_candidates.located",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "freeform",
+      "variables": [
+        { "name": "searchBasePath", "type": "existingPath", "required": true },
+        { "name": "candidateRows", "type": "string", "required": true }
+      ],
+      "requiredPolicyIds": ["P-PROJECT-PROTECT"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["我先在 `{{searchBasePath}}` 下做了轻量项目定位；这里只看项目标记文件，不扫描代码内容。", "", "{{candidateRows}}", "", "如果要复用已有项目，请回复候选序号或具体项目文件夹。", "如果要新建项目，可以回复“在当前目录新建 pay-demo”，或直接回复“新建项目”使用用户目录下的默认安全目录。", "", "选定具体项目目录前，不会扫描整个大目录，也不会创建或修改文件。"] }
+      }
+    },
+    {
+      "messageId": "integration.local_acceptance.notice",
+      "owner": "catalog_owned",
+      "trigger": "integration.local_acceptance.enabled",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": { "DEFAULT": { "templateLines": ["当前使用本地生产参数验收模式：本轮可以暂不发起公网异步通知，但生产上线前必须恢复并验证 `notify_url`。这不是生产最终配置，也不能据此宣称生产就绪。"] } }
+    },
+    {
+      "messageId": "application.reuse.no_key",
+      "owner": "catalog_owned",
+      "trigger": "FLOW:REUSE_NO_KEY",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "appId", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-KEY-PUBLIC-USER"],
+      "variants": { "DEFAULT": { "templateLines": ["应用 `{{appId}}` 当前为可复用的上线应用，但尚未确认 RSA2 应用公钥，应用分支仍未完成。", "", "接下来需要为该应用设置应用公钥；如果你已经准备好应用公钥，请直接提供。", "", "如果不想继续复用这个应用，请说明要重新选择或新建应用。"] } }
+    },
+    {
+      "messageId": "application.candidate.select",
+      "owner": "catalog_owned",
+      "trigger": "application.candidates.selection_required",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "runtime_enum",
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": {
+        "ONLINE_OR_NEW": { "templateLines": ["请选择应用分支下一步：", "", "- 回复上方事实表中的完整 `appId`：复用对应上线应用。", "- 回复 `新建`：创建新应用。", "", "候选、状态或目标变化后旧回复自动失效；不接受序号、历史候选或其他 `appId`。"] },
+        "PENDING_OR_NEW": { "templateLines": ["当前同类型应用均未上线，不能复用。", "", "- 回复 `新建`：创建新应用。", "- 回复 `暂不新建`：本轮应用分支保持待办。"] }
+      }
+    },
+    {
+      "messageId": "application.operation.result",
+      "owner": "catalog_owned",
+      "trigger": "application.operation.completed",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "appId", "type": "singleLine", "required": true }, { "name": "actualStatus", "type": "singleLine", "required": true }, { "name": "nextAction", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-PARTIAL-RESULT"],
+      "variants": { "DEFAULT": { "templateLines": ["应用 `{{appId}}` 的实际状态：{{actualStatus}}。", "", "下一步：{{nextAction}}", "", "待审核、待设置公钥或待人工配置时不会表述为应用发布完成。"] } }
+    },
+    {
+      "messageId": "application.harmony.manual_create",
+      "owner": "catalog_owned",
+      "trigger": "application.harmony.manual_create",
+      "blocking": true,
+      "allowedReplies": ["1"],
+      "inputHintType": "complete",
+      "variables": [],
+      "requiredPolicyIds": ["P-MCP-CONTRACT-FROZEN"],
+      "variants": {
+        "DEFAULT": { "templateLines": ["当前 Skill 不支持创建 HarmonyOS 移动应用。", "", "请前往[支付宝开放平台](https://open.alipay.com/)并依次进入“控制台” → “创建移动应用”，完成平台要求的创建、配置和审核。", "", "完成后将重新查询移动应用列表。"] }
+      }
+    },
+    {
+      "messageId": "service.operation.result",
+      "owner": "catalog_owned",
+      "trigger": "service.operation.completed",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "serviceId", "type": "singleLine", "required": true }, { "name": "actualResult", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-PARTIAL-RESULT"],
+      "variants": { "DEFAULT": { "templateLines": ["服务市场实际结果：{{actualResult}}。", "已确认的 `serviceId`：`{{serviceId}}`。", "", "查看服务状态和服务详情：请前往支付宝 AI 付站点，登录后进入控制台 → 服务管理。", "https://aipay.alipay.com/?from=alipay-aipay-skill", "", "该结果只代表服务分支，不会覆盖签约或应用分支的实际状态。"] } }
+    },
+    {
+      "messageId": "signing.operation.result",
+      "owner": "catalog_owned",
+      "trigger": "signing.operation.completed",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [
+        { "name": "actualStatus", "type": "singleLine", "required": true },
+        { "name": "feeDisplay", "type": "singleLine", "required": false },
+        { "name": "nextAction", "type": "singleLine", "required": true }
+      ],
+      "requiredPolicyIds": ["P-PARTIAL-RESULT"],
+      "variants": {
+        "WITHOUT_FEE": { "templateLines": ["产品当前签约状态：{{actualStatus}}。", "", "下一步：{{nextAction}}"] },
+        "WITH_FEE": { "templateLines": ["产品当前签约状态：{{actualStatus}}。", "费率：{{feeDisplay}}", "", "下一步：{{nextAction}}"] }
+      }
+    },
+    {
+      "messageId": "service.candidate.select",
+      "owner": "catalog_owned",
+      "trigger": "service.candidates.selection_required",
+      "blocking": true,
+      "allowedReplies": [],
+      "replyMode": "runtime_enum",
+      "variables": [],
+      "requiredPolicyIds": [],
+      "variants": { "DEFAULT": { "templateLines": ["请选择下一步：", "", "- 回复上方事实表中的完整 `serviceId`：复用对应服务。", "- 回复 `新建`：创建新服务。", "- 回复 `修改:<serviceId>`：修改对应服务。", "", "如需核对服务状态或服务详情，可前往支付宝 AI 付站点，登录后进入控制台 → 服务管理查看。", "https://aipay.alipay.com/?from=alipay-aipay-skill"] } }
+    },
+    {
+      "messageId": "service.id.missing",
+      "owner": "catalog_owned",
+      "trigger": "service.save.id_missing",
+      "blocking": false,
+      "allowedReplies": [],
+      "variables": [{ "name": "serviceName", "type": "singleLine", "required": true }],
+      "requiredPolicyIds": ["P-PARTIAL-RESULT"],
+      "variants": { "DEFAULT": { "templateLines": ["服务 `{{serviceName}}` 的创建或修改调用已返回成功，但未解析到 `serviceId`，因此服务分支尚未完成。接下来会重新查询完整服务列表，并使用本次实际提交资料与列表可见字段做唯一匹配；没有唯一结果时保持未知。在取得实际 `serviceId` 前不会宣称按量付费产品开通完成。", "", "如需自行核对服务状态或服务详情，可前往支付宝 AI 付站点，登录后进入控制台 → 服务管理查看。", "https://aipay.alipay.com/?from=alipay-aipay-skill"] } }
+    }
+  ]
+}

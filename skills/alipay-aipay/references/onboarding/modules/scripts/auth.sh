@@ -5,13 +5,13 @@
 # 调用位置: Step 3 登录授权
 # 调用前置: 脚本通过 error_handler.sh 间接初始化 DEV_TOOL_NAME；必要时可用 DEV_TOOL_NAME 环境变量覆盖
 # 用法:
-#   auth init   --scope <scope> --sales-code <code> --mcc-code <code> [--product-name <name> --mcc-name <name>]
+#   auth init   --scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>
 #   auth confirm [--scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>]
 #   auth mismatch [--scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>]
 # 返回值:
-#   init:     AUTH_FLOW:SKIP | AUTH_FLOW:READY | AUTH_FLOW:SCOPE_MISMATCH | AUTH_FLOW:MCC_MISMATCH | AUTH_FLOW:FAILED
-#   confirm:  AUTH_FLOW:AUTH_SUCCESS | AUTH_FLOW:PENDING | AUTH_FLOW:EXPIRED | AUTH_FLOW:SCOPE_MISMATCH | AUTH_FLOW:MCC_MISMATCH | AUTH_FLOW:FAILED
-#   mismatch: 执行一次 logout 后调用 auth init 重新生成授权链接（不输出 FLOW 标记，由 auth init 输出 AUTH_FLOW:READY）
+#   init:     AUTH_FLOW:SKIP | AUTH_FLOW:READY | AUTH_FLOW:SCOPE_MISMATCH | AUTH_FLOW:MCC_MISMATCH | AUTH_FLOW:RETRY_WITH_NETWORK | AUTH_FLOW:FAILED
+#   confirm:  AUTH_FLOW:AUTH_SUCCESS | AUTH_FLOW:PENDING | AUTH_FLOW:EXPIRED | AUTH_FLOW:SCOPE_MISMATCH | AUTH_FLOW:MCC_MISMATCH | AUTH_FLOW:RETRY_WITH_NETWORK | AUTH_FLOW:FAILED
+#   mismatch: logout 可确认成功后调用 auth init 重新生成授权链接；无法确认 CLI 结果时输出 AUTH_FLOW:RETRY_WITH_NETWORK
 #=============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,22 +23,77 @@ else
   echo "❌ 缺少错误处理脚本: ${SCRIPT_DIR}/error_handler.sh"
   exit 1
 fi
+source "${SCRIPT_DIR}/network_retry.sh"
+RENDERER="${SCRIPT_DIR}/../../../normal/scripts/render_customer_message.mjs"
 
 require_command jq || exit 1
 require_command alipay-cli || exit 1
+require_command node || exit 1
 require_command mktemp || exit 1
+umask 077
 
 # ─── 授权状态文件（用于独立执行 confirm/mismatch 时兜底恢复非敏感参数）────
 AUTH_STATE_OWNER="$(id -u 2>/dev/null || printf '%s' "${USER:-unknown}" | tr -c 'A-Za-z0-9_-' '_')"
-AUTH_STATE_DIR="${TMPDIR:-/tmp}"
-AUTH_STATE_DIR="${AUTH_STATE_DIR%/}"
-AUTH_STATE_FILE="${ALIPAY_AUTH_STATE_FILE:-${AUTH_STATE_DIR}/.alipay_auth_state_${AUTH_STATE_OWNER}.json}"
+AUTH_STATE_BASE="${TMPDIR:-/tmp}"
+AUTH_STATE_BASE="${AUTH_STATE_BASE%/}"
+if [ -n "${ALIPAY_AUTH_STATE_FILE:-}" ]; then
+  AUTH_STATE_FILE="$ALIPAY_AUTH_STATE_FILE"
+  AUTH_STATE_DIR="$(dirname "$AUTH_STATE_FILE")"
+  AUTH_STATE_DIR_MANAGED=false
+else
+  AUTH_STATE_DIR="${AUTH_STATE_BASE}/alipay-aipay-auth-${AUTH_STATE_OWNER}"
+  AUTH_STATE_FILE="${AUTH_STATE_DIR}/state.json"
+  AUTH_STATE_DIR_MANAGED=true
+fi
+
+secure_mode() {
+  local target="$1" expected="$2" mode
+  if mode=$(stat -f '%Lp' "$target" 2>/dev/null); then
+    :
+  elif mode=$(stat -c '%a' "$target" 2>/dev/null); then
+    :
+  else
+    return 1
+  fi
+  [ "$mode" = "$expected" ]
+}
+
+prepare_auth_state_dir() {
+  if [ "$AUTH_STATE_DIR_MANAGED" = true ]; then
+    if [ -L "$AUTH_STATE_DIR" ] || { [ -e "$AUTH_STATE_DIR" ] && [ ! -d "$AUTH_STATE_DIR" ]; }; then
+      echo "❌ 授权临时目录不安全，已停止" >&2
+      return 1
+    fi
+    mkdir -p "$AUTH_STATE_DIR" || return 1
+    chmod 700 "$AUTH_STATE_DIR" 2>/dev/null || return 1
+    secure_mode "$AUTH_STATE_DIR" 700 || return 1
+  else
+    [ -d "$AUTH_STATE_DIR" ] && [ ! -L "$AUTH_STATE_DIR" ] || {
+      echo "❌ 指定的授权状态目录不可用或不安全，已停止" >&2
+      return 1
+    }
+  fi
+}
+
+validate_auth_state_file() {
+  [ -f "$AUTH_STATE_FILE" ] && [ ! -L "$AUTH_STATE_FILE" ] || return 1
+  chmod 600 "$AUTH_STATE_FILE" 2>/dev/null || return 1
+  secure_mode "$AUTH_STATE_FILE" 600
+}
 
 cleanup_auth_state() {
   rm -f "$AUTH_STATE_FILE"
 }
 
 save_auth_state() {
+  local temp_state
+  prepare_auth_state_dir || return 1
+  if [ -L "$AUTH_STATE_FILE" ] || { [ -e "$AUTH_STATE_FILE" ] && [ ! -f "$AUTH_STATE_FILE" ]; }; then
+    echo "❌ 授权状态路径不是安全的普通文件，已停止" >&2
+    return 1
+  fi
+  temp_state=$(mktemp "${AUTH_STATE_DIR}/.auth-state.XXXXXX") || return 1
+  chmod 600 "$temp_state" 2>/dev/null || { rm -f "$temp_state"; return 1; }
   jq -n \
     --arg salesCode "$SALES_CODE" \
     --arg mccCode "$MCC_CODE" \
@@ -53,12 +108,17 @@ save_auth_state() {
       productName: $productName,
       mccName: $mccName,
       deviceCode: $deviceCode
-    }' > "$AUTH_STATE_FILE"
-  chmod 600 "$AUTH_STATE_FILE" 2>/dev/null || true
+    }' > "$temp_state" || { rm -f "$temp_state"; return 1; }
+  mv "$temp_state" "$AUTH_STATE_FILE" || { rm -f "$temp_state"; return 1; }
+  validate_auth_state_file || {
+    cleanup_auth_state
+    echo "❌ 无法确认授权状态文件权限为 0600，已停止" >&2
+    return 1
+  }
 }
 
 load_auth_state() {
-  if [ ! -f "$AUTH_STATE_FILE" ]; then
+  if ! validate_auth_state_file; then
     echo "❌ 缺少授权上下文（请传入 --sales-code/--mcc-code，或先执行 auth.sh init）"
     return 1
   fi
@@ -73,6 +133,34 @@ load_auth_state() {
   [ -n "${SCOPE:-}" ] || SCOPE=$(jq -r '.scope // ""' "$AUTH_STATE_FILE")
   [ -n "${PRODUCT_NAME:-}" ] || PRODUCT_NAME=$(jq -r '.productName // ""' "$AUTH_STATE_FILE")
   [ -n "${MCC_NAME:-}" ] || MCC_NAME=$(jq -r '.mccName // ""' "$AUTH_STATE_FILE")
+}
+
+verify_context_against_auth_state() {
+  local field current saved
+  [ -e "$AUTH_STATE_FILE" ] || [ -L "$AUTH_STATE_FILE" ] || return 0
+  if ! validate_auth_state_file; then
+    echo "❌ 授权状态文件不可用或不安全，已停止"
+    return 1
+  fi
+  if ! jq -e . "$AUTH_STATE_FILE" >/dev/null 2>&1; then
+    echo "❌ 授权状态文件不是合法 JSON: $AUTH_STATE_FILE"
+    return 1
+  fi
+  for field in salesCode mccCode scope productName mccName; do
+    case "$field" in
+      salesCode) current="$SALES_CODE" ;;
+      mccCode) current="$MCC_CODE" ;;
+      scope) current="$SCOPE" ;;
+      productName) current="$PRODUCT_NAME" ;;
+      mccName) current="$MCC_NAME" ;;
+    esac
+    saved=$(jq -r --arg field "$field" '.[$field] // ""' "$AUTH_STATE_FILE")
+    if [ -n "$current" ] && [ -n "$saved" ] && [ "$current" != "$saved" ]; then
+      echo "❌ 当前授权参数与 auth.sh init 保存的本次授权上下文不一致，已停止"
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    fi
+  done
 }
 
 parse_auth_context_args() {
@@ -109,13 +197,17 @@ restore_auth_context_or_state() {
     parse_auth_context_args "$@" || return 1
   fi
 
-  if [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ]; then
+  verify_context_against_auth_state || return 1
+  if [ -e "$AUTH_STATE_FILE" ] || [ -L "$AUTH_STATE_FILE" ]; then
+    load_auth_state || return 1
+  elif [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ] || [ -z "$PRODUCT_NAME" ] || [ -z "$MCC_NAME" ]; then
     load_auth_state || return 1
   fi
 
   if [ -z "$SCOPE" ]; then
     SCOPE=$(get_scope "$SALES_CODE")
   fi
+  validate_auth_context || return 1
 }
 
 # ─── 共用：根据 salesCode 获取 scope ─────────────────────────────────────────
@@ -128,27 +220,54 @@ get_scope() {
   esac
 }
 
+validate_auth_context() {
+  local context_json
+  context_json=$(jq -n \
+    --arg productName "$PRODUCT_NAME" \
+    --arg salesCode "$SALES_CODE" \
+    --arg scope "$SCOPE" \
+    --arg mccCode "$MCC_CODE" \
+    --arg mccName "$MCC_NAME" \
+    '{productName:$productName,salesCode:$salesCode,scope:$scope,mccCode:$mccCode,mccName:$mccName}') || return 1
+  if ! printf '%s' "$context_json" | node "$RENDERER" --validate-authorization-context >/dev/null; then
+    echo "❌ 授权上下文校验失败：产品、产品码、scope 或 MCC 不匹配当前固定规则"
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
+}
+
+build_authorization_url() {
+  local input_json platform_value
+  platform_value="${DEV_TOOL_NAME:-}"
+  [ "$platform_value" = "unknown" ] && platform_value=""
+  input_json=$(jq -n \
+    --arg productName "$PRODUCT_NAME" \
+    --arg salesCode "$SALES_CODE" \
+    --arg scope "$SCOPE" \
+    --arg mccCode "$MCC_CODE" \
+    --arg mccName "$MCC_NAME" \
+    --arg deviceCode "$DEVICE_CODE" \
+    --arg platform "$platform_value" \
+    '{productName:$productName,salesCode:$salesCode,scope:$scope,mccCode:$mccCode,mccName:$mccName,deviceCode:$deviceCode,platform:$platform}') || return 1
+  printf '%s' "$input_json" | node "$RENDERER" --build-authorization-url
+}
+
 extract_json_payload() {
   local raw="$1"
-  local line_count start candidate
+  local analysis status
+  analysis=$(extract_unique_json "$raw") || return 1
+  status=$(printf '%s' "$analysis" | jq -r '.status // "none"' 2>/dev/null)
+  [ "$status" = "ok" ] || return 1
+  printf '%s' "$analysis" | jq -ce '.value | select(type == "object")' 2>/dev/null
+}
 
-  if printf '%s' "$raw" | jq -e . >/dev/null 2>&1; then
-    printf '%s' "$raw"
-    return 0
-  fi
-
-  line_count=$(printf '%s\n' "$raw" | wc -l | tr -d ' ')
-  start=1
-  while [ "$start" -le "$line_count" ]; do
-    candidate=$(printf '%s\n' "$raw" | sed -n "${start},\$p")
-    if printf '%s' "$candidate" | jq -e . >/dev/null 2>&1; then
-      printf '%s' "$candidate"
-      return 0
-    fi
-    start=$((start + 1))
-  done
-
-  return 1
+auth_cli_environment_failure() {
+  local action="$1"
+  echo "❌ ${action} 未能在当前 Agent 执行环境取得可确认结果，已停止。"
+  echo "📋 这通常表示当前执行环境缺少联网权限、CLI wrapper 混入输出，或 stdout/stderr 无法唯一解析。"
+  echo "📋 这不代表支付宝业务失败，也不能据此判断用户本机 logout/login 失败。"
+  echo "📋 Agent 应申请可联网权限后重试同一条 auth.sh 命令；不要要求用户手动 logout/login 代替本轮事实。"
+  echo "AUTH_FLOW:RETRY_WITH_NETWORK"
 }
 
 run_json_command() {
@@ -180,16 +299,7 @@ run_json_command() {
     return 0
   fi
 
-  echo "❌ ${label} 未返回合法 JSON" >&2
-  echo "📋 退出码: ${exit_code}" >&2
-  if [ -n "$stderr_output" ]; then
-    echo "📋 错误输出：" >&2
-    printf '%s\n' "$stderr_output" >&2
-  fi
-  if [ -n "$stdout" ]; then
-    echo "📋 标准输出：" >&2
-    printf '%s\n' "$stdout" >&2
-  fi
+  echo "❌ ${label} 未返回可唯一解析的合法 JSON（退出码: ${exit_code}）；原始输出已隐藏，请申请联网权限后重试同一条 auth.sh 命令" >&2
   rm -f "$stderr_file"
   return 1
 }
@@ -199,10 +309,11 @@ run_json_command() {
 validate_current_authorization() {
   local whoami_result="${1:-}"
   local logged_in is_expired granted_scope required_scope
-  local scope_match mcc_verify_result mcc_verify_unwrapped mcc_match
+  local scope_match mcc_verify_result mcc_verify_unwrapped mcc_match mcc_raw retry_rc
   local mcc_error_type mcc_error_code mcc_success
-  local granted_scope_item
-  local -a granted_scope_items
+  local mismatch_type mismatch_message_input
+  local granted_scope_item required_scope_item required_scope_found
+  local -a granted_scope_items required_scope_items
 
   if [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ]; then
     echo "❌ 缺少授权校验参数"
@@ -212,7 +323,7 @@ validate_current_authorization() {
 
   if [ -z "$whoami_result" ]; then
     whoami_result=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || {
-      echo "AUTH_FLOW:FAILED"
+      auth_cli_environment_failure "登录状态复核"
       return 1
     }
   fi
@@ -231,34 +342,46 @@ validate_current_authorization() {
   fi
 
   granted_scope=$(echo "$whoami_result" | jq -r '.data.scope // empty')
-  case "$SALES_CODE" in
-    "I1080300001000041203") required_scope="fast_instant_trade_pay:write" ;;
-    "I1080300001000041313") required_scope="auth_alipay_apppay:write" ;;
-    "I1080300001000160457") required_scope="machine_pay:write" ;;
-    *)
-      echo "❌ 未知产品码: $SALES_CODE"
-      echo "AUTH_FLOW:FAILED"
-      return 1
-      ;;
-  esac
+  required_scope=$(get_scope "$SALES_CODE")
+  if [ -z "$required_scope" ] || [ "$SCOPE" != "$required_scope" ]; then
+    echo "❌ 当前产品的固定 scope 上下文无效"
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
 
-  scope_match="false"
+  scope_match="true"
   IFS=',' read -r -a granted_scope_items <<< "$granted_scope"
-  for granted_scope_item in "${granted_scope_items[@]}"; do
-    granted_scope_item="${granted_scope_item#"${granted_scope_item%%[![:space:]]*}"}"
-    granted_scope_item="${granted_scope_item%"${granted_scope_item##*[![:space:]]}"}"
-    if [ "$granted_scope_item" = "$required_scope" ]; then
-      scope_match="true"
+  IFS=',' read -r -a required_scope_items <<< "$required_scope"
+  for required_scope_item in "${required_scope_items[@]}"; do
+    required_scope_found="false"
+    for granted_scope_item in "${granted_scope_items[@]}"; do
+      granted_scope_item="${granted_scope_item#"${granted_scope_item%%[![:space:]]*}"}"
+      granted_scope_item="${granted_scope_item%"${granted_scope_item##*[![:space:]]}"}"
+      if [ "$granted_scope_item" = "$required_scope_item" ]; then
+        required_scope_found="true"
+        break
+      fi
+    done
+    if [ "$required_scope_found" != "true" ]; then
+      scope_match="false"
       break
     fi
   done
 
   mcc_match="true"
   if [ "$scope_match" = "true" ]; then
-    mcc_verify_result=$(run_json_command "alipay-cli mcp call ar-query.queryArInfosBySalesProd" \
-      alipay-cli mcp call ar-query.queryArInfosBySalesProd \
+    export PLATFORM=${DEV_TOOL_NAME}
+    run_network_retry mcc_raw read authorization_mcc_check -- alipay-cli mcp call ar-query.queryArInfosBySalesProd \
       -d "{\"request\":{\"salesProductCodes\":[\"${SALES_CODE}\"]},\"ctx\":{}}" \
-      --json) || {
+      --json
+    retry_rc=$?
+    if [ "$retry_rc" -ne 0 ]; then
+      echo "❌ 授权 MCC 校验因网络或服务异常在自动重试两次后仍未恢复"
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    fi
+    mcc_verify_result=$(extract_json_payload "$mcc_raw") || {
+      echo "❌ alipay-cli mcp call ar-query.queryArInfosBySalesProd 未返回合法 JSON"
       echo "AUTH_FLOW:FAILED"
       return 1
     }
@@ -285,29 +408,24 @@ validate_current_authorization() {
   fi
 
   if [ "$scope_match" = "true" ] && [ "$mcc_match" = "true" ]; then
-    echo "✅ 授权范围校验通过（scope + MCC）"
+    echo "✅ 授权范围校验通过（scope + MCC 授权有效性）"
     return 0
   fi
 
-  echo ""
-  echo "⚠️ 授权范围不满足"
   if [ "$scope_match" != "true" ]; then
-    echo "📋 原因：scope 权限不满足"
-    echo "🤖 需要权限: $required_scope"
-    echo "🤖 已授权 scope: $granted_scope"
-  fi
-  if [ "$mcc_match" != "true" ]; then
-    echo "📋 原因：经营类目未授权"
-    echo "🤖 当前类目: $MCC_CODE"
-  fi
-
-  echo ""
-  echo "📋 必须通过 auth.sh mismatch 退出当前登录并重新授权"
-  if [ "$scope_match" != "true" ]; then
-    echo "AUTH_FLOW:SCOPE_MISMATCH"
+    mismatch_type="SCOPE_MISMATCH"
   else
-    echo "AUTH_FLOW:MCC_MISMATCH"
+    mismatch_type="MCC_MISMATCH"
   fi
+  mismatch_message_input=$(jq -cn --arg mismatchType "$mismatch_type" '{mismatchType:$mismatchType}') || {
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  }
+  if ! printf '%s' "$mismatch_message_input" | ALIPAY_AIPAY_RENDERER_MANAGED_CALLER=auth.sh node "$RENDERER" auth.mismatch --variant DEFAULT; then
+    echo "AUTH_FLOW:FAILED"
+    return 1
+  fi
+  echo "AUTH_FLOW:${mismatch_type}"
   return 1
 }
 
@@ -340,15 +458,16 @@ auth_init() {
     esac
   done
 
-  if [ -z "$SCOPE" ] || [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ]; then
+  if [ -z "$SCOPE" ] || [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ] || [ -z "$PRODUCT_NAME" ] || [ -z "$MCC_NAME" ]; then
     echo "❌ 缺少必填参数"
-    echo "用法: bash auth.sh init --scope <scope> --sales-code <code> --mcc-code <code> [--product-name <name> --mcc-name <name>]"
+    echo "用法: bash auth.sh init --scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>"
     exit 1
   fi
+  validate_auth_context || return 1
 
   # Step 1: 检查登录状态
   CHECK_RESULT=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || {
-    echo "AUTH_FLOW:FAILED"
+    auth_cli_environment_failure "登录状态检查"
     return 1
   }
   if ! handle_error "$CHECK_RESULT"; then
@@ -361,7 +480,7 @@ auth_init() {
   if [ "$LOGGED_IN" = "true" ] && [ "$IS_EXPIRED" = "false" ]; then
     validate_current_authorization "$CHECK_RESULT" || return 1
     DEVICE_CODE=""
-    save_auth_state
+    save_auth_state || return 1
     echo "✅ 当前登录及授权范围有效，可继续后续流程"
     echo "AUTH_FLOW:SKIP"
     return 0
@@ -369,7 +488,7 @@ auth_init() {
 
   # Step 2: 执行登录
   LOGIN_RESULT=$(run_json_command "alipay-cli login --non-interactive --scope" alipay-cli login --non-interactive --scope "$SCOPE" --json) || {
-    echo "AUTH_FLOW:FAILED"
+    auth_cli_environment_failure "授权登录发起"
     return 1
   }
   if ! handle_error "$LOGIN_RESULT"; then
@@ -381,7 +500,7 @@ auth_init() {
   if [ "$LOGIN_STATUS" = "already_logged_in" ]; then
     validate_current_authorization || return 1
     DEVICE_CODE=""
-    save_auth_state
+    save_auth_state || return 1
     echo "✅ 当前登录及授权范围有效，可继续后续流程"
     echo "AUTH_FLOW:SKIP"
     return 0
@@ -396,30 +515,21 @@ auth_init() {
   # Step 4: 参数校验
   if [ -z "$DEVICE_CODE" ] || [ -z "$SALES_CODE" ] || [ -z "$MCC_CODE" ]; then
     echo "❌ 授权链接参数不完整，无法生成授权链接"
-    echo "📋 deviceCode: ${DEVICE_CODE:-空}"
-    echo "📋 productCode: ${SALES_CODE:-空}"
-    echo "📋 mccCode: ${MCC_CODE:-空}"
+    [ -n "$DEVICE_CODE" ] || echo "📋 缺少字段: deviceCode"
+    [ -n "$SALES_CODE" ] || echo "📋 缺少字段: productCode"
+    [ -n "$MCC_CODE" ] || echo "📋 缺少字段: mccCode"
     exit 1
   fi
 
-  # Step 5: 构建并校验授权链接（禁止使用 CLI 返回的 verification_url）
-  BROWSER_URL="https://aipay.alipay.com/cli-auth?deviceCode=${DEVICE_CODE}&productCode=${SALES_CODE}&mccCode=${MCC_CODE}"
-  if [ -n "${DEV_TOOL_NAME:-}" ] && [ "$DEV_TOOL_NAME" != "unknown" ]; then
-    AUTH_PLATFORM=$(jq -nr --arg value "$DEV_TOOL_NAME" '$value|@uri')
-    BROWSER_URL="${BROWSER_URL}&platform=${AUTH_PLATFORM}"
-  fi
-  if [[ "$BROWSER_URL" != https://aipay.alipay.com/cli-auth\?* ]] ||
-     [[ "$BROWSER_URL" != *"deviceCode=${DEVICE_CODE}"* ]] ||
-     [[ "$BROWSER_URL" != *"productCode=${SALES_CODE}"* ]] ||
-     [[ "$BROWSER_URL" != *"mccCode=${MCC_CODE}"* ]] ||
-     [[ "$BROWSER_URL" == *"opengw.alipay.com/oauth/device"* ]]; then
+  # Step 5: 由统一校验器编码、构建并逐字段校验授权链接。
+  BROWSER_URL=$(build_authorization_url) || {
     echo "❌ 授权链接构建失败，缺少必要参数或误用了 CLI verification_url，已停止。"
     echo "📋 正确格式: https://aipay.alipay.com/cli-auth?deviceCode=...&productCode=...&mccCode=..."
-    exit 1
-  fi
+    return 1
+  }
 
   # Step 6: 保存参数到状态文件（供 confirm/mismatch 使用）
-  save_auth_state
+  save_auth_state || return 1
 
   # Step 7: 有效期转换（对非数字做防护）
   if [[ "$EXPIRES_IN" =~ ^[0-9]+$ ]] && [ "$EXPIRES_IN" -ge 60 ]; then
@@ -431,34 +541,24 @@ auth_init() {
     EXPIRES_DISPLAY="10 分钟"
   fi
 
-  # Step 8: 输出授权信息
-  echo ""
-  echo "🔐 支付宝授权登录"
-  echo ""
-  echo "📋 授权信息"
-  echo ""
-  echo "| 项目 | 信息 |"
-  echo "|------|------|"
-  echo "| 产品类型 | ${PRODUCT_NAME:-按量付费} |"
-  echo "| 经营类目 | ${MCC_NAME:-${MCC_CODE}} (${MCC_CODE}) |"
-  if [ -n "$VERIFICATION_CODE" ]; then
-    echo "| 确认码 | ${VERIFICATION_CODE} |"
-  else
-    echo "| 确认码 | （请查看支付宝授权页面） |"
+  # Step 8: 受控打开并由统一目录渲染授权信息；临时 URL 只通过 stdin 传递。
+  OPEN_HELPER="${SCRIPT_DIR}/../../../normal/scripts/open_official_url.sh"
+  OPEN_STATUS=$(printf '%s\n' "$BROWSER_URL" | bash "$OPEN_HELPER" authorization)
+  case "$OPEN_STATUS" in OPENED|OPEN_FAILED|GUI_UNAVAILABLE|LINK_ONLY) ;; *) OPEN_STATUS="OPEN_FAILED" ;; esac
+  DISPLAY_CODE="${VERIFICATION_CODE:-（请查看支付宝授权页面）}"
+  MESSAGE_INPUT=$(printf '%s\n' "$PRODUCT_NAME" "$DEVICE_CODE" "$MCC_CODE" "$MCC_NAME" "$DISPLAY_CODE" "$EXPIRES_DISPLAY" "$BROWSER_URL" | jq -Rs '
+    split("\n") as $v | {productName:$v[0],deviceCode:$v[1],mccCode:$v[2],mccName:$v[3],verificationCode:$v[4],expiresDisplay:$v[5],officialUrl:$v[6]}
+  ')
+  if ! printf '%s' "$MESSAGE_INPUT" | ALIPAY_AIPAY_RENDERER_MANAGED_CALLER=auth.sh node "$RENDERER" auth.page --variant DEFAULT; then
+    cleanup_auth_state
+    echo "AUTH_FLOW:FAILED"
+    exit 1
   fi
-  echo "| 授权链接有效期 | ${EXPIRES_DISPLAY} |"
-  echo ""
-  echo "⚠️ 安全提示：请核对授权页面显示的确认码是否与上方一致，如不一致，请勿授权，立即停止操作！"
-  echo ""
-  echo "提示：无法跳链时，请复制下方链接到网页浏览器打开。"
-  echo "🌐 授权链接：[点击跳转进行授权](${BROWSER_URL})"
-  echo ""
-  echo "请在完成授权后告诉我\"好了\"继续后续流程。"
   echo ""
   echo "AUTH_FLOW:READY"
 }
 
-# ─── auth confirm: 授权确认 + scope 校验 + MCC 校验 ──────────────────────────
+# ─── auth confirm: 授权确认 + scope 校验 + MCC 授权有效性校验 ────────────────
 auth_confirm() {
   # 优先使用显式传入的非敏感上下文；未传时再从状态文件兜底恢复。
   restore_auth_context_or_state "$@" || exit 1
@@ -474,7 +574,7 @@ auth_confirm() {
 
   # Step 1: 执行授权确认
   LOGIN_COMPLETE_RESULT=$(run_json_command "alipay-cli login --complete --json" alipay-cli login --complete --json) || {
-    echo "AUTH_FLOW:FAILED"
+    auth_cli_environment_failure "授权完成确认"
     return 1
   }
 
@@ -487,12 +587,18 @@ auth_confirm() {
   if [ "$OUTER_SUCCESS" = "true" ] || [ "$DATA_STATUS" = "already_logged_in" ] || [ "$DATA_STATUS" = "completed" ]; then
     echo "✅ 授权确认成功"
   elif [ "$ERROR_CODE" = "authorization_pending" ]; then
-    echo "⏳ 尚未完成授权，请在手机上确认授权后再次告诉我"
+    if ! printf '%s' '{}' | ALIPAY_AIPAY_RENDERER_MANAGED_CALLER=auth.sh node "$RENDERER" auth.pending --variant DEFAULT; then
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    fi
     echo "AUTH_FLOW:PENDING"
     return 0
   elif [ "$ERROR_CODE" = "auth_expired" ]; then
-    echo "⏰ 授权链接已过期（有效期为10分钟），需要重新生成"
     cleanup_auth_state
+    if ! printf '%s' '{}' | ALIPAY_AIPAY_RENDERER_MANAGED_CALLER=auth.sh node "$RENDERER" auth.expired --variant DEFAULT; then
+      echo "AUTH_FLOW:FAILED"
+      return 1
+    fi
     echo "AUTH_FLOW:EXPIRED"
     return 0
   else
@@ -504,9 +610,9 @@ auth_confirm() {
     return 1
   fi
 
-  # Step 3: 复用 init 的 scope + MCC 校验
+  # Step 3: 复用 init 的 scope + MCC 授权有效性校验
   WHOAMI_RESULT=$(run_json_command "alipay-cli whoami --json" alipay-cli whoami --json) || {
-    echo "AUTH_FLOW:FAILED"
+    auth_cli_environment_failure "授权后登录状态复核"
     return 1
   }
   validate_current_authorization "$WHOAMI_RESULT" || return 1
@@ -535,10 +641,9 @@ auth_mismatch() {
   fi
 
   # Step 2: mismatch 是授权不匹配恢复路径中唯一执行 logout 的入口。
-  echo "⚠️ 授权范围不满足，正在退出当前登录并准备重新授权..."
+  echo "⚠️ 当前授权范围或经营类目不匹配，需要退出当前登录并重新生成授权页面。"
   logout_result=$(run_json_command "alipay-cli logout --json" alipay-cli logout --json) || {
-    echo "❌ 退出当前登录失败，已停止重新授权"
-    echo "AUTH_FLOW:FAILED"
+    auth_cli_environment_failure "退出当前登录"
     return 1
   }
   logout_error_type=$(detect_error "$logout_result")
@@ -551,7 +656,7 @@ auth_mismatch() {
 
   # Step 3: 调用 auth init 执行登录 + 构建授权链接 + 输出授权信息
   # DEV_TOOL_NAME 已 export，子进程可继承
-  echo "📋 请重新扫码授权，新的授权将包含正确的权限范围"
+  echo "📋 请使用新的授权页面完成支付宝扫码授权"
   echo ""
 
   auth_init \
@@ -579,7 +684,7 @@ case "${1:-}" in
   *)
     echo "用法: bash auth.sh <init|confirm|mismatch> [参数...]"
     echo ""
-    echo "  auth init    --scope <scope> --sales-code <code> --mcc-code <code> [--product-name <name> --mcc-name <name>]"
+    echo "  auth init    --scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>"
     echo "  auth confirm [--scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>]"
     echo "  auth mismatch [--scope <scope> --sales-code <code> --mcc-code <code> --product-name <name> --mcc-name <name>]"
     exit 1

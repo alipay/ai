@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    {
+      "policyId": "P-MCP-CONTRACT-FROZEN",
+      "scope": "all",
+      "severity": "critical",
+      "text": "只执行当前 Skill 已验证脚本中的 MCP 方法、参数和解析；禁止推断、改名、替换或尝试近似方法。"
+    },
+    {
+      "policyId": "P-AUTH-BEFORE-ONBOARDING",
+      "scope": "onboarding",
+      "severity": "critical",
+      "text": "登录、scope 和 MCC 全部校验通过前，禁止执行任何 onboarding 查询或写操作。"
+    },
+    {
+      "policyId": "P-WRITE-CONFIRM",
+      "scope": "onboarding.write",
+      "severity": "critical",
+      "text": "签约材料完整且校验通过后直接执行签约提交，不再增加回复1；材料缺失或校验失败时继续使用受控材料提示，禁止提交。服务创建资料完整且校验通过后展示受控创建摘要并直接执行，不增加回复1；服务修改执行前必须展示当前会话、脱敏主体、产品、动作和目标摘要，并取得绑定当前摘要的明确确认。应用创建由用户针对当前应用候选列表明确选择新建来确认，候选重查未变化且条件字段齐备时不再追加回复1；用户提供应用公钥后生成确认页不重复确认，由用户在官方页面完成公钥确认；新建应用的公钥校验成功后直接提交应用审核，不再增加回复1。"
+    },
+    {
+      "policyId": "P-WRITE-UNKNOWN",
+      "scope": "onboarding.write",
+      "severity": "critical",
+      "text": "非幂等写操作结果不明时先用现有只读能力核验；无法确认时进入 UNKNOWN，禁止盲目重试。"
+    },
+    {
+      "policyId": "P-PARTIAL-RESULT",
+      "scope": "onboarding",
+      "severity": "critical",
+      "text": "签约、服务和应用分支独立记录结果，不回滚已成功动作，不用整体失败或整体成功覆盖部分结果。"
+    },
+    {
+      "policyId": "P-MATERIAL-CATEGORY",
+      "scope": "onboarding.materials",
+      "severity": "required",
+      "text": "每轮只展示一个材料类别，同类一次收齐；提前提供的后续材料直接接收并校验，之后不重复索取。"
+    },
+    {
+      "policyId": "P-KEY-NO-PRIVATE",
+      "scope": "onboarding.application",
+      "severity": "critical",
+      "text": "不得请求、读取、处理、保存或输出生产应用私钥；本轮不提供本地命令生成密钥能力。"
+    },
+    {
+      "policyId": "P-KEY-PUBLIC-USER",
+      "scope": "onboarding.application",
+      "severity": "critical",
+      "text": "应用公钥只能由用户自行生成并明确提供；缺少公钥时禁止调用 createKeyConfirmPage，不补全、不改写、不加 PEM 头尾。"
+    },
+    {
+      "policyId": "P-AUTH-URL",
+      "scope": "onboarding.authorization",
+      "severity": "critical",
+      "text": "授权链接只能由 auth.sh 在固定产品/MCC 上下文校验通过后构造；只允许 https://aipay.alipay.com/cli-auth、deviceCode/productCode/mccCode 和可选 platform，禁止其他域名、路径、参数、重复参数、fragment 或 verification_url。"
+    },
+    {
+      "policyId": "P-KEY-URL",
+      "scope": "onboarding.application",
+      "severity": "critical",
+      "text": "公钥确认只展示 createKeyConfirmPage 返回的 confirmPageUrl 裸 URL；禁止展示二维码链接和 alipays:// 深链。"
+    },
+    {
+      "policyId": "P-URL-AUTO-OPEN",
+      "scope": "official-url",
+      "severity": "critical",
+      "text": "授权页和公钥确认页在 URL 完整校验通过后默认调用受控 opener；失败、无 GUI 或宿主要求权限时保留同一裸 URL 和复制访问兜底。"
+    },
+    {
+      "policyId": "P-KEY-TOOL-DOWNLOAD",
+      "scope": "onboarding.application",
+      "severity": "critical",
+      "text": "缺少应用公钥时按当前操作系统自动下载官方密钥工具并输出实际安装包路径、安装引导和官方文档兜底；只下载，不安装、不启动、不生成密钥，失败或系统不支持时只输出官方文档手动下载引导。"
+    },
+    {
+      "policyId": "P-A2M-SANDBOX",
+      "scope": "integration.aipay",
+      "severity": "critical",
+      "text": "按量付费沙箱 serviceId 固定为 api_mock_service_id，SDK 使用沙箱网关；生产网关和真实 serviceId 只用于正式配置。"
+    },
+    {
+      "policyId": "P-A2M-SUCCESS",
+      "scope": "integration.aipay",
+      "severity": "critical",
+      "text": "自动联调只有在 HTTP 200、非空可归属资源、无明确业务失败且适用 Payment-Validation 有效时通过。"
+    },
+    {
+      "policyId": "P-SANDBOX-CREDENTIAL-EXCEPTION",
+      "scope": "integration.sandbox",
+      "severity": "critical",
+      "text": "Unix/macOS/Linux 只允许快速沙箱实际返回且已校验的买家登录/支付密码在沙箱摘要和付款体验中经 stdin 临时渲染。Windows 手工沙箱允许用户在 sandbox.windows.manual_setup 后提供当前沙箱应用的 APPID、支付宝公钥、应用公钥、与当前开发语言匹配的应用私钥和沙箱账号信息；Agent 只能将其用于已确认目标项目的受保护配置，不得在回复、摘要、普通日志或业务状态中复述或另存原文。两类例外均不得扩展到生产环境账号、应用私钥或密码。"
+    },
+    {
+      "policyId": "P-SENSITIVE-STATE",
+      "scope": "all",
+      "severity": "critical",
+      "text": "用户可以为当前应用设钥明确提供应用公钥，但该输入只用于本次 app.sh key/verify-key 调用；Agent 回复、对话摘要、普通日志、跨会话状态和宽权限临时文件禁止复述或保存公钥原文。除 P-SANDBOX-CREDENTIAL-EXCEPTION 明确允许的 Windows 手工沙箱当前资料输入外，私钥、token、Payment-Proof、签名串、完整支付表单和未脱敏 MCP 响应同样禁止进入这些位置。临时 URL 只有在 flow 明确登记、已由脚本或 renderer 完成白名单及当前上下文校验且当前动作必须对客展示时，才允许进入该动作的唯一对客正文；即使获准展示，也禁止进入对话摘要、普通日志、跨会话状态或宽权限临时文件。"
+    },
+    {
+      "policyId": "P-PROJECT-PROTECT",
+      "scope": "integration",
+      "severity": "critical",
+      "text": "不得清空、覆盖或删除用户既有项目；只在已确认目标路径和范围内做必要修改。"
+    },
+    {
+      "policyId": "P-CUSTOMER-OUTPUT-EXCLUSIVE",
+      "scope": "all",
+      "severity": "critical",
+      "text": "flow 指定 renderer 或托管脚本时，其 stdout 是该动作唯一对客正文；工具输出记录、折叠面板或日志不等于已对客发送，Agent 必须把 stdout 原文作为当前回复正文发给用户。禁止在前后添加执行说明、消息 ID、控制标记、摘要、转述或近似话术。阻塞消息发出后立即停止本轮并等待用户。"
+    },
+    {
+      "policyId": "P-DETERMINISTIC-HANDOFF",
+      "scope": "all",
+      "severity": "critical",
+      "text": "flow 已登记脚本或 renderer 时只执行动作发生位置的固定命令；退出码和登记终态标记满足后立即按 flow 转移，禁止追加 jq、cat、grep、curl 或临时脚本重复解析、复核或解释同一结果。失败只走登记恢复分支；项目代码实现和运行验证除外，但不得把沙箱配置或其他敏感文件打印到工具输出。"
+    }
+  ],
+  "officialUrls": {
+    "aipaySite": "https://aipay.alipay.com/",
+    "aipaySkillSite": "https://aipay.alipay.com/?from=alipay-aipay-skill",
+    "merchantPlatform": "https://b.alipay.com/page/portal/home",
+    "openPlatform": "https://open.alipay.com/",
+    "openPlatformHome": "https://open.alipay.com",
+    "technicalSupport": "https://opensupport.alipay.com/support/intelligent-services?form=payskill",
+    "keyToolManual": "https://opendocs.alipay.com/isv/02kipk",
+    "keyToolMac": "https://ideservice.alipay.com/ide/getPluginUrl.htm?clientType=assistant&platform=mac&channelType=WEB",
+    "keyToolWindows": "https://ideservice.alipay.com/ide/getPluginUrl.htm?clientType=assistant&platform=win&channelType=WEB",
+    "androidSandboxAlipay": "https://mdn.alipayobjects.com/sandboxsys/afts/img/_itHRrdOD9oAAAAAAAAAAAAADgSLAQBr/original",
+    "sandboxToolFallback": "https://open.alipay.com/develop/sandbox/tool",
+    "sandboxGateway": "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+    "productionGateway": "https://openapi.alipay.com/gateway.do",
+    "openPlatformPaySkill": "https://open.alipay.com?form=payskill",
+    "traditionalPaymentSkill": "https://github.com/alipay/ai/tree/main/skills"
+  },
+  "authorizationProducts": [
+    {
+      "productName": "按量付费",
+      "salesCode": "I1080300001000160457",
+      "scope": "app:all,machine_pay:write,agmnt:write"
+    },
+    {
+      "productName": "网站支付",
+      "salesCode": "I1080300001000041203",
+      "scope": "app:all,fast_instant_trade_pay:write"
+    },
+    {
+      "productName": "APP 支付",
+      "salesCode": "I1080300001000041313",
+      "scope": "app:all,auth_alipay_apppay:write"
+    }
+  ],
+  "temporaryUrlAllowlist": {
+    "authorization": {
+      "host": "aipay.alipay.com",
+      "path": "/cli-auth",
+      "requiredQueryParams": ["deviceCode", "productCode", "mccCode"],
+      "optionalQueryParams": ["platform"]
+    },
+    "publicKeyConfirmation": {
+      "host": "aipay.alipay.com",
+      "path": "/public-key-confirm",
+      "requiredQueryParams": ["keyConfirmToken"],
+      "optionalQueryParams": []
+    }
+  }
+}

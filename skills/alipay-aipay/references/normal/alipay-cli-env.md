@@ -42,11 +42,12 @@ fi
 **执行要求：**
 - 对已知需要联网的命令，如果当前 Agent 环境网络受限且支持显式授权，应首次执行即申请可联网权限，不要先在受限沙箱内试跑。
 - 若命令已经因网络失败，重试时必须复用同一条命令并申请可联网权限；不要把该失败解释为用户网络故障。
+- `auth.sh init|confirm|mismatch` 返回 `AUTH_FLOW:RETRY_WITH_NETWORK` 时，表示当前 Agent 执行环境没有取得可确认 CLI 结果；必须申请联网权限后重试同一条完整脚本命令，不得解释为支付宝业务失败、logout 失败或 login 失败，也不得要求用户手动 logout/login 代替本轮脚本事实。
 - 本地纯解析、文件检查、`bash -n`、`jq` 校验等不联网命令仍可在默认沙箱内执行。
 
 **减少重复授权：**
-- 优先执行 Skill 内置脚本，例如 `bash modules/scripts/auth.sh ...`、`bash modules/scripts/app.sh ...`、`bash modules/scripts/service.sh ...`，不要把每次 `alipay-cli mcp call` 都展开成新的长命令。
-- 在支持前缀持久授权的工具中，申请可联网权限时使用稳定命令前缀作为授权范围，例如 `bash modules/scripts/auth.sh` 或 `bash modules/scripts/app.sh`。同一脚本后续不同参数更容易复用授权。
+- 优先执行 Skill 内置脚本；从本文件所在的 `references/normal/` 目录调用 onboarding 脚本时，使用 `bash ../onboarding/modules/scripts/auth.sh ...`、`bash ../onboarding/modules/scripts/app.sh ...`、`bash ../onboarding/modules/scripts/service.sh ...`，不要把每次 `alipay-cli mcp call` 都展开成新的长命令。
+- 在支持前缀持久授权的工具中，申请可联网权限时使用当前实际脚本绝对路径对应的稳定命令前缀作为授权范围。同一脚本后续不同参数更容易复用授权；不得为了复用授权改调另一份 Skill 副本。
 - 避免用 `DEV_TOOL_NAME=<tool> bash ...`、`PLATFORM=<tool> alipay-cli ...` 作为常规调用形态；这类环境变量前缀会让授权规则更难复用。签约脚本会通过公共初始化设置 `DEV_TOOL_NAME`，直接执行脚本即可。
 - 产品上下文优先通过脚本参数传入，例如 `--sales-code`、`--mcc-code`、`--product-type`；不要用 `PRODUCT_TYPE=... SALES_CODE=... bash ...` 作为常规调用形态。
 - 只有脚本未覆盖的临时排查命令，才直接调用 `alipay-cli`；这类命令需要按具体前缀单独授权。
@@ -171,6 +172,13 @@ AI 编程工具检测使用通用脚本 `scripts/detect_dev_tool.sh`。shell 脚
 ✅ 正确：检测结果仅供内部使用，只用于设置 PLATFORM 环境变量
 ✅ 正确：静默完成检测，直接进入下一步流程
 ```
+
+### 5.1 页面打开与下载能力降级
+
+- 授权页或公钥确认页由 `scripts/open_official_url.sh` 在精确 HTTPS 主机、路径、查询参数和当前上下文校验通过后默认调用 macOS `open`、Linux `xdg-open` 或可用的 Windows PowerShell；只返回 `OPENED` / `OPEN_FAILED` / `GUI_UNAVAILABLE` / `LINK_ONLY`，不输出临时 URL。Skill 不另询问是否打开。
+- 宿主缺少 GUI、opener 不存在或当前权限不允许打开时，不安装桌面工具、不绕过宿主审批，直接由标准消息保留同一裸 URL 和复制访问兜底。
+- 目标应用缺少用户已准备的应用公钥时，macOS/Windows 直接执行 onboarding 的 `download_key_tool.sh`，默认保存到用户 `Downloads` 目录并展示实际安装包路径；Linux、缺少 `curl`/`node`、目录不可用、下载源不可达或下载校验失败均回退 `https://opendocs.alipay.com/isv/02kipk`。脚本 stdout 直接输出标准对客文案，不输出 `DOWNLOADED`、`PATH=`、`DOWNLOAD_FAILED` 或 `DOWNLOAD_REASON` 机器标记。下载不安装、不启动、不生成密钥，Skill 不另询问是否下载。
+- 页面打开和下载能力检测不改变 alipay-cli、MCP、业务确认或网络重试契约；宿主权限提示不是 Skill 业务确认。
 
 ---
 

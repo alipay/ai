@@ -30,7 +30,8 @@ const CONFIG = {
     appId: '<APP_ID>', // 运行时映射沙箱 appId
     privateKey: '<APP_PRIVATE_KEY>', // 运行时映射 appPrivatePkcsKey（PKCS#1）
     alipayPublicKey: '<ALIPAY_PUBLIC_KEY>', // 运行时映射 alipayPublicKey
-    gateway: 'https://openapi.alipay.com/gateway.do',
+    // 默认用于本 Skill 的快速沙箱联调；生产部署时显式设置 ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
+    gateway: process.env.ALIPAY_GATEWAY || 'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
     sellerId: '<SELLER_ID_2088>', // 商户 ID（2088 格式）
     serviceId: 'api_mock_service_id', // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
     merchantPrivateKey: '<APP_PRIVATE_KEY>' // 与 privateKey 使用同一运行时配置，用于商家签名

@@ -1,9 +1,10 @@
-# APP支付接口 - Python 示例
+# APP 支付接口 - Python 示例
 
 ## 请求示例
 
 ```python
 import json
+import os
 from alipay.aop.api.AlipayClientConfig import AlipayClientConfig
 from alipay.aop.api.DefaultAlipayClient import DefaultAlipayClient
 from alipay.aop.api.request.AlipayTradeAppPayRequest import AlipayTradeAppPayRequest
@@ -21,6 +22,9 @@ client = DefaultAlipayClient(alipay_client_config=config)
 
 # 构造请求参数以调用接口
 request = AlipayTradeAppPayRequest()
+notify_url = os.getenv("ALIPAY_NOTIFY_URL", "").strip()
+if notify_url:
+    request.notify_url = notify_url  # 真实生产或公网联调时传入；本地没有公网 HTTPS notify_url 时不要传 None、空字符串或占位 URL
 model = AlipayTradeAppPayModel()
 
 model.out_trade_no = "MERCHANT_ORDER_NO_PLACEHOLDER"

@@ -21,9 +21,10 @@ pip install flask alipay-sdk-python pycryptodome
 不能直接使用 dict 赋值给 biz_model，因为 SDK 会调用 to_alipay_dict() 方法。
 """
 
-import json
-import time
 import base64
+import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote
 from Crypto.Signature import pkcs1_15
@@ -44,7 +45,8 @@ ALIPAY_CONFIG = {
     'appId': '<APP_ID>',
     'privateKey': '<APP_PRIVATE_KEY>',  # 请填写您的应用私钥（PKCS#1 格式）
     'alipayPublicKey': '<ALIPAY_PUBLIC_KEY>',  # 请填写您的支付宝公钥
-    'gateway': 'https://openapi.alipay.com/gateway.do',
+    # 默认用于本 Skill 的快速沙箱联调；生产部署时显式设置为 https://openapi.alipay.com/gateway.do
+    'gateway': os.environ.get('ALIPAY_GATEWAY', 'https://openapi-sandbox.dl.alipaydev.com/gateway.do'),
     'sellerId': '<SELLER_ID_2088>',  # 商户 ID（2088 格式）
     'serviceId': 'api_mock_service_id',  # 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
     'merchantPrivateKey': '<APP_PRIVATE_KEY>'  # 请填写您的应用私钥（用于商家签名）

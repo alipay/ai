@@ -1,16 +1,20 @@
 # 拒绝引导话术
 
 > 本文件定义当用户咨询本 Skill 不支持的支付产品时的标准引导话术。
+> 本文件位于 `references/normal/`，文中的 `scripts/...` 路径相对本目录。
 
 ---
 
 ## 标准拒绝引导
 
-当用户提及以下不支持的产品时，必须使用以下统一话术：
+当用户提及以下不支持的产品时，使用 `customer-messages.json` 的 `product.unsupported`，传入用户实际产品名。必须执行：
 
-> 抱歉，本 Skill 仅支持按量付费、网站支付、APP支付三种产品。
-> - 如需了解其他支付产品，请查阅 [支付宝开放平台在线文档](https://open.alipay.com?form=payskill)
-> - 如需集成传统支付产品（JSAPI、当面付、订单码、预授权、商家扣款等），可下载 [alipay-payment-integration Skill](https://github.com/alipay/ai/tree/main/skills) 进行接入
+```bash
+MESSAGE_INPUT_JSON=$(jq -cn --arg productName "$PRODUCT_NAME" '{productName:$productName}')
+printf '%s' "$MESSAGE_INPUT_JSON" | node scripts/render_customer_message.mjs product.unsupported --variant DEFAULT
+```
+
+支持范围、开放平台文档、传统支付集成 Skill 和商家平台链接只在消息目录维护；本文件不复制标准正文。
 
 ---
 
@@ -34,4 +38,4 @@
 - `SKILL.md` → 意图识别 → 拒绝处理
 - `../integration/modules/product-decision.md` → 不支持的产品
 
-**重要**：如需修改引导内容，**仅需修改本文件**，其他引用位置会自动生效。
+**重要**：如需修改对客文字或链接，只修改 `customer-messages.json` 与对应 `policy-rules.json` 官方 URL；本文件只维护适用语义。

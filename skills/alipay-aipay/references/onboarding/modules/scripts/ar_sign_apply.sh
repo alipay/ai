@@ -1,13 +1,13 @@
 #!/bin/bash
 #=============================================================================
 # 脚本名称: ar_sign_apply.sh
-# 功能描述: 提交产品签约申请，支持按量付费、网站支付、APP支付三种模式
+# 功能描述: 提交产品签约申请，支持按量付费、网站支付、APP 支付三种模式
 # 调用位置: Step 5.1 产品签约
 # 调用前置: 脚本通过 error_handler.sh 间接初始化 DEV_TOOL_NAME；需传入 --sales-code 和 --mcc-code，或兼容使用同名环境变量
 # 用法:
 #   按量付费: bash ar_sign_apply.sh --product aipay --sales-code <code> --mcc-code <code>
 #   网站支付: bash ar_sign_apply.sh --product webpay --sales-code <code> --mcc-code <code> --picurl1 <imageRef1> --picurl2 <imageRef2> --picurl3 <imageRef3>
-#   APP支付: bash ar_sign_apply.sh --product apppay --sales-code <code> --mcc-code <code> --app-name <name> --picurl1 <imageRef1> --picurl2 <imageRef2> --picurl3 <imageRef3>
+#   APP 支付: bash ar_sign_apply.sh --product apppay --sales-code <code> --mcc-code <code> --app-name <name> --picurl1 <imageRef1> --picurl2 <imageRef2> --picurl3 <imageRef3>
 # 返回值:
 #   成功: FLOW:AI_PAY_SIGN_CONTINUE | FLOW:PC_WEB_SIGN_CONTINUE | FLOW:APP_SIGN_CONTINUE
 #   失败: exit 1（由 handle_error 输出详细错误信息）
@@ -22,9 +22,11 @@ else
   echo "❌ 缺少错误处理脚本: ${SCRIPT_DIR}/error_handler.sh"
   exit 1
 fi
+source "${SCRIPT_DIR}/network_retry.sh"
 
 require_command jq || exit 1
 require_command alipay-cli || exit 1
+
 if ! command -v python3 >/dev/null 2>&1 && ! command -v uuidgen >/dev/null 2>&1; then
   echo "❌ 缺少依赖命令: python3 或 uuidgen"
   exit 1
@@ -128,9 +130,6 @@ if [ "$SALES_CODE" = "I1080300001000160457" ]; then
       ctx: {}
     }')
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call ar-sign.apply \
-    -d "$REQUEST_JSON" --json 2>/dev/null)
-
 elif [ "$SALES_CODE" = "I1080300001000041203" ]; then
   # ============ 网站支付签约 JSON（有截图） ============
   if [ -z "$PICURL1" ] || [ -z "$PICURL2" ] || [ -z "$PICURL3" ]; then
@@ -166,17 +165,14 @@ elif [ "$SALES_CODE" = "I1080300001000041203" ]; then
       ctx: {}
     }')
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call ar-sign.apply \
-    -d "$REQUEST_JSON" --json 2>/dev/null)
-
 elif [ "$SALES_CODE" = "I1080300001000041313" ]; then
-  # ============ APP支付签约 JSON（有 APP 名称和截图） ============
+  # ============ APP 支付签约 JSON（有 APP 名称和截图） ============
   if [ -z "$PICURL1" ] || [ -z "$PICURL2" ] || [ -z "$PICURL3" ]; then
-    echo "❌ APP支付需要 3 个上传后的图片引用值"
+    echo "❌ APP 支付需要 3 个上传后的图片引用值"
     exit 1
   fi
   if [ -z "$APP_NAME" ]; then
-    echo "❌ APP支付需要 --app-name"
+    echo "❌ APP 支付需要 --app-name"
     exit 1
   fi
 
@@ -209,11 +205,31 @@ elif [ "$SALES_CODE" = "I1080300001000041313" ]; then
       ctx: {}
     }')
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call ar-sign.apply \
-    -d "$REQUEST_JSON" --json 2>/dev/null)
-
 else
   echo "❌ 未知 SALES_CODE: $SALES_CODE"
+  exit 1
+fi
+
+export PLATFORM=${DEV_TOOL_NAME}
+run_network_retry RESULT write sign_apply -- alipay-cli mcp call ar-sign.apply \
+  -d "$REQUEST_JSON" --json
+RETRY_RC=$?
+if [ "$RETRY_RC" -eq 75 ]; then
+  RECONCILE_OUTPUT=$(bash "${SCRIPT_DIR}/query_sign_status.sh" --sales-code "$SALES_CODE" --product-type "$PRODUCT_TYPE" 2>&1 || true)
+  RECONCILED_STATUS=$(printf '%s\n' "$RECONCILE_OUTPUT" | sed -n 's/^SIGN_STATUS=//p' | tail -1)
+  if [ "$RECONCILED_STATUS" = "SIGN_SUBMITTED" ] || [ "$RECONCILED_STATUS" = "SIGNED_EFFECTIVE" ]; then
+    echo "✅ 签约提交已由签约状态查询核验成功"
+    case "$PRODUCT_TYPE" in
+      aipay) echo "FLOW:AI_PAY_SIGN_CONTINUE" ;;
+      webpay) echo "FLOW:PC_WEB_SIGN_CONTINUE" ;;
+      apppay) echo "FLOW:APP_SIGN_CONTINUE" ;;
+    esac
+    exit 0
+  fi
+  echo "❌ 签约提交响应不明且现有查询无法排除传播延迟，结果标记为 UNKNOWN，禁止自动重复提交"
+  exit 1
+elif [ "$RETRY_RC" -ne 0 ]; then
+  echo "❌ 签约提交因明确未发送的网络异常在自动重试两次后仍未恢复"
   exit 1
 fi
 
@@ -228,10 +244,10 @@ SUCCESS=$(echo "$BUSINESS" | jq -r '.success // false')
 
 if [ "$SUCCESS" = "true" ]; then
   echo "✅ 签约提交成功"
-  echo "$BUSINESS" | jq '.resultObj // .data // {}'
+  echo "SIGN_APPLY_STATUS=SUBMITTED"
   # 签约提交成功后无需等待审核，立即推进后续步骤
   # 按量付费: 继续 5.2 服务注册 → 5.3 应用发布
-  # 网站支付/APP支付: 继续 5.3 应用发布
+  # 网站支付/APP 支付: 继续 5.3 应用发布
   if [ "$SALES_CODE" = "I1080300001000160457" ]; then
     echo "FLOW:AI_PAY_SIGN_CONTINUE"
   elif [ "$SALES_CODE" = "I1080300001000041313" ]; then
@@ -241,8 +257,9 @@ if [ "$SUCCESS" = "true" ]; then
   fi
 else
   # handle_error 已处理 ERROR/CLI_ERROR 路径并透出详细错误信息
-  # 此处为防御性兜底：handle_error 返回成功但 success=false 的极端场景
+  # 此处为防御性兜底：handle_error 返回成功但 success 非 true 的极端场景
   ERROR_MSG=$(echo "$BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+  ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
   echo "❌ 签约提交失败: $ERROR_MSG"
   exit 1
 fi

@@ -1,181 +1,122 @@
 ---
 name: alipay-aipay
 description: >-
-  支付宝AI支付站点官方 Skill。当用户选择按量付费、网站支付、APP支付进行集成、签约入驻或全流程同时完成两者时，使用此 Skill。
-  触发关键词："AI支付"、"接支付宝"、"接个支付"、"402收款"、"按量付费"、"快捷收款"、"快捷收单"、"网站支付"、"APP支付"、"商家入驻"、"签约入驻"等。
+  支付宝 AI 付站点官方 Skill。当用户选择完成按量付费、网站支付、APP 支付三类支付宝收单产品的代码开发、产品开通或全流程同时完成两者时，使用此 Skill。
+  触发关键词："AI支付"、"接支付宝"、"接个支付"、"开发支付"、"402收款"、"按量付费"、"快捷收款"、"快捷收单"、"网站支付"、"APP 支付"、"产品开通"、"商家开通"、"签约入驻"等。
 ---
 
-# 支付宝 AI 支付 SKILL
+# 支付宝 AI 付 SKILL
 
 ---
 
 ## ⚠️ 支持产品范围
 
-本 SKILL 仅支持：按量付费、网站支付、APP支付三种产品。不支持当面付、订单码支付、JSAPI支付、预授权支付、商家扣款等产品，如需集成请前往[支付宝开放平台](https://open.alipay.com/)查阅相关文档，如需签约请前往[支付宝商家平台](https://b.alipay.com/page/portal/home)完成签约。
+本 SKILL 仅支持：按量付费、网站支付、APP 支付三种产品。不支持当面付、订单码支付、JSAPI支付、预授权支付、商家扣款等产品，如需集成请前往[支付宝开放平台](https://open.alipay.com/)查阅相关文档，如需签约请前往[支付宝商家平台](https://b.alipay.com/page/portal/home)完成签约。
 
 **产品术语口径：**
 - **网站支付**是本 Skill 唯一的网页支付产品概念，覆盖电脑网页和手机浏览器网页/H5 场景；用户说“电脑网站支付”“PC网站支付”“PC网页支付”“手机网站支付”“H5支付”时，均按本 Skill 的**网站支付**处理。
 - 集成侧网站支付底层接口固定使用 `alipay.trade.page.pay`；即使是手机浏览器/H5 场景，也不得改用或推荐其他网页支付接口。
 - 签约侧网站支付使用 `productType=webpay`、`salesCode=I1080300001000041203`，签约 payload 中的应用类型字段为 `PC_WEB`；这里的 `PC_WEB` 是接口字段名，不代表只能用于 PC 端网页。
 
-**❌ 严禁行为**：禁止将明确不支持的产品（如用户明确说"当面付"、"付款码"等）强行往按量付费、网站支付、APP支付上引导，必须明确告知不支持并引导至外部平台。
+**❌ 严禁行为**：禁止将明确不支持的产品（如用户明确说"当面付"、"付款码"等）强行往按量付费、网站支付、APP 支付上引导，必须明确告知不支持并引导至外部平台。
 
 ## 🚨 执行铁律
 
 ### 禁止行为
 
-1. **禁止跳过流程**：必须严格按 flow.md 步骤顺序执行，禁止跳步或直接写代码
-2. **禁止跳过阻塞确认**：在 `<INTERNAL_BLOCKING_CONFIRMATION>` 处必须等待用户明确回复
-3. **禁止合理化跳过确认**：不允许用"用户催促"等理由跳过阻塞确认
-4. **禁止假数据**：沙箱配置必须用真实数据，禁止占位符。唯一例外是按量付费沙箱联调的 `service_id`，固定使用 `api_mock_service_id`；该值仅用于沙箱调试，生产环境禁止使用
-5. **沙箱化 Agent 联网命令权限**：在存在网络沙箱或命令审批机制的 Agent 环境中，`alipay-cli` 登录、MCP 调用、文件上传、沙箱创建、安装脚本下载等命令应按联网命令处理；若当前工具支持显式网络授权，应首次执行即申请可联网权限，详见 `references/normal/alipay-cli-env.md`
-6. **禁止无依据回答**：遇到没有确定依据的问题，必须明确说明无法确认，不得编造。具体额度解限、可收款时间解限、支付产品签约不确定问题，引导用户前往[支付宝商家平台](https://b.alipay.com/page/portal/home)咨询客服；代码集成、应用创建相关不确定问题，引导用户前往[支付宝开放平台](https://open.alipay.com/)或[支付宝技术支持](https://opensupport.alipay.com/support/intelligent-services?form=payskill)咨询客服
-7. **禁止编造 CLI/MCP 方法**：本规则适用于签约、集成、调试、排障、重试、恢复和降级，不存在“为了调试”例外。当前操作已有 Skill 脚本封装时必须执行脚本，禁止绕过脚本自行拼接 `alipay-cli mcp call`；没有脚本且确需直调时，Server、Tool、参数名和 JSON 结构必须来自当前已读取文档中的完整固定命令，或先通过 `alipay-cli mcp list <server> --json` 实时确认。禁止根据业务名称、相似接口、历史记忆或错误信息推断命令。遇到 `Server not found`、`Method not found` 或 `Invalid params` 时必须停止并回到脚本、文档或实时 schema，禁止更换近似名称连续试错。
-8. **内部控制标记禁止对客输出**：本 Skill 及全部 references 中名称以 `INTERNAL_` 开头的标签只用于 Agent 控制流程，不是输出模板。执行标签内的指令，但禁止向用户输出开始标签、结束标签、标签名称或“内部控制标记”等实现细节；只输出该步骤要求的业务信息和确认问题，然后停止等待。每次发送对客消息前检查并移除任何意外出现的 `<INTERNAL_...>` / `</INTERNAL_...>`，重新组织语句后再发送。只有用户明确要求查看、审查或解释 Skill 原文时，才可在代码格式中引用这些标签。
-9. **用户既有文件保护**：支付接入不得清空或删除既有项目，“新建”“重新做”“换一个”等回复都不构成删除授权；默认保留全部既有文件，只做必要的局部修改，或在用户确认的尚不存在或为空的目录中创建独立项目。用户主动要求删除具体文件时，仍须按 `references/integration/flow.md` 的文件保护规则完成精确清单和独立二次确认；项目根目录、`.git`、通配符删除和清单外路径始终禁止，且必须遵守当前 Agent 环境自身的破坏性操作审批机制。
-10. **沙箱配置与测试结论必须分离**：步骤 2 的字段完整性校验只确认候选沙箱配置可落盘，不代表任何支付链路已经测试。字段无缺失时禁止对客输出字段核对表、独立的“校验通过”提示或任何“沙箱测试通过”表述，只按 `references/integration/modules/sandbox/sandbox-setup-guide.md` 输出一张沙箱环境摘要表。只有按量付费在步骤 5 自动完成 402 Payment-Needed、沙箱收银、Payment-Proof 重试和资源交付全链路后，才可对客输出“沙箱测试通过”或等价结论；网站支付和 APP支付不得输出该结论，只能陈述已经实际完成的具体动作和仍待用户验证的事项。
+1. **禁止跳步和绕过确认**：必须严格按已加载 flow/reference 步骤顺序执行；在 flow 标明的阻塞确认处必须等待用户明确回复，禁止用“用户催促”、宿主问答工具超时、默认 fallback、Task 状态或工具返回“proceed using best judgment”等理由跳过或合理化跳过确认。
+2. **禁止假数据**：沙箱配置必须用真实数据，禁止占位符。唯一例外是按量付费沙箱联调的 `service_id`，固定使用 `api_mock_service_id`；该值仅用于沙箱调试，生产环境禁止使用。
+3. **沙箱化 Agent 联网命令权限**：在存在网络沙箱或命令审批机制的 Agent 环境中，`alipay-cli` 登录、MCP 调用、文件上传、沙箱创建、安装脚本下载等命令应按联网命令处理；若当前工具支持显式网络授权，应首次执行即申请可联网权限，详见 `references/normal/alipay-cli-env.md`。
+4. **禁止无依据回答**：遇到没有确定依据的问题，必须明确说明无法确认，不得编造。具体额度解限、可收款时间解限、支付产品开通不确定问题，引导用户前往[支付宝商家平台](https://b.alipay.com/page/portal/home)咨询客服；代码开发、应用创建相关不确定问题，引导用户前往[支付宝开放平台](https://open.alipay.com/)或[支付宝技术支持](https://opensupport.alipay.com/support/intelligent-services?form=payskill)咨询客服。
+5. **禁止编造 CLI/MCP 方法**：本规则适用于签约、集成、调试、排障、重试、恢复和降级，不存在“为了调试”例外。当前操作已有 Skill 脚本封装时必须执行脚本，禁止绕过脚本自行拼接 `alipay-cli mcp call`；没有脚本且确需直调时，Server、Tool、参数名和 JSON 结构必须来自当前已读取文档中的完整固定命令，或先通过 `alipay-cli mcp list <server> --json` 实时确认。禁止根据业务名称、相似接口、历史记忆或错误信息推断命令。遇到 `Server not found`、`Method not found` 或 `Invalid params` 时必须停止并回到脚本、文档或实时 schema，禁止更换近似名称连续试错。
+6. **执行控制信息禁止对客输出**：flow 步骤名、消息 ID、variant、机器标记和“已执行/已打印/已渲染/runner stdout/下一步进入某步骤”等执行说明都不是对客正文。指定 renderer 或托管脚本时，其 stdout 是该动作唯一对客内容；工具输出记录、折叠面板或日志不等于已对客发送，Agent 必须把 stdout 原文作为当前回复正文发给用户；禁止添加前言、后记、摘要、转述或近似话术，阻塞消息发出后立即停止本轮并等待用户。
+7. **用户既有文件保护**：支付接入不得清空或删除既有项目，“新建”“重新做”“换一个”等回复都不构成删除授权；默认保留全部既有文件，只做必要的局部修改，或在用户确认的尚不存在或为空的目录中创建独立项目。用户主动要求删除具体文件时，仍须按 `references/integration/flow.md` 的文件保护规则完成精确清单和独立二次确认；项目根目录、`.git`、通配符删除和清单外路径始终禁止，且必须遵守当前 Agent 环境自身的破坏性操作审批机制。
+8. **沙箱配置与测试结论必须分离**：代码开发步骤 1/3 的字段完整性校验只确认候选沙箱配置可落盘或可复核，不代表任何支付链路已经测试。既定创建或字段复核重试耗尽后必须记录 `CREATE_PENDING|VERIFY_PENDING`，由脚本输出统一待配置消息并继续代码实现；待配置只阻止沙箱字段使用、摘要、配置后置校验、联调和付款体验，不得伪造字段或宣称代码开发全部通过。只有配置就绪、代码开发完成并通过配置后置校验后，才输出一张沙箱环境摘要表。只有按量付费在代码开发步骤 6 自动完成 402 Payment-Needed、沙箱收银、Payment-Proof 重试和资源交付全链路后，才可对客输出“沙箱测试通过”或等价结论；网站支付和 APP 支付不得输出该结论。
+9. **异步通知验收必须分层说明**：涉及网站支付或 APP 支付的支付结果确认时，必须同时说明两层口径，不得把公网异步通知提前抬成所有本地验收的前置条件。
+   - **本地正式验收 / 本地生产参数验收模式**：当用户项目尚未上线、暂时没有可公网访问的 HTTPS `notify_url`，可临时关闭异步通知发起配置或不传 `notify_url`，保留本地结果确认链路并通过交易查询主动确认订单结果；此模式下仍必须实现异步通知处理代码，只是把公网通知联调标记为“人工待验证”，不得宣称生产就绪。
+   - **真实生产上线**：异步通知不能长期缺失，必须配置公网 HTTPS `notify_url`，完成验签、幂等、关键字段校验、成功回写 `success` 和补偿查询；没有完成这一层，只能说“已完成本地正式验收”或“已完成本地生产参数验收”，不得说“正式上线完成”或“生产就绪”。
+10. **授权页面固定地址**：禁止 Agent 自行拼写、替换或打开授权网站。授权页面只能由 `auth.sh` 在固定产品/MCC 上下文校验通过后生成；只允许 `https://aipay.alipay.com/cli-auth`、唯一的 `deviceCode/productCode/mccCode` 和可选 `platform`。其他域名、路径、参数、重复参数、fragment 和 CLI `verification_url` 一律禁止打开或展示。
+11. **固定脚本终态后立即转移**：flow 已登记脚本或 renderer 时，只执行动作发生位置的固定命令。退出码和登记的终态标记满足后立即进入 flow 指定下一步，禁止追加 `jq`、`cat`、`grep`、`curl` 或临时脚本重复解析、复核或解释同一结果；失败只走该动作登记的恢复分支。项目代码实现、自检和运行验证不受此限制，但不得借调试绕过已有 Skill 脚本，也不得把沙箱配置或其他敏感文件打印到工具输出。
+
+### 标准对客消息输出规则
+
+凡 flow 或模块要求使用 `customer-messages.json` 的消息 ID 时，禁止手写近似话术；必须优先执行当前位置给出的托管脚本或 runner。只有当前位置未提供托管入口时，才按同一相对路径模板执行 renderer：
+
+以下消息已有托管入口，运行时禁止套用通用 renderer 示例自行拼 JSON：`integration.start.confirm` 和 `integration.checklist.result` 必须用 `integration_message_runner.mjs`；产品开通的 `onboarding.mcc.clarify`、`onboarding.discovery.summary`、`materials.category.collect` 和 `process.partial_result` 必须用 `onboarding_message_runner.mjs`；`auth.page`、`auth.pending`、`auth.expired`、`auth.mismatch` 必须用 `auth.sh`；`application.key.page` 必须用 `app.sh key`；`key_tool.download.result` 和 `key_tool.download.fallback` 必须用 `download_key_tool.sh`。其中 `materials.category.collect` 不得手写 `categoryName/currentStatus/missingFields`，必须把材料类别、状态和缺失字段交给 `onboarding_message_runner.mjs material-collect` 规范化；最终收口必须把分支状态和紧邻收口的应用操作结果交给 `onboarding_message_runner.mjs closeout` 处理，应用已上线且配置完整时不展开应用分支结果，待审核、待设置公钥、需人工配置、失败或结果未知时才展开，禁止 Agent 手写或连续重复输出下一步。
+
+```bash
+# 构造 MESSAGE_INPUT_JSON 前先查看本消息的机器 schema，确认变量白名单、枚举和值级变体规则
+node references/normal/scripts/render_customer_message.mjs --schema <messageId> --variant <VARIANT>
+
+# MESSAGE_INPUT_JSON 必须按当前位置的完整命令由 jq --arg/--argjson 生成
+printf '%s' "$MESSAGE_INPUT_JSON" | node references/normal/scripts/render_customer_message.mjs <messageId> --variant <VARIANT>
+```
+
+动态值必须先保存在 shell 变量中，再由当前位置示例中的 `jq -cn --arg` / `--argjson` 生成 `MESSAGE_INPUT_JSON`；禁止把用户输入、项目路径、接口字段或脚本输出替换进单引号 JSON、命令文本或 `eval`。schema 只用于生成前预检，不能替代 renderer；renderer 返回 `MESSAGE_RENDER_ERROR` 时必须先复查同一 `messageId` + `variant` schema，再修正字段或枚举值，禁止连续猜测近似值。**Skill 内置命令工作目录铁律**：发布文档中的相对脚本路径一律以“包含该命令的 Markdown 文件所在目录”为工作目录解析，不以 Agent 启动目录、用户项目目录或其他历史 Skill 安装目录解析。执行工具支持 `workdir` 时直接将其设置为该文档目录；不支持时先根据当前已加载文件的实际路径定位该目录。用户可以用当前目录下相对路径、绝对路径、“在当前目录新建 pay-demo”或“新建项目”说明目标项目；用户明确要新建但未指定地址时，runner 会在用户目录下选择安全的新目录并返回规范化地址。“当前项目/当前目录”只有在 runner 确认当前目录本身是可识别项目根时才接受为现有项目。用户不知道已有项目位置或只给出大概子目录时，先用当前 flow 登记的 `locate-projects --search-input "$SEARCH_INPUT" --format message` 轻量定位候选目录并等待用户选择，不得把大目录直接交给代码扫描。用户项目的检测、依赖、代码、配置、启动和校验命令仍以已确认项目根目录为工作目录；调用 Skill 内置脚本不改变目标项目，脚本需要项目时必须显式传入该规范化绝对路径。不得靠猜测 `cwd`、反复试错或切换到另一份 Skill 副本修复路径错误。
+
+无变量时也必须传 `{}`。renderer 返回非 0 时停止当前步骤，不得自行补写兜底文案。renderer 成功时必须把 stdout 原文作为当前 assistant 回复发送给用户；命令工具面板里出现 stdout 不算完成对客输出。不得在前后补充“已输出”“已打印”“已渲染”“runner stdout”“请确认以上方案”、步骤名称、消息 ID、控制标记或手写摘要。若消息由脚本托管，例如 `integration_message_runner.mjs start-confirm` 输出 `integration.start.confirm`、`integration_message_runner.mjs checklist-result` 输出 `integration.checklist.result`、`auth.sh init` 输出 `auth.page`、`app.sh key` 输出 `application.key.page`、`sandbox_config.sh summary` 输出沙箱摘要，则执行对应脚本，并把脚本 stdout 原文作为当前回复正文；不得绕过脚本直接改写消息，也不得只说明脚本已展示、已渲染或已输出。
 
 ### 执行流程（通用）
 
 ```
-用户输入 → 自更新检查 → 识别意图与已有上下文 → 加载对应 flow.md → 输出一次性启动确认与待办步骤清单 → 等待确认 → 逐步执行
+用户输入 → 自更新检查 → 识别意图与已有上下文 → 加载对应 flow/router → 按 flow 静默准备当前事实 → 只在当前确认点执行指定 renderer 并等待 → 逐步执行
 ```
+
+不同事实和权限上下文的确认不能提前合并；同一确认点也不得在 renderer 前后另写方案、待办、服务声明或执行说明。`integration_only` 与 `full_process` 的代码开发都使用唯一 `integration.start.confirm`：它绑定同一固定检查器产生的项目来源、代码状态和其他支付产品，以及产品、项目路径、语言/框架和服务声明；每轮代码开发只渲染一次。onboarding 的 MCC/scope 方案确认及服务修改确认仍必须按其实际上下文单独执行；服务创建资料完整且校验通过后展示非阻塞摘要并直接创建，签约材料完整且校验通过后直接提交，新建应用的公钥校验成功后直接提审，三者均不增加回复 `1`。
 
 **启动自更新检查**：每次触发本 Skill 时，先读取并执行 `references/normal/self-update.md` 的自更新检查。若本轮对话中刚成功执行过 `npx -y @alipay/alipay-aipay@latest install`，则视为检查已完成，直接继续后续流程。该检查不作为业务阻塞确认点；发现旧版或无法识别本地版本时自动尝试更新，失败时继续使用当前已加载版本。若当前 Agent 环境要求联网或写入用户 Skill 目录授权，则按环境权限机制处理，不得在 Skill 内另设业务确认点。
 
 **产品推荐入口：**
 - 集成场景：读取 `references/integration/modules/product-decision.md` 做支付产品推荐与澄清。
-- 签约/入驻场景：读取 `references/onboarding/flow.md` 的 Step 2“方案规划”做产品匹配与推荐。
-- 完整接入场景：按下方“完整接入编排”衔接两个子流程；业务规则和完成条件仍以两个子流程为准。
+- 产品开通场景：读取 `references/onboarding/flow.md` 的 Step 2“方案规划”做产品匹配与推荐。
+- 完整接入场景：先读取 `references/normal/full-process-routing.md` 完成完整接入分流与确认，再衔接两个子流程；业务规则和完成条件仍以两个子流程为准。
 
-#### 集成流程（7步 / APP支付跳过步骤5，共6步）
-- 步骤1：产品决策 → **[阻塞确认]**
-- 步骤2：沙箱初始化 → 阅读 sandbox-setup-guide.md → 创建环境
-- 步骤3：集成前置 → 阅读 SDK 文档 + 产品文档
-- 步骤4：代码生成
-- 步骤5：沙箱测试与体验（按量付费自动完成端到端联调；网站支付必须提供浏览器付款入口，并明确给出“沙箱买家账号登录”或“安卓沙箱支付宝扫码”两种体验方式供用户二选一，`curl` 取得支付表单不算完成；APP支付跳过）
-- 步骤6：集成后说明
-- 步骤7：集成校验 → **[默认自动执行]**
+三种入口均只在无法从用户已提供的产品名称或业务描述中可靠确定唯一产品时，执行当前入口 flow 登记的 `product.clarify` renderer；不得自由补写产品澄清话术。用户回复的明确业务描述可以按固定产品规则完成映射，不要求再次逐字输入产品名称；仍无法唯一确定时继续使用同一标准消息，不得推定产品。产品已经明确时禁止重复渲染该消息。产品明确但 MCC/经营类目仍无法可靠确定时，产品开通入口必须执行 `onboarding_message_runner.mjs mcc-clarify`，不得手写经营类目补问。
 
-#### 签约流程（6步）
+支付产品-代码开发或完整接入启动前缺少项目位置或技术栈时，必须按对应 flow 执行 `integration.context.required` 或 `integration.project_path.required` 标准消息；用户可选择新建项目或复用已有项目。新建项目可以给出尚不存在或为空的目标目录；如果用户明确要新建但不想指定位置，可用 `resolve-project --intent new` 的默认项目规则在用户目录下选择安全新目录并告知项目地址。复用已有项目必须给出明确项目根，或先通过 `integration_message_runner.mjs locate-projects --search-input "$SEARCH_INPUT" --format message` 在当前目录或用户给出的子目录下输出候选并等待用户选择。“当前项目/当前目录”只有在当前目录本身可识别为项目根时才算明确路径，否则保持未解析。禁止使用宿主问答组件、超时默认值、Agent 自创选项或自由话术替代。用户未明确补齐这些字段前，不得创建目录、初始化项目、安装依赖或修改文件。
+
+#### 支付产品-代码开发流程
+- 步骤1：环境检查与匿名沙箱准备 → 在产品确定前尝试准备本地沙箱；既定重试耗尽后记录待配置、统一告知并继续代码开发，不展示配置摘要
+- 步骤2：产品决策 → **[阻塞确认；`full_process` 复用完整接入唯一启动确认，不重复询问]**
+- 步骤3：沙箱配置复核 → 配置已就绪时执行 `sandbox_config.sh reverify`；待配置时保持状态并直接进入步骤4
+- 步骤4：代码开发前置 → SDK+本地契约/示例
+- 步骤5：代码生成；完成配置后置校验后，才展示沙箱环境摘要
+- 步骤6：沙箱测试与体验（按量付费自动完成端到端联调；网站支付必须提供浏览器付款入口，并明确给出“沙箱买家账号登录”或“安卓沙箱支付宝扫码”两种体验方式供用户二选一，`curl` 取得支付表单不算完成；APP 支付跳过）
+- 步骤7：代码开发后说明
+- 步骤8：代码开发校验 → **[默认自动执行]**
+
+#### 支付产品-产品开通流程
 - 步骤1：环境检查
 - 步骤2：方案规划
 - 步骤3：登录授权 + 签约/应用/适用服务的只读查询
-- 步骤4：一次性资料与资源决策
-- 步骤5：入驻推进
-- 步骤6：本轮流程收口
+- 步骤4：三分支摘要与分类材料
+- 步骤5：独立分支推进
+- 步骤6：分支级收口
 
-#### 完整接入编排
+每次进入签约流程都先校验登录授权，并查询签约、应用和适用服务的真实状态；只按当前动作读取对应模块，禁止一次加载全部分支，也禁止绕过 `auth.sh` 直接调用 `alipay-cli login`。
 
-- 只编排 `references/integration/flow.md` 和 `references/onboarding/flow.md`，不建立第三套业务生命周期状态、完成条件或恢复模型；下述两个维度仅用于本轮选择目标项目和子流程，完成分流后不替代、不复制两个子流程自身的业务状态。两个子流程的红线、校验和阻塞确认全部保留。
-- 识别到“完整接入”“一站式”等 `full_process` 意图后，先只确定目标产品并检查 Agent 当前工作目录。此时禁止读取或对客展示 MCC、授权范围、签约材料、签约待办或集成与签约的合并清单。
-- 项目检查必须基于实际文件和代码证据：先识别当前目录内所有可运行的业务项目候选，再按 `references/integration/flow.md` 的 [M-04]/[M-07] 要求检查目标产品的适用接口、SDK 调用、支付入口、结果处理和必要安全逻辑。空目录、无关项目、仅安装 SDK、只有配置、单个下单接口或零散示例代码都不能算完整集成。
+#### 完整接入流程
 
-**临时路由维度一：目标项目选择**。必须归入且只能归入以下一项：
-1. `CURRENT_PROJECT`：用户选定当前工作目录内某一个可访问的已有项目，记录其规范化路径。当前目录存在多个项目候选时，在用户选定前不得使用本状态。
-2. `OTHER_PROJECT`：用户选定当前工作目录外的已有项目。可访问时先检查实际代码；不可访问时记录为“用户声明”，不得伪装成本地检测结果。
-3. `NEW_PROJECT`：用户明确选择新建项目并确认目标路径，且该路径尚不存在或已检查为空。若目标路径非空，存在业务项目时立即改按 `CURRENT_PROJECT` 或 `OTHER_PROJECT` 重新检查；不存在业务项目时也不得清空或覆盖，必须改选新的空子目录、空同级目录或其他尚不存在或为空的目录。
-4. `PROJECT_UNRESOLVED`：未发现项目、发现多个候选但用户未选择、用户只说“已有项目”但未给出可定位信息，或只说“新建”但未确认独立的新项目路径。该状态不得进入任何子流程。
+识别到“完整接入”“一站式”等 `full_process` 意图时，必须先读取并执行 `references/normal/full-process-routing.md`。完整接入启动确认前只允许按该文件复用 Integration 步骤 1 的项目、语言、CLI 和匿名沙箱准备；不得进入产品代码开发或 onboarding。唯一启动确认必须同时展示并绑定项目扫描状态、产品、项目路径和来源、语言/框架及服务声明；用户输入 `1` 后直接进入 integration 步骤 3，不再重复代码开发确认。该消息不展示步骤清单，但不得据此省略当前产品 Integration flow 的任何适用接口、完成条件或 checklist。代码开发通过后自动进入支付产品-产品开通；只有沙箱待配置且其余代码与安全检查通过，或配置就绪且仅剩非阻塞人工待验证项时，保持代码开发“部分通过”并继续产品开通；代码开发阶段的非阻塞人工待验证项必须在产品开通最终收口中再次展示，不增加用户确认点；其他未通过项仍停在 integration。
 
-**临时路由维度二：所选项目的目标产品集成状态**。对 `CURRENT_PROJECT` / `OTHER_PROJECT` 按以下优先级自上而下匹配，命中后停止，保证状态互斥；`NEW_PROJECT` 固定为 `NO_PAYMENT`：
-1. `TARGET_COMPLETE`：目标产品满足 [M-04]/[M-07] 的完整集成证据。即使还存在其他支付产品，也归入本状态，并单独记录其他产品但不改变分类。
-2. `TARGET_PARTIAL`：存在目标产品代码或配置证据，但不足以满足完整集成。即使同时存在其他支付产品，也优先归入本状态。
-3. `OTHER_PRODUCT_ONLY`：没有目标产品证据，但明确检测到一个或多个其他支付产品。必须记录实际检测到的产品；不得擅自删除、替换或改写已有能力。
-4. `NO_PAYMENT`：在项目可访问且完成有效检查后，没有发现任何支付能力；新项目也使用本状态。
-5. `STATUS_UNKNOWN`：项目不可访问、证据不足、检测结果互相冲突，或无法确认代码对应的支付产品。该状态不得进入任何子流程。
 
-**完备性与澄清规则**：
-- 先确定目标产品，再确定维度一，最后确定维度二；目标产品未明确时不得判断集成状态。
-- `PROJECT_UNRESOLVED` 必须让用户选择当前项目、提供其他项目位置或确认新建项目；`STATUS_UNKNOWN` 必须补问支付集成状态和具体产品，能够访问项目时优先继续检查代码。澄清后重新计算两个维度，不得直接推定路由。
-- 当前目录已经包含业务项目且用户希望新建时，只能提供以下非破坏性选择：保留现有项目并新增目标支付能力、保留现有项目并在明确的新子目录创建独立项目、保留现有项目并使用明确的其他路径。禁止提供“清空当前目录”选项。用户只回复“新建”时，必须继续询问并确认具体新路径，不得映射为清空、覆盖或删除。
-- 用户明确指出不可访问的其他项目并声明其集成状态时，可把该声明作为维度二依据，但必须标注“用户声明”并在分流确认中复述，不得声称已经检查代码。
-- monorepo、多项目目录、同时存在多种支付产品、目标产品部分集成以及检测到不支持产品，都按上述两维和优先级处理，不得创建额外临时状态。
+## 按需加载
 
-**穷举路由矩阵**：
-
-| 目标项目选择 | `TARGET_COMPLETE` | `TARGET_PARTIAL` | `OTHER_PRODUCT_ONLY` | `NO_PAYMENT` | `STATUS_UNKNOWN` |
-|---|---|---|---|---|---|
-| `CURRENT_PROJECT` | 确认后 onboarding | 确认后 integration | 确认后 integration | 确认后 integration | 继续澄清 |
-| `OTHER_PROJECT` | 确认后 onboarding | 确认后 integration | 确认后 integration | 确认后 integration | 继续澄清 |
-| `NEW_PROJECT` | 非法组合，重新检查 | 非法组合，重新检查 | 非法组合，重新检查 | 确认后 integration | 非法组合，重新检查 |
-| `PROJECT_UNRESOLVED` | 继续澄清 | 继续澄清 | 继续澄清 | 继续澄清 | 继续澄清 |
-
-**统一分流确认**：只有维度一已解析为 `CURRENT_PROJECT` / `OTHER_PROJECT` / `NEW_PROJECT`，且维度二已解析为 `TARGET_COMPLETE` / `TARGET_PARTIAL` / `OTHER_PRODUCT_ONLY` / `NO_PAYMENT` 的合法组合时，才能发起本确认。必须向用户展示目标产品、所选项目及路径、目标产品集成状态、检测到的其他支付产品、判断依据或“用户声明”和拟进入的流程，并等待用户明确确认。此时只讨论项目与支付集成状态，禁止展示 MCC、授权范围、签约材料、签约待办或两流程合并清单：
-- `TARGET_COMPLETE`：确认后进入 onboarding。
-- `TARGET_PARTIAL` / `OTHER_PRODUCT_ONLY` / `NO_PAYMENT`：确认后进入 integration；在其他产品已存在时只新增当前目标产品所需能力，不得改动无关支付能力。
-- `PROJECT_UNRESOLVED` / `STATUS_UNKNOWN`：只能继续澄清，不能发起最终分流确认或进入子流程。
-
-**子流程上下文交接**：完成统一分流确认后，必须把目标产品、项目选择分类、规范化项目路径、目标产品集成状态、判断依据或“用户声明”以及检测到的其他支付产品作为同一份执行上下文交给后续子流程，并在阶段切换时原样保留，不得回退到 Agent 原始工作目录或重新猜测项目。进入 integration 时还必须遵守 `references/integration/flow.md` 的“目标项目执行上下文”：已有项目必须先可访问，新项目必须在该流程确认语言、框架和创建方式后才能初始化；条件不满足时停在 integration 补齐，不得把代码、配置或依赖写到其他目录。
-
-<INTERNAL_BLOCKING_CONFIRMATION>
-
-所有可路由组合都必须完成一次统一分流确认，检测结果和用户此前零散提供的信息都不能自动替代该确认。用户必须明确确认目标产品、所选项目及路径、目标产品集成状态和拟进入流程；检测到其他支付产品时，还必须确认“保留已有其他支付能力，仅新增或补全目标产品”。只说“继续”或“新建”、未选择多项目中的具体项目、未确认新项目路径尚不存在或为空，或未确认保留已有其他支付能力时，均不得进入 integration 或 onboarding；任何分流确认都不包含删除授权。`PROJECT_UNRESOLVED` / `STATUS_UNKNOWN` 先澄清并重新分类，再执行本确认。
-
-</INTERNAL_BLOCKING_CONFIRMATION>
-
-- integration 分支必须完成当前产品全部适用步骤和自动校验后，才自动进入 onboarding。集成存在未通过项时停留在 integration，列出整改项；不得提前展示或采集签约材料。
-- onboarding 分支进入后才按该流程展示 MCC、授权范围、签约待办和当前产品可能需要的材料，并执行其独立阻塞确认。integration 的产品确认或服务声明确认不能替代 onboarding 的产品、MCC、授权范围和签约执行范围确认。
-- 跨子流程只复用已经实际取得且仍有效的产品判断、集成产物、已校验材料和 CLI 环境检查；阶段切换时不再询问“是否进入签约”，但 onboarding 自身规定的确认不得省略。
-- onboarding 登录后连续查询签约、应用和适用的服务，再一次收集当前分支材料；不得把查询失败当作空列表。已取得的图片引用、APP 名称和校验结果直接写入 onboarding 现有状态，不建立 full_process 副本。
-- 产品签约和服务/应用写操作继续使用 onboarding 的最终摘要确认。按量付费沙箱测试属于集成调试步骤，测试参数和服务就绪后默认执行，不新增确认点。
-- 两个子流程都到达当前可推进终点后，直接汇总实际集成、沙箱、签约、服务、应用和待办状态。存在待生效、待审核、未通过校验或正式配置未完成时，只能表述为“本轮完整接入已执行至当前可推进终点”，不得宣称生产就绪。
-
----
-
-## 目录结构
-
-```
-alipay-aipay/
-├── SKILL.md                    # 主控中枢，Agent 入口
-└── references/
-    ├── normal/                 # 通用文档（集成 + 签约共用）
-    │   ├── alipay-cli-env.md   # alipay-cli 检测与安装
-    │   ├── self-update.md      # 启动自更新检查
-    │   ├── rejection-guide.md  # 不支持产品的拒绝引导话术
-    │   └── scripts/            # 通用脚本
-    │       ├── common.sh           # shell 公共函数与初始化入口
-    │       └── detect_dev_tool.sh  # AI 编程工具检测
-    ├── integration/            # 支付集成子流程
-    │   ├── flow.md             # 集成流程主入口（含问题排查）
-    │   └── modules/
-    │       ├── product-decision.md     # 产品决策树（含澄清话术）
-    │       ├── alipay-sdk-reminder.md  # SDK 防坑指南，必读
-    │       ├── interface-guide.md      # 接口索引 + 代码示例路径
-    │       ├── checklist.md            # 集成校验清单
-    │       ├── sandbox/                     # 沙箱环境
-    │       │   ├── sandbox-setup-guide.md   # 沙箱配置指南
-    │       │   ├── alipay-sandbox-tool.md   # 沙箱工具使用
-    │       │   └── a2m-sandbox-test.md      # 按量付费沙箱测试
-    │       ├── scripts/                     # 集成流程脚本
-    │       │   └── local_402_sandbox_pay.py # 402沙箱收银测试脚本
-    │       └── code-examples/          # 代码示例（csharp / java / nodejs / php / python）
-    └── onboarding/             # 商家签约子流程
-        ├── flow.md             # 签约流程主入口，含内存状态管理
-        └── modules/
-            ├── error-handling.md       # 统一错误检测入口
-            ├── mcc-reference.md        # MCC 类目表，禁止 LLM 自编 mccCode
-            ├── authorization.md        # 登录授权
-            ├── product-sign.md         # 产品签约
-            ├── service-registration.md # 服务市场注册（仅按量付费）
-            ├── app-release.md          # 应用发布
-            └── scripts/                # 签约流程脚本（含 error_handler）
-```
+- 通用启动：`references/normal/self-update.md`；环境和拒绝说明仅在对应动作读取 `references/normal/` 下文件。
+- 完整接入入口：`references/normal/full-process-routing.md`；仅 `full_process` 读取，用于项目分流、唯一启动确认和两个子流程衔接。
+- 集成入口：`references/integration/flow.md`；只按当前产品、语言和步骤读取本地契约/示例/脚本；在线 fallback。
+- 产品开通入口：`references/onboarding/flow.md`；只按当前授权、查询或写分支读取对应模块，不提前加载其他分支。
+- 机器规则、消息目录、fixture 和测试不作为 Agent 默认必读内容；由生成器、renderer 和校验脚本按 ID 使用。
 
 ## 意图识别
 
 | 意图类型 | 关键词 | 流程 |
 |----------|--------|------|
-| 仅集成 | "接入支付"、"集成" | references/integration/flow.md |
-| 仅签约 | "入驻"、"签约"、"开通" | references/onboarding/flow.md |
-| 全流程 | "完整接入"、"一站式" | 本文“完整接入编排” + 两个子流程 |
+| 仅代码开发 | "接入支付"、"集成" | references/integration/flow.md |
+| 仅产品开通 | "入驻"、"签约"、"开通"、"产品开通" | references/onboarding/flow.md |
+| 全流程 | "完整接入"、"一站式" | references/normal/full-process-routing.md + 两个子流程 |
 
 **流程衔接提醒：**
-- 用户明确要求"完整接入"、"一站式"等全流程时，必须先按本文“完整接入编排”完成当前目录与集成状态分流；一次只进入并展示一个子流程，集成完成后再自动衔接签约。
-- 用户只要求集成时，集成流程结束后必须提醒：正式上线前还需要完成商家签约/入驻。
-- 用户只要求签约/入驻时，签约流程结束后必须提醒：还需要完成代码集成才能实际发起支付。
-
----
-
-## 关键词
-
-按量付费、网站支付、APP支付、AI支付、402收款、快捷收款、商家入驻、签约入驻
+- 用户明确要求"完整接入"、"一站式"等全流程时，必须先按 `references/normal/full-process-routing.md` 完成项目准备、匿名沙箱准备尝试与代码开发状态分流，然后固定完成支付产品-代码开发流程；沙箱待配置不阻止继续产品开通，但必须保留未完成提醒和部分通过结论。
+- 用户只要求支付产品-代码开发时，代码开发流程结束后必须提醒：正式上线前还需要完成支付产品-产品开通。
+- 用户只要求支付产品-产品开通时，产品开通流程结束后必须提醒：还需要完成代码开发才能实际发起支付。

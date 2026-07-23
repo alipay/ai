@@ -2,7 +2,7 @@
 #=============================================================================
 # 脚本名称: upload_screenshots.sh
 # 功能描述: 并行上传截图文件并解析可用于签约的图片引用值
-# 调用位置: Step 4 一次性资料与资源决策
+# 调用位置: Step 4 签约材料类别
 # 调用前置: 脚本通过 error_handler.sh 间接初始化 DEV_TOOL_NAME；需传入3个文件路径
 # 用法: bash upload_screenshots.sh "$HOME_IMG" "$SHOP_IMG" "$PAY_IMG"
 # 返回值: 输出上传结果和图片引用值
@@ -31,7 +31,7 @@ if [ -z "$HOME_IMG" ] || [ -z "$SHOP_IMG" ] || [ -z "$PAY_IMG" ]; then
   echo "❌ 请提供 3 个截图文件路径"
   echo "用法: bash upload_screenshots.sh <首页截图> <商品页截图> <支付页截图>"
   echo "  网站支付：传入网站首页、商品页、支付页截图"
-  echo "  APP支付：传入APP首页、商品页、支付页截图"
+  echo "  APP 支付：传入 APP 首页、商品页、支付页截图"
   exit 1
 fi
 

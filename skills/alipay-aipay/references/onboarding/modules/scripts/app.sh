@@ -29,8 +29,18 @@ else
   echo "❌ 缺少错误处理脚本: ${SCRIPT_DIR}/error_handler.sh"
   exit 1
 fi
+source "${SCRIPT_DIR}/network_retry.sh"
 
 require_command jq || exit 1
+require_command node || exit 1
+
+sanitize_candidate_cell() {
+  jq -nr --arg value "${1:-}" '
+    $value
+    | gsub("[\u0000-\u001f\u007f]"; " ")
+    | gsub("\\|"; "\\|")
+  '
+}
 
 parse_app_context_args() {
   while [[ $# -gt 0 ]]; do
@@ -73,7 +83,7 @@ validate_mobile_platform_args() {
     fi
     if [ "$APP_APPLICATION_TYPE" = "MOBILEAPP" ]; then
       echo "❌ 创建 MOBILEAPP 必须传 --mobile-platform IOS|ANDROID|ALL" >&2
-      echo "📋 IOS 需同时传 --bundle-id；ANDROID 需同时传 --app-package 和 --app-sign；ALL 需三项都传" >&2
+      echo "📋 IOS 需同时传 --bundle-id；ANDROID 需同时传 --app-package 和 --app-sign；ALL 需三项都传；HarmonyOS 移动应用不支持通过 Skill 创建" >&2
       return 1
     fi
     return 0
@@ -112,7 +122,7 @@ validate_mobile_platform_args() {
       fi
       ;;
     *)
-      echo "❌ --mobile-platform 参数值无效: ${MOBILE_PLATFORM}（仅支持 IOS|ANDROID|ALL）" >&2
+      echo "❌ --mobile-platform 参数值无效: ${MOBILE_PLATFORM}（仅支持 IOS|ANDROID|ALL；HarmonyOS 移动应用需前往支付宝开放平台控制台创建）" >&2
       return 1
       ;;
   esac
@@ -213,9 +223,15 @@ query_security_key() {
     REQUEST_JSON=$(jq -n --arg appId "$APP_ID" '{request:{appId:$appId}}')
   fi
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call apprelease.queryApplicationSecurityKey \
+  export PLATFORM=${DEV_TOOL_NAME}
+  run_network_retry RESULT read application_security_key -- alipay-cli mcp call apprelease.queryApplicationSecurityKey \
     -d "$REQUEST_JSON" \
-    --json 2>/dev/null)
+    --json
+  RETRY_RC=$?
+  if [ "$RETRY_RC" -ne 0 ]; then
+    echo "❌ 应用安全密钥查询因网络或服务异常在自动重试两次后仍未恢复"
+    return 1
+  fi
 
   if ! handle_error "$RESULT"; then
     return 1
@@ -226,6 +242,7 @@ query_security_key() {
 
   if [ "$SUCCESS" != "true" ]; then
     ERROR_MSG=$(echo "$SECURITY_BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+    ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
     echo "❌ 查询安全密钥失败: $ERROR_MSG"
     return 1
   fi
@@ -235,9 +252,15 @@ query_application_info() {
   local APP_ID="$1"
 
   REQUEST_JSON=$(jq -n --arg appId "$APP_ID" '{request:{appId:$appId}}')
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call apprelease.queryApplicationInfo \
+  export PLATFORM=${DEV_TOOL_NAME}
+  run_network_retry RESULT read application_info -- alipay-cli mcp call apprelease.queryApplicationInfo \
     -d "$REQUEST_JSON" \
-    --json 2>/dev/null)
+    --json
+  RETRY_RC=$?
+  if [ "$RETRY_RC" -ne 0 ]; then
+    echo "❌ 应用信息查询因网络或服务异常在自动重试两次后仍未恢复"
+    return 1
+  fi
 
   if ! handle_error "$RESULT"; then
     return 1
@@ -248,6 +271,7 @@ query_application_info() {
 
   if [ "$SUCCESS" != "true" ]; then
     ERROR_MSG=$(echo "$APPLICATION_INFO_BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+    ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
     echo "❌ 查询应用信息失败: $ERROR_MSG"
     return 1
   fi
@@ -324,7 +348,7 @@ write_alipay_public_key() {
   fi
 
   while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
-    if { mkdir -p "${HOME}/.config" && printf '%s\n' "$ALIPAY_PUBLIC_KEY" > "$KEY_FILE"; } 2>/dev/null; then
+    if { mkdir -p "${HOME}/.config" && chmod 700 "${HOME}/.config" && (umask 077; printf '%s\n' "$ALIPAY_PUBLIC_KEY" > "$KEY_FILE") && chmod 600 "$KEY_FILE"; } 2>/dev/null; then
       return 0
     fi
 
@@ -417,9 +441,16 @@ app_list() {
   APP_APPLICATION_TYPE=$(resolve_application_type) || exit 1
   REQUEST_JSON=$(jq -n --arg applicationType "$APP_APPLICATION_TYPE" '{request:{appTypes:[$applicationType]}}')
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call apprelease.queryApplicationList \
+  export PLATFORM=${DEV_TOOL_NAME}
+  run_network_retry RESULT read application_list -- alipay-cli mcp call apprelease.queryApplicationList \
     -d "$REQUEST_JSON" \
-    --json 2>/dev/null)
+    --json
+  RETRY_RC=$?
+  if [ "$RETRY_RC" -ne 0 ]; then
+    echo "❌ 应用列表查询因网络或服务异常在自动重试两次后仍未恢复"
+    echo "FLOW:ERROR"
+    exit 1
+  fi
 
   # 错误检测
   if ! handle_error "$RESULT"; then
@@ -432,6 +463,7 @@ app_list() {
 
   if [ "$SUCCESS" != "true" ]; then
     ERROR_MSG=$(echo "$BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+    ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
     echo "❌ 查询应用列表失败: $ERROR_MSG"
     echo "FLOW:ERROR"
     exit 1
@@ -454,7 +486,7 @@ app_list() {
   APP_COUNT=$(echo "$APP_LIST" | jq 'length')
 
   if [ "$APP_COUNT" -eq 0 ]; then
-    echo "📋 暂无 ${APP_APPLICATION_TYPE} 应用；记录新建候选分支，等待 Step 4 统一决策"
+    echo "📋 暂无 ${APP_APPLICATION_TYPE} 应用。"
     echo "FLOW:CREATE_NEW"
   else
     # 实际返回的状态字段值是 "ON_LINE"（带下划线）
@@ -465,6 +497,18 @@ app_list() {
     ONLINE_COUNT=${ONLINE_COUNT:-0}
     NON_ONLINE_COUNT=${NON_ONLINE_COUNT:-0}
 
+    if [ "$ONLINE_COUNT" -gt 0 ] && ! echo "$ONLINE_APPS" | jq -e '
+      all(.[];
+        ((.appId | type) == "string") and
+        (.appId | length > 0) and
+        ((.appId | test("[\u0000-\u001f\u007f]") | not))
+      )
+    ' >/dev/null 2>&1; then
+      echo "❌ 应用列表返回结构异常：可复用候选 appId 缺失或包含控制字符"
+      echo "FLOW:ERROR"
+      exit 1
+    fi
+
     if [ "$ONLINE_COUNT" -eq 0 ]; then
       echo "📋 当前已有以下尚未上线的 ${APP_APPLICATION_TYPE} 应用："
       echo ""
@@ -472,26 +516,27 @@ app_list() {
       echo "|--------|----------|----------|"
       for i in $(seq 0 $((NON_ONLINE_COUNT-1))); do
         APP=$(echo "$NON_ONLINE_APPS" | jq ".[$i]")
-        APP_ID=$(echo "$APP" | jq -r '.appId // "未知"')
-        APP_NAME=$(echo "$APP" | jq -r '.appName // "未知"')
-        APP_STATUS=$(echo "$APP" | jq -r '.status // "未知"')
-        echo "| $APP_ID | $APP_NAME | $APP_STATUS |"
+        APP_ID=$(echo "$APP" | jq -r '(.appId // "未知") | tostring')
+        APP_NAME=$(echo "$APP" | jq -r '(.appName // "未知") | tostring')
+        APP_STATUS=$(echo "$APP" | jq -r '(.status // "未知") | tostring')
+        echo "| $(sanitize_candidate_cell "$APP_ID") | $(sanitize_candidate_cell "$APP_NAME") | $(sanitize_candidate_cell "$APP_STATUS") |"
       done
       echo ""
-      echo "以上应用当前不可复用。请等待应用上线，或在了解现有应用状态后明确选择新建。"
+      echo "以上应用当前不可复用。"
       echo "FLOW:PENDING_APPLICATIONS"
     else
       echo "📋 发现您已有以下上线 ${APP_APPLICATION_TYPE} 应用："
       echo ""
-      echo "| 序号 | 应用ID | 应用名称 | 状态 |"
-      echo "|------|--------|----------|------|"
+      echo "| 应用ID | 应用名称 | 状态 |"
+      echo "|--------|----------|------|"
 
       for i in $(seq 0 $((ONLINE_COUNT-1))); do
         APP=$(echo "$ONLINE_APPS" | jq ".[$i]")
-        APP_ID=$(echo "$APP" | jq -r '.appId // "未知"')
-        APP_NAME=$(echo "$APP" | jq -r '.appName // "未知"')
-        echo "| $((i+1)) | $APP_ID | $APP_NAME | 已上线 |"
+        APP_ID=$(echo "$APP" | jq -r '.appId')
+        APP_NAME=$(echo "$APP" | jq -r '(.appName // "未知") | tostring')
+        echo "| $(sanitize_candidate_cell "$APP_ID") | $(sanitize_candidate_cell "$APP_NAME") | 已上线 |"
       done
+      echo "$ONLINE_APPS" | jq -r '.[] | select((.appId // "") != "") | "APP_CANDIDATE_ID=" + .appId'
 
       if [ "$NON_ONLINE_COUNT" -gt 0 ]; then
         echo ""
@@ -501,24 +546,15 @@ app_list() {
         echo "|--------|----------|----------|"
         for i in $(seq 0 $((NON_ONLINE_COUNT-1))); do
           APP=$(echo "$NON_ONLINE_APPS" | jq ".[$i]")
-          APP_ID=$(echo "$APP" | jq -r '.appId // "未知"')
-          APP_NAME=$(echo "$APP" | jq -r '.appName // "未知"')
-          APP_STATUS=$(echo "$APP" | jq -r '.status // "未知"')
-          echo "| $APP_ID | $APP_NAME | $APP_STATUS |"
+          APP_ID=$(echo "$APP" | jq -r '(.appId // "未知") | tostring')
+          APP_NAME=$(echo "$APP" | jq -r '(.appName // "未知") | tostring')
+          APP_STATUS=$(echo "$APP" | jq -r '(.status // "未知") | tostring')
+          echo "| $(sanitize_candidate_cell "$APP_ID") | $(sanitize_candidate_cell "$APP_NAME") | $(sanitize_candidate_cell "$APP_STATUS") |"
         done
         echo ""
         echo "新建前请结合以上状态避免重复创建。"
       fi
 
-      echo ""
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "  请选择操作："
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo ""
-      echo "  【复用】输入序号 (1-$ONLINE_COUNT) → 复用对应应用"
-      echo "  【新建】输入 \"新建\" → 创建新应用"
-      echo ""
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
       echo "FLOW:SELECT"
     fi
   fi
@@ -537,9 +573,20 @@ app_create() {
     exit 1
   }
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call apprelease.createApplication \
+  export PLATFORM=${DEV_TOOL_NAME}
+  run_network_retry RESULT write application_create -- alipay-cli mcp call apprelease.createApplication \
     -d "$REQUEST_JSON" \
-    --json 2>/dev/null)
+    --json
+  RETRY_RC=$?
+  if [ "$RETRY_RC" -eq 75 ]; then
+    echo "❌ 应用创建响应不明；现有应用列表无法把同类型新应用唯一归属于本次创建，结果标记为 UNKNOWN，禁止自动重复创建"
+    echo "FLOW:ERROR"
+    exit 1
+  elif [ "$RETRY_RC" -ne 0 ]; then
+    echo "❌ 应用创建因明确未发送的网络异常在自动重试两次后仍未恢复"
+    echo "FLOW:ERROR"
+    exit 1
+  fi
 
   # 错误检测
   if ! handle_error "$RESULT"; then
@@ -562,6 +609,7 @@ app_create() {
     echo "APP_ID=$APP_ID"
   else
     ERROR_MSG=$(echo "$BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+    ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
     echo "❌ 应用创建失败: $ERROR_MSG"
     exit 1
   fi
@@ -589,9 +637,18 @@ app_key() {
     --arg publicKey "$PUBLIC_KEY" \
     '{request:{appId:$appId,signType:"RSA2",publicKey:$publicKey}}')
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call apprelease.createKeyConfirmPage \
+  export PLATFORM=${DEV_TOOL_NAME}
+  run_network_retry RESULT write application_key_confirm_page -- alipay-cli mcp call apprelease.createKeyConfirmPage \
     -d "$REQUEST_JSON" \
-    --json 2>/dev/null)
+    --json
+  RETRY_RC=$?
+  if [ "$RETRY_RC" -eq 75 ]; then
+    echo "❌ 公钥确认页生成响应不明，结果标记为 UNKNOWN；不得自动生成第二个页面"
+    exit 1
+  elif [ "$RETRY_RC" -ne 0 ]; then
+    echo "❌ 公钥确认页因明确未发送的网络异常在自动重试两次后仍未恢复"
+    exit 1
+  fi
 
   # 错误检测
   if ! handle_error "$RESULT"; then
@@ -606,22 +663,28 @@ app_key() {
     CONFIRM_PAGE_URL=$(echo "$BUSINESS" | jq -r '.resultObj.confirmPageUrl // empty')
 
     if [ -n "$CONFIRM_PAGE_URL" ]; then
-      echo "📋 应用公钥设置中..."
-      echo ""
-      echo "请点击以下链接确认公钥设置："
-      echo ""
-      echo "提示：无法跳链时，请复制下方链接到网页浏览器打开。"
-      echo "[点击确认公钥设置]($CONFIRM_PAGE_URL)"
-      echo ""
-      echo "链接有效期为10分钟。"
-      echo ""
-      echo "确认完成后，请告诉我\"好了\"继续后续流程。"
+      OPEN_HELPER="${SCRIPT_DIR}/../../../normal/scripts/open_official_url.sh"
+      RENDERER="${SCRIPT_DIR}/../../../normal/scripts/render_customer_message.mjs"
+      OPEN_STATUS=$(printf '%s\n' "$CONFIRM_PAGE_URL" | bash "$OPEN_HELPER" public-key-confirmation)
+      case "$OPEN_STATUS" in
+        OPENED) MESSAGE_VARIANT="OPENED" ;;
+        OPEN_FAILED|GUI_UNAVAILABLE|LINK_ONLY) MESSAGE_VARIANT="OPEN_FAILED" ;;
+        *) MESSAGE_VARIANT="OPEN_FAILED" ;;
+      esac
+      MESSAGE_INPUT=$(printf '%s\n' "$APP_ID" "$CONFIRM_PAGE_URL" | jq -Rs '
+        split("\n") as $v | {appId:$v[0],officialUrl:$v[1]}
+      ')
+      if ! printf '%s' "$MESSAGE_INPUT" | ALIPAY_AIPAY_RENDERER_MANAGED_CALLER=app.sh node "$RENDERER" application.key.page --variant "$MESSAGE_VARIANT"; then
+        echo "❌ 公钥确认页已生成，但标准消息无法安全输出；结果保持待核验，禁止自动生成第二个页面"
+        exit 1
+      fi
     else
-      echo "❌ 未获取到确认页面链接，请重试"
+      echo "❌ 公钥确认页响应缺少 confirmPageUrl，结果标记为 UNKNOWN；不得自动生成第二个页面"
       exit 1
     fi
   else
     ERROR_MSG=$(echo "$BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+    ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
     echo "❌ 公钥设置失败: $ERROR_MSG"
     exit 1
   fi
@@ -647,9 +710,29 @@ app_audit() {
 
   REQUEST_JSON=$(jq -n --arg appId "$APP_ID" '{request:{appId:$appId}}')
 
-  RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call apprelease.submitApplicationAudit \
+  export PLATFORM=${DEV_TOOL_NAME}
+  run_network_retry RESULT write application_audit -- alipay-cli mcp call apprelease.submitApplicationAudit \
     -d "$REQUEST_JSON" \
-    --json 2>/dev/null)
+    --json
+  RETRY_RC=$?
+  if [ "$RETRY_RC" -eq 75 ]; then
+    if query_application_info "$APP_ID"; then
+      ACTUAL_STATUS=$(extract_application_status)
+      case "$ACTUAL_STATUS" in
+        AUDITING|ON_LINE)
+          echo "✅ 应用审核提交已由应用信息查询核验成功"
+          echo "APP_ID=$APP_ID"
+          echo "FLOW:AUDIT_SUBMITTED"
+          return 0
+          ;;
+      esac
+    fi
+    echo "❌ 应用提审响应不明且现有状态无法排除传播延迟，结果标记为 UNKNOWN，禁止自动重复提审"
+    exit 1
+  elif [ "$RETRY_RC" -ne 0 ]; then
+    echo "❌ 应用提审因明确未发送的网络异常在自动重试两次后仍未恢复"
+    exit 1
+  fi
 
   # 错误检测
   if ! handle_error "$RESULT"; then
@@ -666,6 +749,7 @@ app_audit() {
     echo "FLOW:AUDIT_SUBMITTED"
   else
     ERROR_MSG=$(echo "$BUSINESS" | jq -r '.error.message // .errorMessage // "未知错误"')
+    ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
     echo "❌ 提交审核失败: $ERROR_MSG"
     exit 1
   fi

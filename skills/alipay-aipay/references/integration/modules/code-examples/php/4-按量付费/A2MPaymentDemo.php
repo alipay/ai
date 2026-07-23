@@ -22,7 +22,8 @@ define('ALIPAY_CONFIG', [
     'appId' => '<APP_ID>',
     'privateKey' => '<APP_PRIVATE_KEY>', // 请填写您的应用私钥（PKCS#1 格式）
     'alipayPublicKey' => '<ALIPAY_PUBLIC_KEY>', // 请填写您的支付宝公钥
-    'gateway' => 'https://openapi.alipay.com/gateway.do',
+    // 默认用于本 Skill 的快速沙箱联调；生产部署时设置 ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
+    'gateway' => getenv('ALIPAY_GATEWAY') ?: 'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
     'sellerId' => '<SELLER_ID_2088>', // 商户 ID（2088 格式）
     'serviceId' => 'api_mock_service_id', // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
     'merchantPrivateKey' => '<APP_PRIVATE_KEY>' // 请填写您的应用私钥（用于商家签名）

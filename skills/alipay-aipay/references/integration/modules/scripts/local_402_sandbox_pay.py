@@ -7,9 +7,10 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
-import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,10 +23,37 @@ from urllib.parse import quote
 PAY_ENDPOINT = "http://aicashier.dl.alipaydev.com/openclawpay/agent/v1/pay"
 PAY_URL_PREFIX = "https://render.alipay.com/p/yuyan/180020010001290755/pay.html?schema="
 A2M_SANDBOX_SERVICE_ID = "api_mock_service_id"
-DEFAULT_PAYMENT_NEEDED_FILE = "/tmp/402_needed_file.txt"
 DEFAULT_PAY_RETRIES = 3
 DEFAULT_PAY_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_PAY_ERROR_CODES = {"PAY_SUBMIT_FAILED"}
+ARTIFACT_PREFIX = "alipay_local_402_sandbox_pay_"
+ARTIFACT_FILES = {
+    "payment_needed.txt",
+    "decoded_bill.json",
+    "cashier_payload.json",
+    "state.json",
+    "pay_headers.txt",
+    "pay_status.txt",
+    "pay_response.json",
+    "payment_proof_body.json",
+    "payment_proof_header.txt",
+    "final_response.txt",
+    "final_headers.txt",
+    "final_status.txt",
+}
+KNOWN_DELIVERY_FAILURE_CODES = {
+    "CREATE_ORDER_ERROR",
+    "FULFILLMENT_CONFIRM_FAILED",
+    "FULFILLMENT_ERROR",
+    "INVALID_PAYMENT_PROOF",
+    "INVALID_PAYMENT_PROOF_FORMAT",
+    "MISSING_OUT_TRADE_NO",
+    "MISSING_RESOURCE_ID",
+    "ORDER_NOT_FOUND",
+    "RESOURCE_ID_MISMATCH",
+    "SIGN_ERROR",
+    "VERIFY_FAILED",
+}
 REDACTED = "<redacted>"
 SENSITIVE_KEY_PATTERNS = (
     "signature",
@@ -34,10 +62,79 @@ SENSITIVE_KEY_PATTERNS = (
     "proof_header",
     "proofheader",
 )
+ACTIVE_ARTIFACT_DIRS: set[Path] = set()
 
 
 def now_ms() -> str:
     return str(int(time.time() * 1000))
+
+
+def secure_write_text(path: Path, value: str) -> None:
+    if path.name not in ARTIFACT_FILES and path.parent.name.startswith(ARTIFACT_PREFIX):
+        raise RuntimeError(f"拒绝写入未登记的过程产物文件：{path.name}")
+    if path.exists() and path.is_symlink():
+        raise RuntimeError(f"过程产物文件禁止使用符号链接：{path}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def secure_read_text(path: Path) -> str:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"过程产物必须是普通文件且不能是符号链接：{path}")
+    if info.st_mode & 0o077:
+        raise RuntimeError(f"过程产物文件权限过宽，拒绝读取：{path}")
+    return path.read_text(encoding="utf-8")
+
+
+def validate_artifact_dir(artifact_dir: Path) -> None:
+    if artifact_dir not in ACTIVE_ARTIFACT_DIRS:
+        raise RuntimeError("过程产物不属于本次命令，拒绝读取或清理")
+    info = artifact_dir.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"过程产物路径必须是普通目录且不能是符号链接：{artifact_dir}")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise RuntimeError(f"过程产物目录不属于当前用户：{artifact_dir}")
+    if info.st_mode & 0o077:
+        raise RuntimeError(f"过程产物目录权限过宽，拒绝使用：{artifact_dir}")
+
+
+def create_artifact_dir() -> Path:
+    artifact_dir = Path(tempfile.mkdtemp(prefix=ARTIFACT_PREFIX))
+    os.chmod(artifact_dir, 0o700)
+    ACTIVE_ARTIFACT_DIRS.add(artifact_dir)
+    return artifact_dir
+
+
+def cleanup_artifact_dir(path: str | Path) -> None:
+    artifact_dir = Path(path)
+    validate_artifact_dir(artifact_dir)
+    children = list(artifact_dir.iterdir())
+    unsafe = [child.name for child in children if child.name not in ARTIFACT_FILES or child.is_symlink() or child.is_dir()]
+    if unsafe:
+        raise RuntimeError(f"过程产物目录包含未登记内容，拒绝自动删除：{', '.join(sorted(unsafe))}")
+    for child in children:
+        child.unlink()
+    artifact_dir.rmdir()
+    ACTIVE_ARTIFACT_DIRS.discard(artifact_dir)
+
+
+def cleanup_active_artifacts() -> None:
+    for artifact_dir in list(ACTIVE_ARTIFACT_DIRS):
+        try:
+            cleanup_artifact_dir(artifact_dir)
+        except (OSError, RuntimeError, ValueError):
+            continue
 
 
 def ensure_curl() -> None:
@@ -110,7 +207,7 @@ def fetch_payment_needed(
     method: str,
     body: str | None,
     content_type: str,
-    output_file: str,
+    output_file: str | None,
 ) -> str:
     method = method.upper()
     if method == "GET":
@@ -129,7 +226,8 @@ def fetch_payment_needed(
     if not payment_needed:
         raise RuntimeError(f"未找到 Payment-Needed 响应头。原始响应头：\n{headers}")
 
-    Path(output_file).write_text(payment_needed, encoding="utf-8")
+    if output_file:
+        secure_write_text(Path(output_file).expanduser().resolve(strict=False), payment_needed)
     return payment_needed
 
 
@@ -212,10 +310,6 @@ def redact_for_display(value: Any) -> Any:
                 redacted[str(key)] = redact_for_display(item)
         return redacted
     return value
-
-
-def shell_quote(value: str | Path) -> str:
-    return shlex.quote(str(value))
 
 
 def post_json(url: str, payload: dict[str, Any]) -> tuple[int, str, dict[str, Any]]:
@@ -393,85 +487,139 @@ def retry_original_service(
         return status_code, headers, response_body
 
 
-def write_json(path: Path, value: Any) -> None:
-    path.write_text(pretty_json(value) + "\n", encoding="utf-8")
+def b64url_decode_json(value: str) -> dict[str, Any]:
+    compact = value.strip().strip('"')
+    padded = compact + ("=" * ((4 - len(compact) % 4) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+        result = json.loads(decoded)
+    except Exception as exc:  # noqa: BLE001 - 对无效响应头统一返回确定错误。
+        raise ValueError(f"Payment-Validation 不是合法的 Base64URL JSON：{exc}") from exc
+    if not isinstance(result, dict):
+        raise ValueError("Payment-Validation 解码结果必须是 JSON 对象")
+    return result
 
 
-def create_artifact_dir(path: str | None) -> Path:
-    artifact_dir = Path(path or f"/tmp/alipay_local_402_sandbox_pay_{now_ms()}")
-    if artifact_dir.exists() and not artifact_dir.is_dir():
-        raise RuntimeError(f"过程产物路径已存在但不是目录：{artifact_dir}")
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    return artifact_dir
+def find_delivery_failure(value: Any) -> str | None:
+    if isinstance(value, list):
+        for item in value:
+            failure = find_delivery_failure(item)
+            if failure:
+                return failure
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    if value.get("success") is False:
+        return "success=false"
+    if value.get("validated") is False:
+        return "validated=false"
+    if value.get("fulfillment_confirmed") is False or value.get("fulfillmentConfirmed") is False:
+        return "fulfillment_confirmed=false"
+
+    for key in ("code", "errorCode", "sub_code", "subCode"):
+        code = str(value.get(key) or "")
+        if code in KNOWN_DELIVERY_FAILURE_CODES:
+            return code
+    for item in value.values():
+        failure = find_delivery_failure(item)
+        if failure:
+            return failure
+    return None
 
 
-def load_reuse_artifact(path: str | None) -> tuple[dict[str, Any], str | None]:
-    if not path:
-        return {}, None
-    artifact_dir = Path(path)
-    if not artifact_dir.is_dir():
-        raise RuntimeError(f"--reuse-artifact 指定的产物目录不存在：{artifact_dir}")
-    state_path = artifact_dir / "state.json"
-    payment_needed_path = artifact_dir / "payment_needed.txt"
-    if not state_path.exists():
-        raise RuntimeError(f"--reuse-artifact 缺少 state.json：{state_path}")
-    if not payment_needed_path.exists():
-        raise RuntimeError(f"--reuse-artifact 缺少 payment_needed.txt：{payment_needed_path}")
+def nonempty_resource(value: Any) -> bool:
+    return value not in (None, "", [], {})
 
-    loaded = json.loads(state_path.read_text(encoding="utf-8"))
-    if not isinstance(loaded, dict):
-        raise RuntimeError(f"--reuse-artifact 的 state.json 必须是 JSON 对象：{state_path}")
-    state = loaded
-    required_keys = ["url", "method", "buyerId"]
-    missing_keys = [key for key in required_keys if not state.get(key)]
-    if missing_keys:
-        raise RuntimeError(
-            f"--reuse-artifact 的 state.json 缺少必要字段：{', '.join(missing_keys)}。"
-            "请使用同一脚本成功执行过 run 后再复用产物。"
+
+def validate_delivery_response(
+    status_code: int,
+    response_headers: str,
+    final_response: str,
+    require_payment_validation: bool,
+) -> tuple[bool, str]:
+    if status_code != 200:
+        return False, f"最终服务必须返回 HTTP 200，实际为 {status_code}"
+    if not final_response.strip():
+        return False, "最终服务返回空响应，未证明资源交付"
+
+    response_json: Any = None
+    try:
+        response_json = json.loads(final_response)
+    except json.JSONDecodeError:
+        response_json = None
+
+    response_resource_id = ""
+    if response_json is not None:
+        failure = find_delivery_failure(response_json)
+        if failure:
+            return False, f"最终服务返回明确业务失败：{failure}"
+        if not isinstance(response_json, dict):
+            return False, "最终服务 JSON 响应必须是对象，无法确认资源归属"
+        response_resource_id = str(response_json.get("resource_id") or response_json.get("resourceId") or "")
+        content = response_json.get("content")
+        if not response_resource_id or not nonempty_resource(content):
+            return False, "最终服务响应缺少非空 resource_id/resourceId 或 content"
+
+    payment_validation_raw = parse_header_value(response_headers, "Payment-Validation")
+    if require_payment_validation and not payment_validation_raw:
+        return False, "目标服务要求 Payment-Validation，但最终响应未返回该响应头"
+    if payment_validation_raw:
+        try:
+            payment_validation = b64url_decode_json(payment_validation_raw)
+        except ValueError as exc:
+            return False, str(exc)
+        validation_failure = find_delivery_failure(payment_validation)
+        if validation_failure:
+            return False, f"Payment-Validation 返回明确失败：{validation_failure}"
+        if payment_validation.get("validated") is not True:
+            return False, "Payment-Validation 未明确返回 validated=true"
+        validation_trade_no = str(payment_validation.get("trade_no") or payment_validation.get("tradeNo") or "")
+        validation_resource_id = str(
+            payment_validation.get("resource_id") or payment_validation.get("resourceId") or ""
         )
+        if not validation_trade_no or not validation_resource_id:
+            return False, "Payment-Validation 缺少非空 trade_no/tradeNo 或 resource_id/resourceId"
+        if response_resource_id and validation_resource_id != response_resource_id:
+            return False, "Payment-Validation 与响应体的 resource_id 不一致"
 
-    payment_needed = payment_needed_path.read_text(encoding="utf-8").strip()
-    if not payment_needed:
-        raise RuntimeError(f"--reuse-artifact 的 payment_needed.txt 为空：{payment_needed_path}")
-    return state, payment_needed
+    if response_json is None and not payment_validation_raw:
+        return False, "非 JSON 资源响应缺少可用于确认归属的 Payment-Validation"
+    return True, "HTTP 200、非空可归属资源且无明确业务失败"
+
+
+def write_json(path: Path, value: Any) -> None:
+    secure_write_text(path, pretty_json(value) + "\n")
 
 
 def command_run(args: argparse.Namespace) -> int:
-    reuse_state, reuse_payment_needed = load_reuse_artifact(args.reuse_artifact)
-    url = prompt_missing(args.url or reuse_state.get("url"), "本地服务请求地址")
-    method = (args.method or reuse_state.get("method") or "GET").upper()
+    if not args.auto_complete:
+        raise RuntimeError("当前流程只支持一次连续执行 run --auto-complete；不保存跨轮付款或恢复状态")
+    url = prompt_missing(args.url, "本地服务请求地址")
+    method = (args.method or "GET").upper()
     if method not in {"GET", "POST"}:
         raise SystemExit("当前技能只支持 GET 和 POST")
-    buyer_id = prompt_missing(args.buyer_id or reuse_state.get("buyerId"), "沙箱买家 2088 账号")
-    content_type = args.content_type or str(reuse_state.get("contentType") or "application/json")
-    body = load_body(args, method, reuse_state.get("body"))
-    artifact_dir = create_artifact_dir(args.artifact_dir)
+    buyer_id = prompt_missing(args.buyer_id, "沙箱买家 2088 账号")
+    content_type = args.content_type or "application/json"
+    body = load_body(args, method, None)
+    artifact_dir = create_artifact_dir()
 
-    if args.payment_needed:
-        payment_needed = args.payment_needed.strip()
-        Path(args.payment_needed_file).write_text(payment_needed, encoding="utf-8")
-    elif reuse_payment_needed:
-        payment_needed = reuse_payment_needed
-        Path(args.payment_needed_file).write_text(payment_needed, encoding="utf-8")
-    else:
-        payment_needed = fetch_payment_needed(
-            url,
-            method,
-            body,
-            content_type,
-            args.payment_needed_file,
-        )
+    try:
+        payment_needed = fetch_payment_needed(url, method, body, content_type, None)
 
-    decoded_bill = b64decode_json(payment_needed)
-    method_data = decoded_bill.get("method") if isinstance(decoded_bill.get("method"), dict) else {}
-    if method_data.get("service_id") != A2M_SANDBOX_SERVICE_ID:
-        raise RuntimeError(
-            f"沙箱联调 method.service_id 必须为 {A2M_SANDBOX_SERVICE_ID}，"
-            "请修正用户服务的沙箱运行配置后重试"
-        )
-    cashier_payload = build_cashier_payload(decoded_bill, buyer_id, args.buyer_signature)
+        decoded_bill = b64decode_json(payment_needed)
+        method_data = decoded_bill.get("method") if isinstance(decoded_bill.get("method"), dict) else {}
+        if method_data.get("service_id") != A2M_SANDBOX_SERVICE_ID:
+            raise RuntimeError(
+                f"沙箱联调 method.service_id 必须为 {A2M_SANDBOX_SERVICE_ID}，"
+                "请修正用户服务的沙箱运行配置后重试"
+            )
+        cashier_payload = build_cashier_payload(decoded_bill, buyer_id, args.buyer_signature)
+    except (OSError, RuntimeError, ValueError):
+        cleanup_artifact_dir(artifact_dir)
+        raise
 
-    (artifact_dir / "payment_needed.txt").write_text(payment_needed, encoding="utf-8")
+    secure_write_text(artifact_dir / "payment_needed.txt", payment_needed)
     write_json(artifact_dir / "decoded_bill.json", decoded_bill)
     write_json(artifact_dir / "cashier_payload.json", cashier_payload)
 
@@ -482,22 +630,16 @@ def command_run(args: argparse.Namespace) -> int:
         "contentType": content_type,
         "buyerId": buyer_id,
         "buyerSignature": args.buyer_signature,
-        "paymentNeededFile": args.payment_needed_file,
         "payEndpoint": args.pay_endpoint,
-        "reusedArtifact": args.reuse_artifact,
+        "requirePaymentValidation": bool(args.require_payment_validation),
     }
+    write_json(artifact_dir / "state.json", state)
 
     print("Payment-Needed 已获取并保存到本地过程产物，不在终端输出原始值。")
     print("\n解码后的 Payment-Needed JSON（已脱敏）：")
     print(pretty_json(redact_for_display(decoded_bill)))
     print("\n收银接口请求体（已脱敏）：")
     print(pretty_json(redact_for_display(cashier_payload)))
-
-    if args.dry_run:
-        state["dryRun"] = True
-        write_json(artifact_dir / "state.json", state)
-        print(f"\ndry-run 完成。过程产物目录：{artifact_dir}")
-        return 0
 
     pay_status, pay_headers, pay_response = request_cashier_with_retry(
         args.pay_endpoint,
@@ -507,8 +649,8 @@ def command_run(args: argparse.Namespace) -> int:
     )
     state["payStatus"] = pay_status
     state["payResponse"] = pay_response
-    (artifact_dir / "pay_headers.txt").write_text(pay_headers, encoding="utf-8")
-    (artifact_dir / "pay_status.txt").write_text(str(pay_status), encoding="utf-8")
+    secure_write_text(artifact_dir / "pay_headers.txt", pay_headers)
+    secure_write_text(artifact_dir / "pay_status.txt", str(pay_status))
     write_json(artifact_dir / "pay_response.json", pay_response)
     print("\n收银接口 HTTP 状态：")
     print(pay_status)
@@ -521,22 +663,23 @@ def command_run(args: argparse.Namespace) -> int:
             "errorMessage": pay_response.get("errorMessage"),
         }
         write_json(artifact_dir / "state.json", state)
-        retry_mode = " --auto-complete" if args.auto_complete else ""
+        if not is_retryable_pay_response(pay_response):
+            cleanup_artifact_dir(artifact_dir)
+            raise RuntimeError("收银接口未返回 payScheme，且不是已确认的临时错误；敏感过程产物已清理")
         raise RuntimeError(
             "收银接口未返回 payScheme，无法生成付款链接。"
-            f"过程产物已保存：{artifact_dir}。"
-            "如果是 PAY_SUBMIT_FAILED/系统繁忙，可稍后复用同一个 Payment-Needed 重试：\n"
-            f"python3 {shell_quote(Path(__file__).resolve())} run "
-            f"--reuse-artifact {shell_quote(artifact_dir)}{retry_mode}"
+            "本轮敏感过程产物将立即清理；请稍后重新执行完整联调。"
         )
 
     pay_url = pay_url_from_response(pay_response)
-    trade_no = trade_no_from_response(pay_response)
+    try:
+        trade_no = trade_no_from_response(pay_response)
+    except RuntimeError:
+        cleanup_artifact_dir(artifact_dir)
+        raise
     state["payUrl"] = pay_url
     state["tradeNo"] = trade_no
     write_json(artifact_dir / "state.json", state)
-
-    print(f"\n过程产物目录：{artifact_dir}")
 
     if args.auto_complete:
         print("\n继续执行 Payment-Proof 服务端联调...")
@@ -544,6 +687,7 @@ def command_run(args: argparse.Namespace) -> int:
             artifact_dir=str(artifact_dir),
             payment_proof=args.payment_proof,
             buyer_signature=args.buyer_signature,
+            require_payment_validation=args.require_payment_validation,
         )
         result = command_complete(complete_args)
         if result == 0:
@@ -552,35 +696,28 @@ def command_run(args: argparse.Namespace) -> int:
             print(pay_url)
         return result
 
-    print("\n请在浏览器打开以下链接，并使用沙箱买家账号完成付款：")
-    print(pay_url)
-    print("付款成功后运行：")
-    print(f"python3 {Path(__file__).resolve()} complete --artifact-dir {artifact_dir}")
-
-    if args.wait:
-        input("\n沙箱付款成功后按回车，继续重试原始服务...")
-        complete_args = argparse.Namespace(
-            artifact_dir=str(artifact_dir),
-            payment_proof=args.payment_proof,
-            buyer_signature=args.buyer_signature,
-        )
-        return command_complete(complete_args)
-
-    return 0
+    raise RuntimeError("未进入自动完成分支")
 
 
 def command_complete(args: argparse.Namespace) -> int:
     artifact_dir = Path(prompt_missing(args.artifact_dir, "过程产物目录"))
+    validate_artifact_dir(artifact_dir)
     state_path = artifact_dir / "state.json"
     if not state_path.exists():
-        raise SystemExit(f"缺少状态文件：{state_path}")
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+        cleanup_artifact_dir(artifact_dir)
+        raise RuntimeError(f"缺少状态文件，无法恢复且已清理过程产物：{state_path}")
+    try:
+        state = json.loads(secure_read_text(state_path))
+    except json.JSONDecodeError as exc:
+        cleanup_artifact_dir(artifact_dir)
+        raise RuntimeError("状态文件不是合法 JSON，无法恢复且已清理过程产物") from exc
     if not isinstance(state, dict):
-        raise SystemExit(f"状态文件必须是 JSON 对象：{state_path}")
+        cleanup_artifact_dir(artifact_dir)
+        raise RuntimeError(f"状态文件必须是 JSON 对象，无法恢复且已清理过程产物：{state_path}")
     missing_keys = [key for key in ("url", "method", "buyerId", "tradeNo") if not state.get(key)]
     if missing_keys:
-        raise SystemExit(f"状态文件缺少必要字段：{', '.join(missing_keys)}")
-
+        cleanup_artifact_dir(artifact_dir)
+        raise RuntimeError(f"状态文件缺少必要字段，无法恢复且已清理过程产物：{', '.join(missing_keys)}")
     buyer_signature = args.buyer_signature if args.buyer_signature is not None else state.get("buyerSignature", "-")
     proof_body, proof_header = build_payment_proof_header(
         buyer_id=str(state["buyerId"]),
@@ -590,7 +727,7 @@ def command_complete(args: argparse.Namespace) -> int:
     )
 
     write_json(artifact_dir / "payment_proof_body.json", proof_body)
-    (artifact_dir / "payment_proof_header.txt").write_text(proof_header, encoding="utf-8")
+    secure_write_text(artifact_dir / "payment_proof_header.txt", proof_header)
 
     print("Payment-Proof 请求体（已脱敏）：")
     print(pretty_json(redact_for_display(proof_body)))
@@ -603,25 +740,33 @@ def command_complete(args: argparse.Namespace) -> int:
         content_type=str(state.get("contentType") or "application/json"),
         proof_header=proof_header,
     )
-    (artifact_dir / "final_response.txt").write_text(final_response, encoding="utf-8")
-    (artifact_dir / "final_headers.txt").write_text(response_headers, encoding="utf-8")
-    (artifact_dir / "final_status.txt").write_text(str(status_code), encoding="utf-8")
+    secure_write_text(artifact_dir / "final_response.txt", final_response)
+    secure_write_text(artifact_dir / "final_headers.txt", response_headers)
+    secure_write_text(artifact_dir / "final_status.txt", str(status_code))
 
     print("\n最终服务 HTTP 状态：")
     print(status_code)
     payment_validation = parse_header_value(response_headers, "Payment-Validation")
     if payment_validation:
-        print("\nPayment-Validation 响应头：")
-        print(payment_validation)
+        print("\nPayment-Validation 响应头已收到，原始值不在终端输出。")
     print("\n最终服务响应体：")
     print(final_response)
-    print(f"\n过程产物目录：{artifact_dir}")
-    if status_code < 200 or status_code >= 300:
-        print(
-            f"\nPayment-Proof 重试未通过：最终服务返回 HTTP {status_code}。"
-            "请优先检查服务端订单映射、Payment-Proof 验证、资源防串和履约确认逻辑。"
-        )
+    require_payment_validation = bool(
+        getattr(args, "require_payment_validation", False) or state.get("requirePaymentValidation")
+    )
+    passed, reason = validate_delivery_response(
+        status_code,
+        response_headers,
+        final_response,
+        require_payment_validation,
+    )
+    if not passed:
+        print(f"\nPayment-Proof 重试未通过：{reason}。")
+        print("请优先检查服务端订单映射、Payment-Proof 验证、资源防串和履约确认逻辑。")
         return 1
+    print(f"\n资源交付证据校验通过：{reason}。")
+    cleanup_artifact_dir(artifact_dir)
+    print("敏感过程产物已安全清理。")
     return 0
 
 
@@ -629,7 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command")
 
-    run_parser = subparsers.add_parser("run", help="获取 Payment-Needed 并生成沙箱付款链接")
+    run_parser = subparsers.add_parser("run", help="一笔完成 Payment-Needed、沙箱收银和资源交付联调")
     run_parser.add_argument("--url", help="本地服务请求地址，GET 参数需要直接拼在 URL 中")
     run_parser.add_argument("--method", help="HTTP 方法：GET 或 POST")
     run_parser.add_argument("--body", help="POST 请求体，或用 @file 从文件读取请求体")
@@ -637,15 +782,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--content-type", help="POST 请求的 Content-Type")
     run_parser.add_argument("--buyer-id", help="沙箱买家 2088 账号")
     run_parser.add_argument("--buyer-signature", default="-", help="买家签名占位值")
-    run_parser.add_argument("--payment-needed", help="已有的 Payment-Needed 响应头值")
-    run_parser.add_argument("--payment-needed-file", default=DEFAULT_PAYMENT_NEEDED_FILE)
-    run_parser.add_argument("--reuse-artifact", help="复用上一轮 run 产物中的 url/method/body/content-type/payment_needed")
-    run_parser.add_argument("--pay-endpoint", default=PAY_ENDPOINT)
-    run_parser.add_argument("--artifact-dir", help="生成过程产物的目录")
-    run_parser.add_argument(
-        "--payment-proof",
-        help="使用 --auto-complete 或 --wait 时可选的最终 payment_proof 值",
-    )
     run_parser.add_argument("--pay-retries", type=int, default=DEFAULT_PAY_RETRIES, help="沙箱收银接口临时失败时的重试次数")
     run_parser.add_argument(
         "--pay-retry-delay",
@@ -653,26 +789,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PAY_RETRY_DELAY_SECONDS,
         help="沙箱收银接口重试间隔秒数",
     )
-    run_parser.add_argument("--dry-run", action="store_true", help="调用收银接口前停止")
     run_parser.add_argument(
         "--auto-complete",
         action="store_true",
         help="生成付款链接后连续携带 Payment-Proof 重试原始服务",
     )
-    run_parser.add_argument("--wait", action="store_true", help="等待付款后立刻重试原始服务")
-    run_parser.set_defaults(func=command_run)
-
-    complete_parser = subparsers.add_parser("complete", help="携带 Payment-Proof 重试原始服务")
-    complete_parser.add_argument("--artifact-dir", required=True, help="run 命令生成的过程产物目录")
-    complete_parser.add_argument("--payment-proof", help="可选 payment_proof；未传时由脚本按沙箱联调约定处理")
-    complete_parser.add_argument("--buyer-signature", help="买家签名占位值")
-    complete_parser.set_defaults(func=command_complete)
+    run_parser.add_argument(
+        "--require-payment-validation",
+        action="store_true",
+        help="目标服务实现 Payment-Validation 时要求并校验该响应头",
+    )
+    run_parser.set_defaults(func=command_run, pay_endpoint=PAY_ENDPOINT, payment_proof=None)
 
     return parser
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] not in {"run", "complete", "-h", "--help"}:
+    if argv and argv[0] not in {"run", "-h", "--help"}:
         argv = ["run", *argv]
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -684,6 +817,8 @@ def main(argv: list[str]) -> int:
     except (RuntimeError, ValueError) as exc:
         print(f"执行失败：{exc}", file=sys.stderr)
         return 1
+    finally:
+        cleanup_active_artifacts()
 
 
 if __name__ == "__main__":

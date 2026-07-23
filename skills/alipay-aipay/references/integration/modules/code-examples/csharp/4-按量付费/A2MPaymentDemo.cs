@@ -40,7 +40,9 @@ namespace A2MPaymentDemo
         // ==================== 配置信息（实际使用时请从配置中心读取）====================
         private static readonly AlipayConfig AlipayConfig = new AlipayConfig
         {
-            ServerUrl = "https://openapi.alipay.com/gateway.do",
+            // 默认用于本 Skill 的快速沙箱联调；生产部署时设置 ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
+            ServerUrl = Environment.GetEnvironmentVariable("ALIPAY_GATEWAY")
+                ?? "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
             AppId = "<APP_ID>",
             PrivateKey = "<APP_PRIVATE_KEY>", // 请填写您的应用私钥（PKCS#1 格式）
             AlipayPublicKey = "<ALIPAY_PUBLIC_KEY>", // 请填写您的支付宝公钥

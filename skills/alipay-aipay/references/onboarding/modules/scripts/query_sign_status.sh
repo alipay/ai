@@ -9,7 +9,7 @@
 #           SIGN_STATUS=NOT_SIGNED | SIGN_STATUS=SIGNED_EFFECTIVE | SIGN_STATUS=SIGN_SUBMITTED | SIGN_STATUS=OTHER_STATUS
 #           按量付费:   FLOW:AI_PAY_NOT_SIGNED | FLOW:AI_PAY_SIGNED
 #           网站支付:   FLOW:PC_WEB_NOT_SIGNED  | FLOW:PC_WEB_SIGNED
-#           APP支付:    FLOW:APP_NOT_SIGNED     | FLOW:APP_SIGNED
+#           APP 支付:    FLOW:APP_NOT_SIGNED     | FLOW:APP_SIGNED
 #=============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +21,7 @@ else
   echo "❌ 缺少错误处理脚本: ${SCRIPT_DIR}/error_handler.sh"
   exit 1
 fi
+source "${SCRIPT_DIR}/network_retry.sh"
 
 require_command jq || exit 1
 require_command alipay-cli || exit 1
@@ -77,7 +78,7 @@ emit_signed_flow() {
       ;;
     "I1080300001000041313")
       echo "FLOW:APP_SIGNED"
-      # APP支付已生效或已提交：Step 4 只处理应用决策，Step 5 跳过签约提交
+      # APP 支付已生效或已提交：Step 4 只处理应用决策，Step 5 跳过签约提交
       ;;
     "I1080300001000160457")
       echo "FLOW:AI_PAY_SIGNED"
@@ -87,9 +88,15 @@ emit_signed_flow() {
 }
 
 # 查询签约状态
-RESULT=$(export PLATFORM=${DEV_TOOL_NAME} && alipay-cli mcp call ar-query.queryArInfosBySalesProd \
+export PLATFORM=${DEV_TOOL_NAME}
+run_network_retry RESULT read query_sign_status -- alipay-cli mcp call ar-query.queryArInfosBySalesProd \
   -d "{\"request\":{\"salesProductCodes\":[\"${SALES_CODE}\"]},\"ctx\":{}}" \
-  --json 2>/dev/null)
+  --json
+RETRY_RC=$?
+if [ "$RETRY_RC" -ne 0 ]; then
+  echo "❌ 签约状态查询因网络或服务异常在自动重试两次后仍未恢复"
+  exit 1
+fi
 
 # 错误检测
 if ! handle_error "$RESULT"; then
@@ -114,7 +121,7 @@ fi
 AR_COUNT=$(echo "$AR_LIST" | jq 'length')
 
 if [ "$AR_COUNT" -eq 0 ]; then
-  echo "📋 签约状态: 未签约 (NOT_SIGNED)；继续 Step 4 一次性资料与资源决策"
+  echo "📋 签约状态: 未签约 (NOT_SIGNED)；进入 Step 4 签约材料类别"
   echo "SIGN_STATUS=NOT_SIGNED"
 
   case "$SALES_CODE" in
@@ -124,7 +131,7 @@ if [ "$AR_COUNT" -eq 0 ]; then
       ;;
     "I1080300001000041313")
       echo "FLOW:APP_NOT_SIGNED"
-      # APP支付未签约：需先采集 APP 名称和 3 张APP界面截图，再进入 Step 5 签约
+      # APP 支付未签约：需先采集 APP 名称和 3 张 APP 界面截图，再进入 Step 5 签约
       ;;
     "I1080300001000160457")
       echo "FLOW:AI_PAY_NOT_SIGNED"

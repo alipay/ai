@@ -107,7 +107,9 @@ public class A2MPaymentDemoController {
      */
     private static AlipayConfig getAlipayConfig() {
         AlipayConfig alipayConfig = new AlipayConfig();
-        alipayConfig.setServerUrl("https://openapi.alipay.com/gateway.do");
+        // 默认用于本 Skill 的快速沙箱联调；生产部署时显式设置 ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
+        alipayConfig.setServerUrl(System.getenv().getOrDefault(
+            "ALIPAY_GATEWAY", "https://openapi-sandbox.dl.alipaydev.com/gateway.do"));
         alipayConfig.setAppId("<APP_ID>");
         alipayConfig.setPrivateKey("<APP_PRIVATE_KEY>"); // 请填写您的应用私钥
         alipayConfig.setFormat("json");
