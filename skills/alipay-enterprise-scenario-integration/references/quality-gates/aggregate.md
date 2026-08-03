@@ -4,12 +4,22 @@
 
 ## 子域边界
 
-1. 员企、费控、账单子域规则以对应子 Skill 为准。
+1. 员企、费控、账单子域规则以对应子 Skill 为准；地铁发票启用后，发票域规则以 `alipay-enterprise-invoice` 为准。
 2. 主方案只检查子域结果是否能在同一工程内聚合、编译并满足已确认的单场景约束。
 3. 子域 validator 失败时，必须回到对应子 Agent 或子 Skill 阶段修正，不得在主方案层删除接口、删除业务分支或改为 stub 来绕过。
 4. 已有项目叠加接入必须交付业务衔接点说明；只新增孤立支付宝模块、通知只打日志或账单只写幂等记录，不能作为默认完成状态。
 5. 已有项目叠加接入必须在用户确认计划后写入 `.alipay-skill/integration-contract.json`；契约结构见 [已有项目衔接契约](../integration-contract.md)。新工程不强制生成契约。
 6. 火车票三方免密代扣是可选扩展域；未启用时不得纳入默认子域检查。启用时以 `alipay-third-party-withholding` 子 Skill 为字段、接口、MAPI 签名和本域质量事实来源。
+7. 地铁场景必须记录 `invoiceIntegration.enabled=true/false`。未启用时不运行发票 validator；启用或工程出现发票实现痕迹时，必须运行发票 validator 并把发票域纳入已有项目契约。
+
+## 地铁发票选接门禁
+
+1. `METRO/METRO` 的 `scenario.json` 必须存在 `invoiceIntegration.enabled` 布尔值，不接受缺失、字符串或 `NEEDS_USER_CONFIRM`。
+2. 启用时 `modules.invoice` 至少包含 `enterprise-title`、`open-rule`、`invoice-message`、`single-invoice-query`；该四模块对应的 8 个基础接口/通知必须完整交付。
+3. 未启用时 `modules.invoice` 必须省略或为空，生成工程不得出现企业抬头、开票规则、企业发票通知/查询实现痕迹。
+4. 启用时必须执行 `alipay-enterprise-invoice/scripts/validate_codegen.js <生成项目目录>`；缺少发票 Skill、validator 执行失败或退出码非 `0` 时不得宣布生成完成。
+5. 发票通知沿用主方案已确定的 HTTP(S) 或 WebSocket 通道。WebSocket 时仅生成可被共享 `MsgHandler` 路由的发票 handler；HTTP(S) 时沿用已有统一应用网关和验签入口。
+6. 非地铁场景必须省略 `invoiceIntegration`；不展示发票选项，也不用 `enabled=false` 污染其他场景决策。
 
 ## SDK 来源门禁
 
@@ -48,11 +58,11 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 1. 代码生成必须存在 `.alipay-skill/scenario.json`，且 `status` 为 `CONFIRMED`。
 2. 每个字段只描述一个场景，不允许数组化的多场景输入。
 3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，因公场景必须来自制度接口文档，并写入 `scenario.json` 的 `sceneType` 字段；用户或上下文未明确时应为“默认”（接口值 `DEFAULT`），票务类场景应默认为“差旅”（接口值 `TRAVEL`）。
-4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorValues` 必须为每个必用因子提供已确认的非空值。
-5. 具体费用场景的必用因子、特殊业务值及绑定关系由费控子 Skill 的约束文档和本域 validator 校验；主聚合层不重复硬编码单一场景规则。
+4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorCapabilities` 必须为每个必用因子声明 `SCENARIO_FIXED` 或 `ENTERPRISE_INPUT`。顶层不得使用缺少归属信息的 `ruleFactorValues`，也不得把运行期校验数据声明为配置来源。
+5. `SCENARIO_FIXED` 必须携带当前场景文档明确给出的精确 `value` 和 `EXACT_MATCH`，允许生成具名场景常量；`ENTERPRISE_INPUT` 必须具备企业输入、校验和租户持久化。两类都必须正确映射到 `rule_value`。
 6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源，且不得残留待确认值。具体来源类型、限额因子、手工发放接口和制度实现合法性由费控子 Skill 校验，主聚合层只检查该决策已形成并参与聚合。
 7. 用户未明确提出因公优先需求时，`businessPriority.enabled` 必须为 `false`，不得额外生成因公优先规则。
-8. 用户明确启用因公优先时，`businessPriority` 必须记录已确认的商户限制因子和值，并在生成的制度代码中体现；因公优先是否支持、需要哪些时间或商户限制因子、因子值是否合法，由费控子 Skill 的约束文档和本域 validator 校验。
+8. 用户明确启用因公优先时，`businessPriority` 必须记录服务商支持的商户限制因子，`ruleFactorCapabilities` 必须包含这些因子和 `ALARM_CLOCK_TIME`；企业运行期输入及组合合法性由费控子 Skill 文档和本域 validator 校验。
 9. 账单识别字段必须来自账单文档；不适用的字段可省略，不得用猜测值补齐。
 
 已有项目如果接入前全量构建或测试已失败，必须先记录失败 baseline。接入后优先运行本域 validator、主聚合 validator 和可执行的 scoped build/test；不能把既有无关失败当成本次生成完成的阻塞，也不能忽略本次改动引入的新失败。
@@ -60,9 +70,9 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 ## 主聚合校验
 
 1. 生成环境必须运行主校验脚本：`node alipay-enterprise-scenario-integration/scripts/validate_codegen.js <生成项目目录>`。已有项目必须加 `ALIPAY_PROJECT_MODE=existing`，用于强制检查 `.alipay-skill/integration-contract.json`。这是唯一能作为主方案完成依据的校验命令。
-2. Java/Maven 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator。
-3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、因公场景、必用规则因子和值，并确认场景值真实用于制度创建或修改实现。不得只因通用枚举、常量声明或文档出现相同字符串就视为通过。制度额度/发放来源的具体实现细节由费控子 validator 负责。
-4. Node.js 项目中，主校验会依次调用员企、费控、账单三个子 Skill 的本域 validator，并执行 Node.js 聚合结果一致性检查。
+2. Java/Maven 项目中，主校验会依次调用员企、费控、账单三个基础子 Skill 的本域 validator；发票启用或出现实现痕迹时追加发票 validator。
+3. 主校验必须读取 `.alipay-skill/scenario.json`，检查其状态、费用类型/子类合法性、因公场景、必用规则因子及配置来源。场景固定值必须与当前约束文档和制度实现一致；企业输入必须验证租户配置链路。运行期订单或支付数据由制度匹配逻辑或外部费控 SPI 校验，不进入本配置契约。制度额度/发放来源的具体实现细节由费控子 validator 负责。
+4. Node.js 项目中，主校验会调用三个基础子 Skill 及已启用发票/扩展子 Skill 的本域 validator，并执行 Node.js 聚合结果一致性检查。
 5. Python、Go、.NET 项目中，主脚本会运行可用的跨语言子域 validator，并执行所选场景、费控制度字段结构、外部 SPI 占位实现和可用构建检查。
 6. 火车票三方免密代扣启用或工程出现免密代扣实现痕迹时，主校验还会调用 `alipay-third-party-withholding` 本域 validator；普通企业码场景不调用该 validator。
 7. 自定义脚本、临时小脚本、手写 checklist、`CODEGEN_REPORT.md`、`GENERATION_REPORT.md` 或模型口头总结均不能替代主校验脚本。可以额外辅助检查，但不得作为完成依据。
@@ -80,10 +90,10 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 4. 主校验会用本地 `alipay-sdk-java` jar 反查所有 `com.alipay.api.request/response/domain/msg` 导入类真实存在；不存在时必须调整官方 SDK 版本、读取文档或报告不支持。
 5. 主校验会检查 WebSocket 业务载荷没有进入 HTTP 通知信封/二次验签链路，并检查正式 Repository/Store 不使用进程内状态。进程内状态、demo 业务 Port、示例回调只能在显式 `demo` / `test` profile 生效；不得挂在 `default` profile，生产默认启动必须使用真实实现或 fail-closed。
 6. 核心 Handler、Router、Controller、Service、AutoConfiguration、启动监听器必须默认可装配；demo/test profile 只能用于示例存储、回调、适配器或配置。
-7. Service、Handler、Controller、AutoConfiguration 等核心组件不得直接依赖 demo/test 具体实现；可替换扩展点必须通过接口、Port 或 Store 注入。fail-closed 默认实现必须使用 `@ConditionalOnMissingBean` 或互斥 profile，让 demo/真实实现存在时自动让位。
+7. Service、Handler、Controller、AutoConfiguration 等核心组件不得直接依赖 demo/test 具体实现；可替换扩展点必须通过接口、Port 或 Store 注入。Spring fail-closed 默认实现必须保持普通类，由独立 `@Configuration` 的 `@Bean` 方法装配，并在工厂方法上使用 `@ConditionalOnMissingBean(<Port>.class)`；不得把条件注解直接贴到普通扫描的 `@Component/@Repository` 实现类上。互斥 profile 仅用于确实互斥的实现。
 8. Spring 注入接口必须在默认配置下存在可用实现；仅有未激活 profile 实现属于运行时装配失败。初始化逻辑不得直接调用同类 `@Bean` 方法绕过 `@ConditionalOnBean` 或 profile 条件。
 9. fail-closed 实现不得只放在 `demo` profile；`application-<profile>.yml` / `application-<profile>.properties` 中不得设置 `spring.profiles.active`。
-10. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试，Spring Boot 新工程需要上下文装配测试，零测试不得判为通过。
+10. Java 工程必须存在可执行测试并实际运行；通知链路需要行为测试。Spring Boot 新工程的上下文测试必须加载真实 `@SpringBootApplication`，不得用只扫描公共配置/消息包的嵌套测试启动类代替，并须注入至少一个已选业务域通知 Handler，或断言共享路由的业务 handler/route 集合非空。零测试、只启动裁剪上下文或路由数为零不得判为通过。
 
 ## Node.js 聚合结果一致性
 
@@ -108,7 +118,7 @@ Java WebSocket 消息接入的分工和禁止项见 [多 Agent 代码生成编�
 1. 同一个 Java 工程、同一个 `appId` 下只能有一个官方 `AlipayMsgClient` 持有者，且只能有一个 `setMessageHandler` 和一个 `connect` 入口。
 2. 共享入口必须在 `connect()` 前调用 `setConnector(...)` 和 `setSecurityConfig(signType, privateKey, alipayPublicKey)`；`setSecurityConfig` 第一个参数是签名类型（通常 `RSA2`），不得传 `appId`。
 3. `MsgHandler.onMessage` 的三个参数语义为 `msgApi, msgId, bizContent`；业务 handler 只能解析第三个参数 `bizContent`，不得把第二个参数 `msgId` 当业务 JSON 传入路由。
-4. 主方案聚合多个子域时，必须生成一个共享 `MsgHandler.onMessage` 路由器，按 `msgApi` / `msg_method` 分发到员企、账单、费控处理方法。
+4. 主方案聚合多个子域时，必须生成一个共享 `MsgHandler.onMessage` 路由器，按 `msgApi` / `msg_method` 分发到员企、账单、费控以及已启用的发票处理方法。
 5. 子域代码只能提供业务处理器或路由方法；不得各自 `AlipayMsgClient.getInstance(appId)`、`setMessageHandler` 或 `connect`。
 6. 主路由器的 `onMessage` 分发逻辑中，每个已声明的 `msgApi` / `msg_method` case 都必须实际调用对应的子域处理器方法；多个 case fallthrough 到同一个处理块可以共用一次调用。
 7. 主路由器必须传播子域 handler 的失败结果；不能只调用 `handler.handle(...)` 后忽略返回值。返回 `false`、`fail` 或抛异常时，应进入异常或失败路径；在官方 `MsgHandler.onMessage` 内，分发失败必须抛异常，让 SDK 返回失败 ACK 并保留平台重试语义。

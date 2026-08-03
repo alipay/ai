@@ -295,16 +295,22 @@ function testFailClosedDefaultBackoff(gates) {
   assert.ok(noDemoErrors.some((error) => /fail-closed default/.test(error)), noDemoErrors.join("\n"));
 
   fs.writeFileSync(failClosed, [
-    "@Component",
-    "@ConditionalOnMissingBean(AgreementStorePort.class)",
     "class FailClosedAgreementStorePort implements AgreementStorePort {",
     "  public Object find() {",
     "    throw new IllegalStateException(\"AgreementStorePort is not configured for production\");",
     "  }",
     "}",
   ].join("\n"));
+  const config = writeJava(dir, "AgreementStoreConfiguration.java", [
+    "@Configuration",
+    "class AgreementStoreConfiguration {",
+    "  @Bean",
+    "  @ConditionalOnMissingBean(AgreementStorePort.class)",
+    "  AgreementStorePort agreementStorePort() { return new FailClosedAgreementStorePort(); }",
+    "}",
+  ]);
   const validErrors = [];
-  gates.checkJavaFailClosedDefaultBackoff([port, demo, failClosed], validErrors, path.basename);
+  gates.checkJavaFailClosedDefaultBackoff([port, demo, failClosed, config], validErrors, path.basename);
   assert.deepStrictEqual(validErrors, []);
 }
 
@@ -355,12 +361,46 @@ function testTestEvidence(gates) {
   gates.checkJavaTestEvidence(dir, [app], errors);
   assert.ok(errors.some((error) => /no executable test sources/.test(error)), errors.join("\n"));
 
-  const test = writeJava(path.join(dir, "src", "test", "java"), "ApplicationTest.java", [
-    "@SpringBootTest",
-    "class ApplicationTest {}",
+  const handler = writeJava(path.join(dir, "src", "main", "java"), "InvoiceNotifyHandler.java", [
+    "class InvoiceNotifyHandler {}",
   ]);
+  const test = writeJava(path.join(dir, "src", "test", "java"), "ApplicationTest.java", [
+    "@SpringBootTest(classes = ApplicationTest.CoreApplication.class)",
+    "class ApplicationTest {",
+    "  @SpringBootApplication(scanBasePackages = {\"example.config\"})",
+    "  static class CoreApplication {}",
+    "}",
+  ]);
+  const restrictedErrors = [];
+  gates.checkJavaTestEvidence(dir, [app, handler, test], restrictedErrors);
+  assert.ok(restrictedErrors.some((error) => /do not load the real/.test(error)), restrictedErrors.join("\n"));
+
+  fs.writeFileSync(test, [
+    "@SpringBootTest(classes = Application.class)",
+    "class ApplicationTest {}",
+  ].join("\n"));
+  const missingRouteErrors = [];
+  gates.checkJavaTestEvidence(dir, [app, handler, test], missingRouteErrors);
+  assert.ok(missingRouteErrors.some((error) => /does not prove any business notification handler/.test(error)), missingRouteErrors.join("\n"));
+
+  fs.writeFileSync(test, [
+    "@SpringBootTest(classes = Application.class)",
+    "class ApplicationTest {",
+    "  void contextLoads() { assertTrue(router.routes().isEmpty()); }",
+    "}",
+  ].join("\n"));
+  const emptyRouteErrors = [];
+  gates.checkJavaTestEvidence(dir, [app, handler, test], emptyRouteErrors);
+  assert.ok(emptyRouteErrors.some((error) => /does not prove any business notification handler/.test(error)), emptyRouteErrors.join("\n"));
+
+  fs.writeFileSync(test, [
+    "@SpringBootTest(classes = Application.class)",
+    "class ApplicationTest {",
+    "  @Autowired InvoiceNotifyHandler invoiceNotifyHandler;",
+    "}",
+  ].join("\n"));
   const validErrors = [];
-  gates.checkJavaTestEvidence(dir, [app, test], validErrors);
+  gates.checkJavaTestEvidence(dir, [app, handler, test], validErrors);
   assert.deepStrictEqual(validErrors, []);
 }
 

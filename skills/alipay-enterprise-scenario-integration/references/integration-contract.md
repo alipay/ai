@@ -24,7 +24,7 @@
 
 已有项目增量接入时，主 Agent 第一轮只输出盘点和拟定契约，不修改代码。用户确认后，在生成目录写入 `.alipay-skill/integration-contract.json`，再启动分域代码修改。
 
-契约用于把员企、费控、账单三个本域衔接点汇总到一个文件。子 Skill 单独接入已有项目时也使用同一文件结构，但只填写自己的 domain。
+契约用于把员企、费控、账单三个基础域和已启用的发票/扩展域衔接点汇总到一个文件。子 Skill 单独接入已有项目时也使用同一文件结构，但只填写自己的 domain。
 
 最小结构：
 
@@ -56,6 +56,11 @@
       "status": "CONFIRMED",
       "joinPoints": [],
       "changes": [{ "path": "src/main/.../BillNotifyHandler.java", "action": "add" }]
+    },
+    "invoice": {
+      "status": "CONFIRMED",
+      "joinPoints": [],
+      "changes": [{ "path": "src/main/.../InvoiceNotifyHandler.java", "action": "add" }]
     }
   },
   "gaps": []
@@ -65,7 +70,7 @@
 规则：
 
 1. `gaps` 中不得保留 `NEEDS_USER_CONFIRM`。
-2. 单场景主方案已有项目必须包含 `ec`、`expense-control`、`bill` 三个 domain，除非用户明确裁剪模块并写为 `NOT_APPLICABLE`。
+2. 单场景主方案已有项目必须包含 `ec`、`expense-control`、`bill` 三个基础 domain；地铁已启用发票时还必须包含 `invoice`。用户明确裁剪的域写为 `NOT_APPLICABLE`。
 3. 每个 domain 的 `status` 必须是 `CONFIRMED` 或 `NOT_APPLICABLE`。
 4. `joinPoints` 支持 service、repository、controller、event、gateway、spi、other 等策略，不要求 handler 直接引用某个类型。
 5. `evidenceFiles` 和 `changes.path` 必须指向项目内真实文件，不得逃出项目目录。

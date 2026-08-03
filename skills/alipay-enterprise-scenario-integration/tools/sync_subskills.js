@@ -39,6 +39,7 @@ const DOMAINS = [
   "alipay-enterprise-ec",
   "alipay-enterprise-expense-control",
   "alipay-enterprise-bill",
+  "alipay-enterprise-invoice",
   "alipay-third-party-withholding",
 ];
 

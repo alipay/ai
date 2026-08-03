@@ -191,11 +191,10 @@ function checkJavaFailClosedDefaultBackoff(javaFiles, errors, relative = (file) 
     for (const item of candidates) {
       if (item.profiles.length > 0) continue;
       if (!isFailClosedDefaultImplementation(item.text)) continue;
-      if (!isSpringManagedClass(item.text)) continue;
-      if (/@ConditionalOnMissingBean\b/.test(item.text)) continue;
       if (profileNames(item.text).some((profile) => /^!(?:demo|test)\b/i.test(profile))) continue;
+      if (hasConditionalBeanFactory(javaFiles, type, item.className)) continue;
       errors.push(
-        `${relative(item.file)}: fail-closed default bean ${item.className} implements ${type}; add @ConditionalOnMissingBean(${type}.class) or a mutually exclusive profile so the default failure bean does not conflict with demo/test or production implementations supplied by the integrator`,
+        `${relative(item.file)}: fail-closed default ${item.className} implements ${type} but is registered as a scanned component or has no safe factory; keep the implementation as a plain class and create it from a @Configuration @Bean method guarded by @ConditionalOnMissingBean(${type}.class), so component-scan condition ordering cannot remove the only default bean`,
       );
     }
   }
@@ -260,11 +259,76 @@ function checkJavaTestEvidence(projectRoot, javaFiles, errors) {
     errors.push("Java tests do not exercise any generated message router/notification handler; add positive, retry/failure, unknown-message, and idempotency behavior coverage");
   }
 
-  const isSpringBoot = production.some((file) => /@SpringBootApplication\b/.test(fs.readFileSync(file, "utf8")));
-  if (isSpringBoot && projectMode(projectRoot) !== "existing"
-      && !/@SpringBootTest\b|ApplicationContextRunner\b|SpringApplicationBuilder\b/.test(testText)) {
-    errors.push("greenfield Spring Boot project has no application-context wiring test; add @SpringBootTest, ApplicationContextRunner, or equivalent startup wiring coverage");
+  const applicationClasses = production
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .filter((text) => /@SpringBootApplication\b/.test(text))
+    .map(firstClassName)
+    .filter(Boolean);
+  if (applicationClasses.length > 0 && projectMode(projectRoot) !== "existing") {
+    const contextTests = tests
+      .map((file) => ({ file, text: fs.readFileSync(file, "utf8") }))
+      .filter((source) => /@SpringBootTest\b|ApplicationContextRunner\b|SpringApplicationBuilder\b/.test(source.text));
+    if (contextTests.length === 0) {
+      errors.push("greenfield Spring Boot project has no application-context wiring test; add @SpringBootTest, ApplicationContextRunner, or equivalent startup wiring coverage");
+      return;
+    }
+    const fullContextTests = contextTests.filter((source) => loadsRealApplicationContext(source.text, applicationClasses));
+    if (fullContextTests.length === 0) {
+      errors.push("greenfield Spring Boot wiring tests do not load the real @SpringBootApplication; do not replace it with a nested or package-restricted test application that excludes business domains");
+      return;
+    }
+    const notificationHandlers = criticalClasses.filter((name) => /Notify[A-Za-z0-9_]*Handler$/i.test(name));
+    if (notificationHandlers.length > 0 && !fullContextTests.some((source) =>
+      notificationHandlers.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\b`).test(source.text))
+      || hasNonEmptyRouteAssertion(source.text))) {
+      errors.push("full Spring Boot context test does not prove any business notification handler/route is registered; inject a selected-domain handler or assert the shared router's supported routes/handler collection is non-empty");
+    }
   }
+}
+
+function hasConditionalBeanFactory(javaFiles, portType, implementationType) {
+  const port = escapeRegExp(portType);
+  const implementation = escapeRegExp(implementationType);
+  return javaFiles.some((file) => {
+    const text = fs.readFileSync(file, "utf8");
+    if (!/@Configuration\b/.test(text)) return false;
+    const beanMethod = /((?:@[A-Za-z_$][\w$.]*(?:\s*\([^)]*\))?\s*)+)(?:public|private|protected)?\s*(?:static\s+)?([A-Za-z_$][\w$<>, ?.[\]]*)\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{/g;
+    for (const match of text.matchAll(beanMethod)) {
+      const annotations = match[1];
+      const returnType = match[2];
+      if (!/@Bean\b/.test(annotations)) continue;
+      if (!new RegExp(`@ConditionalOnMissingBean\\s*\\(\\s*(?:value\\s*=\\s*)?(?:\\{\\s*)?${port}\\s*\\.\\s*class\\b`).test(annotations)) continue;
+      if (!new RegExp(`\\b(?:${port}|${implementation})\\b`).test(returnType)) continue;
+      const open = match.index + match[0].length - 1;
+      const close = findMatchingBrace(text, open);
+      const body = close > open ? text.slice(open + 1, close) : "";
+      if (new RegExp(`\\bnew\\s+${implementation}\\s*\\(`).test(body)) return true;
+    }
+    return false;
+  });
+}
+
+function loadsRealApplicationContext(text, applicationClasses) {
+  if (/ApplicationContextRunner\b|SpringApplicationBuilder\b/.test(text)) {
+    return applicationClasses.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\s*\\.\\s*class\\b`).test(text));
+  }
+  const annotation = text.match(/@SpringBootTest\b(?:\s*\(([\s\S]{0,600}?)\))?/);
+  if (!annotation) return false;
+  const args = annotation[1] || "";
+  if (!/\bclasses\s*=/.test(args)) {
+    if (/@SpringBootApplication\b/.test(text)
+        && !applicationClasses.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\s*\\.\\s*class\\b`).test(text))) {
+      return false;
+    }
+    return true;
+  }
+  return applicationClasses.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\s*\\.\\s*class\\b`).test(args));
+}
+
+function hasNonEmptyRouteAssertion(text) {
+  return /assertFalse\s*\([^;]*isEmpty\s*\(\s*\)/s.test(text)
+    || /assertTrue\s*\([^;]*(?:!\s*[^;]*isEmpty\s*\(\s*\)|size\s*\(\s*\)\s*>\s*0)/s.test(text)
+    || /assertThat\s*\([^;]*(?:routes?|handlers?|support)[^;]*\)\s*\.\s*(?:isNotEmpty|hasSizeGreaterThan)\s*\(/is.test(text);
 }
 
 function runMavenTests(pom, errors) {
