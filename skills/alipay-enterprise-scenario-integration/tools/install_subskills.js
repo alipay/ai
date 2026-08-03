@@ -14,6 +14,7 @@ const domains = [
   "alipay-enterprise-bill",
 ];
 const optionalDomains = new Set([
+  "alipay-enterprise-invoice",
   "alipay-third-party-withholding",
 ]);
 
@@ -25,7 +26,7 @@ function main() {
 
   try {
     options = parseArgs(process.argv.slice(2));
-    skillsRoot = path.resolve(options.skillsRoot || path.dirname(skillDir));
+    skillsRoot = resolveSkillsRoot(options.skillsRoot);
     fs.mkdirSync(skillsRoot, { recursive: true });
 
     const selectedDomains = [...domains, ...options.withDomains];
@@ -94,6 +95,44 @@ function parseArgs(args) {
     }
   }
   return options;
+}
+
+function resolveSkillsRoot(explicitRoot) {
+  if (explicitRoot) return path.resolve(explicitRoot);
+  if (process.env.ALIPAY_SKILLS_ROOT) return path.resolve(process.env.ALIPAY_SKILLS_ROOT);
+
+  const candidates = [];
+  const invocation = process.argv[1] ? path.resolve(process.argv[1]) : "";
+  if (invocation) candidates.push(path.dirname(path.dirname(path.dirname(invocation))));
+  candidates.push(process.cwd());
+
+  const userHome = os.homedir();
+  candidates.push(
+    path.join(userHome, ".codefuse", "engine", "cc", "skills"),
+    path.join(userHome, ".codex", "skills"),
+    path.join(userHome, ".agents", "skills"),
+  );
+
+  const matches = Array.from(new Set(candidates.map((candidate) => path.resolve(candidate))))
+    .filter((candidate) => isInstalledSkillRoot(candidate));
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(`multiple user Skills roots contain this Skill: ${matches.join(", ")}; rerun with --skills-root <root>`);
+  }
+  throw new Error(
+    "cannot identify the user Skills root; run from the user Skills directory, set ALIPAY_SKILLS_ROOT, or pass --skills-root <root>. Refusing to install beside the source repository"
+  );
+}
+
+function isInstalledSkillRoot(candidate) {
+  if (path.basename(candidate) !== "skills") return false;
+  const installedSkill = path.join(candidate, path.basename(skillDir));
+  if (!fs.existsSync(installedSkill)) return false;
+  try {
+    return fs.realpathSync(installedSkill) === fs.realpathSync(skillDir);
+  } catch (_) {
+    return false;
+  }
 }
 
 function validateZip(zipPath, domain) {

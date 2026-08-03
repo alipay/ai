@@ -22,12 +22,15 @@ testValueResolver();
 require("./java-project-gates.test").run(javaProjectGates);
 testFixtures();
 testScenarioDecisionGates();
+testRuleFactorValueSources();
+testMetroInvoiceSelectionGates();
 testBillSceneIdentification();
 testBillIdentifierConstantComparison();
 testIfElseRouterGates();
 testMessageClientStartupFailurePolicy();
 testIntegrationContract();
 testSubskillInstaller();
+testSubskillInstallerUserRootResolution();
 testSubskillBootstrapOrdering();
 testSubskillsInSync();
 testSyncRejectsUnknownArgs();
@@ -47,6 +50,7 @@ function testSubskillInstaller() {
     assert.ok(fs.existsSync(path.join(skillsRoot, domain, "scripts", "validate_codegen.js")), `${domain} validator must be installed`);
   }
   assert.ok(!fs.existsSync(path.join(skillsRoot, "alipay-third-party-withholding")), "optional withholding skill must stay silent by default");
+  assert.ok(!fs.existsSync(path.join(skillsRoot, "alipay-enterprise-invoice")), "optional invoice skill must stay silent by default");
   const check = runNode([installer, "--check", "--skills-root", skillsRoot]);
   assert.strictEqual(check.status, 0, output(check));
   const withOptional = runNode([installer, "--with", "alipay-third-party-withholding", "--skills-root", skillsRoot]);
@@ -55,9 +59,38 @@ function testSubskillInstaller() {
     fs.existsSync(path.join(skillsRoot, "alipay-third-party-withholding", "SKILL.md")),
     "optional withholding skill must install only when explicitly requested",
   );
+  const withInvoice = runNode([installer, "--with", "alipay-enterprise-invoice", "--skills-root", skillsRoot]);
+  assert.strictEqual(withInvoice.status, 0, output(withInvoice));
+  assert.ok(
+    fs.existsSync(path.join(skillsRoot, "alipay-enterprise-invoice", "SKILL.md")),
+    "optional invoice skill must install only when explicitly requested",
+  );
   const second = runNode([installer, "--skills-root", skillsRoot]);
   assert.strictEqual(second.status, 0, output(second));
   assert.match(output(second), /already installed/);
+}
+
+function testSubskillInstallerUserRootResolution() {
+  const installer = path.join(skillDir, "tools", "install_subskills.js");
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-subskill-home-"));
+  const userSkillsRoot = path.join(fakeHome, ".codefuse", "engine", "cc", "skills");
+  fs.mkdirSync(userSkillsRoot, { recursive: true });
+  fs.symlinkSync(skillDir, path.join(userSkillsRoot, "alipay-enterprise-scenario-integration"), "dir");
+
+  const inferred = runNode([installer], { HOME: fakeHome, ALIPAY_SKILLS_ROOT: "" });
+  assert.strictEqual(inferred.status, 0, output(inferred));
+  for (const domain of ["alipay-enterprise-ec", "alipay-enterprise-expense-control", "alipay-enterprise-bill"]) {
+    assert.ok(fs.existsSync(path.join(userSkillsRoot, domain, "SKILL.md")), `${domain} must install under the inferred user Skills root`);
+  }
+
+  const sourceRoot = path.resolve(skillDir, "..");
+  const rejected = runNode([installer], {
+    HOME: fs.mkdtempSync(path.join(os.tmpdir(), "alipay-subskill-no-home-")),
+    ALIPAY_SKILLS_ROOT: "",
+  });
+  assert.strictEqual(rejected.status, 2, output(rejected));
+  assert.match(output(rejected), /cannot identify the user Skills root/);
+  assert.ok(!fs.existsSync(path.join(sourceRoot, "alipay-enterprise-ec")), "installer must not write domain Skills beside the source Skill");
 }
 
 function testSubskillBootstrapOrdering() {
@@ -123,9 +156,18 @@ function testScenarioDecisionGates() {
     "SUB_CATEGORY = \"METRO\"",
     "SCENE_TYPE = \"TRAVEL\"",
     "CARD_FACTOR = \"CARD_TYPE\"",
-    "CARD_VALUE = \"S0110000\"",
+    "RULE_CONFIG_STORE = {}",
     "QUOTA_FACTOR = \"QUOTA_TOTAL\"",
-    "def create_metro_institution():",
+    "def validate_card_type(card_type):",
+    "    documented_card_type_enum = load_documented_card_type_enum()",
+    "    if card_type not in documented_card_type_enum:",
+    "        raise ValueError(\"CARD_TYPE is outside documented enum\")",
+    "def save_rule_factor_config(enterprise_id, card_type):",
+    "    validate_card_type(card_type)",
+    "    RULE_CONFIG_STORE[enterprise_id] = {CARD_FACTOR: [card_type]}",
+    "def create_metro_institution(enterprise_id):",
+    "    rule_factor_config = RULE_CONFIG_STORE[enterprise_id]",
+    "    validate_card_type(rule_factor_config[CARD_FACTOR][0])",
     "    return {",
     "        \"method\": \"alipay.ebpp.invoice.institution.create\",",
     "        \"consult_mode\": \"0\",",
@@ -138,7 +180,7 @@ function testScenarioDecisionGates() {
     "            \"expense_type_sub_category\": SUB_CATEGORY,",
     "            \"scene_type\": SCENE_TYPE,",
     "            \"standard_condition_info_list\": [",
-    "                {\"rule_factor\": CARD_FACTOR, \"rule_value\": [CARD_VALUE]},",
+    "                {\"rule_factor\": CARD_FACTOR, \"rule_value\": rule_factor_config[CARD_FACTOR]},",
     "                {\"rule_factor\": QUOTA_FACTOR, \"rule_value\": \"1000\"},",
     "            ],",
     "        }],",
@@ -157,38 +199,70 @@ function testScenarioDecisionGates() {
     "    }",
   ].join("\n"));
   writeScenario(metro, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: "CONFIRMED",
     businessScene: "差旅地铁",
     expenseType: "METRO",
     expenseTypeSubCategory: "METRO",
     sceneType: "TRAVEL",
     requiredRuleFactors: ["CARD_TYPE"],
-    ruleFactorValues: { CARD_TYPE: ["S0110000"], QUOTA_TOTAL: ["1000"] },
+    ruleFactorCapabilities: {
+      CARD_TYPE: { valueSource: "ENTERPRISE_INPUT", validation: "DOCUMENTED_ENUM" },
+    },
     expenseControlMode: "internal",
     internalFundingSource: { type: "ISSUE_RULE" },
     businessPriority: { enabled: false, merchantRestrictionFactors: [] },
     billIdentifiers: { expenseType: "METRO", expenseTypeSubCategory: "METRO" },
+    invoiceIntegration: { enabled: false },
   });
   assertExit(metro, 0);
 
-  const missingValue = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
-  missingValue.ruleFactorValues.CARD_TYPE = [];
-  writeScenario(metro, missingValue);
-  const missingValueResult = runNode([validator, metro]);
-  assert.strictEqual(missingValueResult.status, 1, output(missingValueResult));
-  assert.match(output(missingValueResult), /ruleFactorValues\.CARD_TYPE must contain a confirmed non-empty business value/);
+  const missingCapability = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  delete missingCapability.ruleFactorCapabilities.CARD_TYPE;
+  writeScenario(metro, missingCapability);
+  const missingCapabilityResult = runNode([validator, metro]);
+  assert.strictEqual(missingCapabilityResult.status, 1, output(missingCapabilityResult));
+  assert.match(output(missingCapabilityResult), /ruleFactorCapabilities\.CARD_TYPE must declare the rule value source and validation/);
 
-  missingValue.ruleFactorValues.CARD_TYPE = ["S0110000"];
-  missingValue.businessPriority = { enabled: true, merchantRestrictionFactors: ["MERCHANT"] };
-  missingValue.ruleFactorValues.ALARM_CLOCK_TIME = { all: true };
-  missingValue.ruleFactorValues.MERCHANT = ["merchant"];
-  writeScenario(metro, missingValue);
+  const legacyValue = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  legacyValue.ruleFactorCapabilities.CARD_TYPE = { valueSource: "ENTERPRISE_INPUT", validation: "DOCUMENTED_ENUM" };
+  legacyValue.ruleFactorValues = { CARD_TYPE: ["S0110000"] };
+  writeScenario(metro, legacyValue);
+  const legacyValueResult = runNode([validator, metro]);
+  assert.strictEqual(legacyValueResult.status, 1, output(legacyValueResult));
+  assert.match(output(legacyValueResult), /must not contain ruleFactorValues/);
+
+  const invalidSource = JSON.parse(JSON.stringify(legacyValue));
+  delete invalidSource.ruleFactorValues;
+  invalidSource.ruleFactorCapabilities.CARD_TYPE.valueSource = "PROVIDER_PRESET";
+  writeScenario(metro, invalidSource);
+  const invalidSourceResult = runNode([validator, metro]);
+  assert.strictEqual(invalidSourceResult.status, 1, output(invalidSourceResult));
+  assert.match(output(invalidSourceResult), /valueSource must be SCENARIO_FIXED or ENTERPRISE_INPUT/);
+
+  const hardcodedDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-hardcoded-factor-"));
+  copyDir(metro, hardcodedDir);
+  const dynamicCode = fs.readFileSync(path.join(hardcodedDir, "expense_service.py"), "utf8");
+  fs.writeFileSync(path.join(hardcodedDir, "expense_service.py"), dynamicCode.replace(
+    "{\"rule_factor\": CARD_FACTOR, \"rule_value\": rule_factor_config[CARD_FACTOR]}",
+    "{\"rule_factor\": CARD_FACTOR, \"rule_value\": [\"S0110000\"]}",
+  ));
+  invalidSource.ruleFactorCapabilities.CARD_TYPE.valueSource = "ENTERPRISE_INPUT";
+  writeScenario(hardcodedDir, invalidSource);
+  const hardcodedResult = runNode([validator, hardcodedDir]);
+  assert.strictEqual(hardcodedResult.status, 1, output(hardcodedResult));
+  assert.match(output(hardcodedResult), /must map validated enterprise runtime configuration to rule_value/);
+
+  delete legacyValue.ruleFactorValues;
+  legacyValue.businessPriority = { enabled: true, merchantRestrictionFactors: ["MERCHANT"] };
+  legacyValue.ruleFactorCapabilities.ALARM_CLOCK_TIME = { valueSource: "ENTERPRISE_INPUT", validation: "DOCUMENTED_SCHEMA" };
+  legacyValue.ruleFactorCapabilities.MERCHANT = { valueSource: "ENTERPRISE_INPUT", validation: "BUSINESS_IDENTIFIER" };
+  writeScenario(metro, legacyValue);
   const priorityResult = runNode([validator, metro]);
   assert.strictEqual(priorityResult.status, 1, output(priorityResult));
   assert.match(output(priorityResult), /businessPriority factor MERCHANT is not implemented/);
 
-  const unconfirmedPriority = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  const unconfirmedPriority = JSON.parse(JSON.stringify(legacyValue));
   unconfirmedPriority.businessPriority = { enabled: true, merchantRestrictionFactors: [] };
   writeScenario(metro, unconfirmedPriority);
   const unconfirmedPriorityResult = runNode([validator, metro]);
@@ -209,22 +283,134 @@ function testScenarioDecisionGates() {
   assert.strictEqual(unconfirmedFundingResult.status, 1, output(unconfirmedFundingResult));
   assert.match(output(unconfirmedFundingResult), /internalFundingSource\.type must be confirmed/);
 
-  const taotian = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
-  taotian.expenseType = "DEFAULT";
-  taotian.expenseTypeSubCategory = "DEFAULT";
-  taotian.sceneType = "DEFAULT";
-  taotian.requiredRuleFactors = ["ALI_PLATFORM_TYPE"];
-  taotian.ruleFactorValues = {
-    ALI_PLATFORM_TYPE: ["TAOTIAN", "1688"],
-    ALARM_CLOCK_TIME: { all: true },
-    MERCHANT: ["merchant"],
+}
+
+function testRuleFactorValueSources() {
+  const ticket = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-ticket-fixed-"));
+  copyDir(path.join(__dirname, "fixtures", "valid"), ticket);
+  fs.writeFileSync(path.join(ticket, "expense_service.py"), [
+    "EXPENSE_TYPE = \"TICKET\"",
+    "SCENE_TYPE = \"TRAVEL\"",
+    "MERCHANT_FACTOR = \"MERCHANT\"",
+    "TICKET_MERCHANT_RULE = \"{\\\"2088011519249952\\\":[\\\"-1\\\"]}\"",
+    "def create_ticket_institution():",
+    "    return {",
+    "        \"method\": \"alipay.ebpp.invoice.institution.create\",",
+    "        \"consult_mode\": \"0\",",
+    "        \"issue_rule_info_list\": [{\"issue_rule_name\": \"默认发放规则\", \"outer_source_id\": \"ticket-default-rule\"}],",
+    "        \"standard_info_list\": [{",
+    "            \"expense_type\": EXPENSE_TYPE,",
+    "            \"expense_type_sub_category\": EXPENSE_TYPE,",
+    "            \"scene_type\": SCENE_TYPE,",
+    "            \"standard_condition_info_list\": [{\"rule_factor\": MERCHANT_FACTOR, \"rule_value\": TICKET_MERCHANT_RULE}],",
+    "        }],",
+    "    }",
+  ].join("\n"));
+  fs.writeFileSync(path.join(ticket, "bill_service.py"), [
+    "DETAIL_METHOD = \"alipay.commerce.ec.consume.detail.query\"",
+    "BATCH_METHOD = \"alipay.commerce.ec.consume.detail.batchquery\"",
+    "NOTIFY_METHOD = \"alipay.commerce.ec.consume.change.notify\"",
+    "def handle_bill_notification(pay_no):",
+    "    return {\"method\": NOTIFY_METHOD, \"pay_no\": pay_no, \"expense_type\": \"TICKET\", \"expense_type_sub_category\": \"TICKET\"}",
+  ].join("\n"));
+  const scenario = {
+    schemaVersion: 2,
+    status: "CONFIRMED",
+    businessScene: "火车票",
+    expenseType: "TICKET",
+    expenseTypeSubCategory: "TICKET",
+    sceneType: "TRAVEL",
+    requiredRuleFactors: ["MERCHANT"],
+    ruleFactorCapabilities: {
+      MERCHANT: {
+        valueSource: "SCENARIO_FIXED",
+        value: { "2088011519249952": ["-1"] },
+        validation: "EXACT_MATCH",
+      },
+    },
+    expenseControlMode: "internal",
+    internalFundingSource: { type: "ISSUE_RULE" },
+    businessPriority: { enabled: false, merchantRestrictionFactors: [] },
+    billIdentifiers: { expenseType: "TICKET", expenseTypeSubCategory: "TICKET" },
   };
-  taotian.businessPriority = { enabled: true, merchantRestrictionFactors: ["MERCHANT"] };
-  taotian.billIdentifiers = { expenseType: "DEFAULT", expenseTypeSubCategory: "DEFAULT" };
-  writeScenario(metro, taotian);
-  const taotianResult = runNode([validator, metro]);
-  assert.strictEqual(taotianResult.status, 1, output(taotianResult));
-  assert.match(output(taotianResult), /do not support business priority/);
+  writeScenario(ticket, scenario);
+  assertExit(ticket, 0);
+
+  scenario.ruleFactorCapabilities.MERCHANT.value = { "999": ["-1"] };
+  writeScenario(ticket, scenario);
+  const undocumentedFixed = runNode([validator, ticket]);
+  assert.strictEqual(undocumentedFixed.status, 1, output(undocumentedFixed));
+  assert.match(output(undocumentedFixed), /value is not an exact fixed value documented for the selected scenario/);
+
+  const metro = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-metro-fixed-"));
+  copyDir(path.join(__dirname, "fixtures", "valid"), metro);
+  const metroScenario = JSON.parse(fs.readFileSync(path.join(metro, ".alipay-skill", "scenario.json"), "utf8"));
+  metroScenario.ruleFactorCapabilities.CARD_TYPE = {
+    valueSource: "SCENARIO_FIXED",
+    value: ["S0110000"],
+    validation: "EXACT_MATCH",
+  };
+  writeScenario(metro, metroScenario);
+  const arbitraryPreset = runNode([validator, metro]);
+  assert.strictEqual(arbitraryPreset.status, 1, output(arbitraryPreset));
+  assert.match(output(arbitraryPreset), /value is not an exact fixed value documented for the selected scenario/);
+
+  metroScenario.ruleFactorCapabilities.CARD_TYPE = {
+    valueSource: "RUNTIME_DERIVED",
+    validation: "DOCUMENTED_ENUM",
+  };
+  writeScenario(metro, metroScenario);
+  const runtimeDataAsConfig = runNode([validator, metro]);
+  assert.strictEqual(runtimeDataAsConfig.status, 1, output(runtimeDataAsConfig));
+  assert.match(output(runtimeDataAsConfig), /valueSource must be SCENARIO_FIXED or ENTERPRISE_INPUT/);
+}
+
+function testMetroInvoiceSelectionGates() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-invoice-choice-"));
+  copyDir(path.join(__dirname, "fixtures", "valid"), dir);
+  const scenarioFile = path.join(dir, ".alipay-skill", "scenario.json");
+  const scenario = JSON.parse(fs.readFileSync(scenarioFile, "utf8"));
+
+  delete scenario.invoiceIntegration;
+  writeScenario(dir, scenario);
+  let result = runNode([validator, dir]);
+  assert.strictEqual(result.status, 1, output(result));
+  assert.match(output(result), /must record the provider invoice choice/);
+
+  scenario.invoiceIntegration = { enabled: false };
+  scenario.modules.invoice = ["enterprise-title"];
+  writeScenario(dir, scenario);
+  result = runNode([validator, dir]);
+  assert.strictEqual(result.status, 1, output(result));
+  assert.match(output(result), /enabled=false must not select modules\.invoice/);
+
+  delete scenario.modules.invoice;
+  scenario.invoiceIntegration = { enabled: true };
+  writeScenario(dir, scenario);
+  result = runNode([validator, dir]);
+  assert.strictEqual(result.status, 1, output(result));
+  assert.match(output(result), /modules\.invoice to include enterprise-title/);
+  assert.match(output(result), /alipay-enterprise-invoice/, "enabled invoice must invoke the invoice domain validator");
+
+  scenario.invoiceIntegration = { enabled: false };
+  fs.writeFileSync(path.join(dir, "invoice_trace.py"), [
+    "METHOD = \"alipay.ebpp.invoice.enterprise.newinvoice.notify\"",
+    "def handle_invoice():",
+    "    return METHOD",
+  ].join("\n"));
+  writeScenario(dir, scenario);
+  result = runNode([validator, dir]);
+  assert.strictEqual(result.status, 1, output(result));
+  assert.match(output(result), /invoice implementation exists while scenario\.json invoiceIntegration\.enabled=false/);
+
+  fs.rmSync(path.join(dir, "invoice_trace.py"));
+  scenario.expenseType = "TICKET";
+  scenario.expenseTypeSubCategory = "TICKET";
+  scenario.invoiceIntegration = { enabled: false };
+  writeScenario(dir, scenario);
+  result = runNode([validator, dir]);
+  assert.strictEqual(result.status, 1, output(result));
+  assert.match(output(result), /non-metro scenario\.json must omit invoiceIntegration/);
 }
 
 function writeScenario(dir, scenario) {

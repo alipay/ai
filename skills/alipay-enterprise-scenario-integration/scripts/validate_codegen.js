@@ -44,8 +44,18 @@ const childScripts = [
   "alipay-enterprise-expense-control/scripts/validate_codegen.js",
   "alipay-enterprise-bill/scripts/validate_codegen.js",
 ];
+const invoiceScript = "alipay-enterprise-invoice/scripts/validate_codegen.js";
 const thirdPartyWithholdingScript = "alipay-third-party-withholding/scripts/validate_codegen.js";
 const ALIPAY_SDK_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+\.ALL$/;
+const RULE_FACTOR_VALIDATIONS = new Set([
+  "DOCUMENTED_ENUM",
+  "DOCUMENTED_RANGE",
+  "DOCUMENTED_SCHEMA",
+  "BUSINESS_IDENTIFIER",
+  "DOCUMENTED_CONSTRAINTS",
+  "EXACT_MATCH",
+]);
+const RULE_FACTOR_VALUE_SOURCES = new Set(["SCENARIO_FIXED", "ENTERPRISE_INPUT"]);
 
 runGuarded("alipay-enterprise-scenario-integration", main);
 
@@ -70,7 +80,9 @@ function main() {
   const childEnv = Object.assign({}, process.env, { ALIPAY_VALIDATE_AGGREGATE: "1" });
   if (nodeProject) childEnv.ALIPAY_VALIDATE_SKIP_NODE_TEST = "1";
   const selectedChildScripts = [...childScripts];
+  const invoiceSelected = shouldRunInvoiceValidator();
   const thirdPartyWithholdingSelected = shouldRunThirdPartyWithholdingValidator();
+  if (invoiceSelected) selectedChildScripts.push(invoiceScript);
   if (thirdPartyWithholdingSelected) selectedChildScripts.push(thirdPartyWithholdingScript);
   for (const relScript of selectedChildScripts) {
     const outcome = runChildValidator(relScript, childEnv);
@@ -83,6 +95,7 @@ function main() {
 
   const aggregateErrors = [];
   const contractDomains = ["ec", "expense-control", "bill"];
+  if (invoiceSelected) contractDomains.push("invoice");
   if (thirdPartyWithholdingSelected) contractDomains.push("third-party-withholding");
   validateIntegrationContract(targetDir, contractDomains, aggregateErrors);
   checkSelectedScenario(aggregateErrors);
@@ -195,6 +208,26 @@ function shouldRunThirdPartyWithholdingValidator() {
   return /dut\.agent\.third|dut\.agent\.query\.third|alipay\.dut\.customer\.agreement|submit_param|DUT_AGENT_THIRD_P|mr_dut_third/i.test(text);
 }
 
+function shouldRunInvoiceValidator() {
+  const scenarioFile = path.join(targetDir, ".alipay-skill", "scenario.json");
+  if (fs.existsSync(scenarioFile)) {
+    try {
+      const scenario = JSON.parse(fs.readFileSync(scenarioFile, "utf8"));
+      if (scenario && scenario.invoiceIntegration && scenario.invoiceIntegration.enabled === true) return true;
+    } catch (_) {
+      // readScenarioFile reports malformed scenario.json later; do not hide that by failing here.
+    }
+  }
+  return hasInvoiceImplementationTraces();
+}
+
+function hasInvoiceImplementationTraces() {
+  const text = readImplementationAndConfigFiles(targetDir)
+    .map((file) => stripSourceComments(fs.readFileSync(file, "utf8"), file))
+    .join("\n");
+  return /alipay\.ebpp\.invoice\.enterprise(?:exctrl\.employertitle|consume\.enterpriseopenrule|\.newinvoice\.notify|\.invoiceinfo\.(?:query|batchquery))/i.test(text);
+}
+
 function readImplementationAndConfigFiles(dir) {
   return walk(dir).filter((f) => /\.(java|php|py|js|ts|go|cs|rb|xml|json|ya?ml|properties)$/i.test(f));
 }
@@ -247,11 +280,9 @@ function checkSelectedScenario(errors) {
       errors.push(`missing required rule_factor=${factor} in institution create/modify code`);
       continue;
     }
-    const values = scalarScenarioValues(scenario.ruleFactorValues[factor]);
-    if (values.length && !values.some((value) => hasFactorValueBinding(scenarioText, allText, factor, value))) {
-      errors.push(`required rule_factor=${factor} is not bound to its confirmed scenario.json value in institution create/modify code`);
-    }
+    checkRuleFactorImplementation(factor, scenario.ruleFactorCapabilities[factor], scenarioText, allText, errors);
   }
+  checkEnterpriseRuleFactorLifecycle(scenario, allText, errors);
 
   if (scenario.businessPriority && scenario.businessPriority.enabled) {
     checkBusinessPriorityScenario(scenario, scenarioText, allText, errors);
@@ -271,7 +302,7 @@ function readScenarioFile(errors) {
       errors.push(".alipay-skill/scenario.json must contain one scenario object");
       return null;
     }
-    if (scenario.schemaVersion !== 1) errors.push("scenario.json schemaVersion must be 1");
+    if (scenario.schemaVersion !== 2) errors.push("scenario.json schemaVersion must be 2 for enterprise runtime rule-factor capabilities");
     if (scenario.status !== "CONFIRMED") errors.push("scenario.json status must be CONFIRMED");
     if (JSON.stringify(scenario).includes("NEEDS_USER_CONFIRM")) {
       errors.push("scenario.json contains NEEDS_USER_CONFIRM; resolve all blocking business values before code generation");
@@ -317,16 +348,17 @@ function validateScenarioDecision(scenario, facts, errors) {
     errors.push("scenario.json requiredRuleFactors must contain the selected mandatory factor(s)");
     scenario.requiredRuleFactors = [];
   }
-  const values = scenario.ruleFactorValues;
-  if (!values || Array.isArray(values) || typeof values !== "object") {
-    errors.push("scenario.json ruleFactorValues must be an object keyed by rule factor");
-    scenario.ruleFactorValues = {};
+  if (Object.prototype.hasOwnProperty.call(scenario, "ruleFactorValues")) {
+    errors.push("scenario.json must not contain ruleFactorValues; declare each value and its ownership under ruleFactorCapabilities");
+  }
+  const capabilities = scenario.ruleFactorCapabilities;
+  if (!capabilities || Array.isArray(capabilities) || typeof capabilities !== "object") {
+    errors.push("scenario.json ruleFactorCapabilities must be an object keyed by required rule factor");
+    scenario.ruleFactorCapabilities = {};
   }
   for (const factor of scenario.requiredRuleFactors) {
     if (!facts.factors.has(factor)) errors.push(`scenario.json requiredRuleFactors contains undocumented factor: ${factor}`);
-    if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
-      errors.push(`scenario.json ruleFactorValues.${factor} must contain a confirmed non-empty business value`);
-    }
+    validateRuleFactorCapability(factor, scenario.ruleFactorCapabilities[factor], errors);
   }
 
   const constraintRule = parseScenarioConstraint(facts.constraintText, scenario.expenseType, scenario.expenseTypeSubCategory, scenario.constraintVariant, facts.factors);
@@ -340,6 +372,7 @@ function validateScenarioDecision(scenario, facts, errors) {
       if (constraintRule.allowed.size && !constraintRule.allowed.has(factor)) {
         errors.push(`scenario.json marks ${factor} as required, but the selected ${pair} constraint row does not define it`);
       }
+      validateScenarioFixedEvidence(factor, scenario.ruleFactorCapabilities[factor], constraintRule, errors);
     }
     for (const factor of constraintRule.allOf) {
       if (!scenario.requiredRuleFactors.includes(factor)) errors.push(`${pair} requiredRuleFactors must include ${factor}`);
@@ -368,14 +401,59 @@ function validateScenarioDecision(scenario, facts, errors) {
     if (selected.length === 0) {
       errors.push("businessPriority.enabled requires confirmed merchantRestrictionFactors; detailed factor validity is checked by the expense-control validator");
     }
+    validateRuleFactorCapability("ALARM_CLOCK_TIME", scenario.ruleFactorCapabilities.ALARM_CLOCK_TIME, errors);
+    if (constraintRule) validateScenarioFixedEvidence("ALARM_CLOCK_TIME", scenario.ruleFactorCapabilities.ALARM_CLOCK_TIME, constraintRule, errors);
     for (const factor of selected) {
-      if (!hasConfirmedScenarioValue(scenario.ruleFactorValues[factor])) {
-        errors.push(`businessPriority.enabled requires confirmed ruleFactorValues.${factor}`);
-      }
+      validateRuleFactorCapability(factor, scenario.ruleFactorCapabilities[factor], errors);
+      if (constraintRule) validateScenarioFixedEvidence(factor, scenario.ruleFactorCapabilities[factor], constraintRule, errors);
     }
   }
   validateThirdPartyWithholdingScenario(scenario, errors);
+  validateInvoiceScenario(scenario, errors);
   validateScenarioFundingSourcePresence(scenario, errors);
+}
+
+function validateInvoiceScenario(scenario, errors) {
+  const pair = `${scenario.expenseType}/${scenario.expenseTypeSubCategory}`;
+  const invoice = scenario.invoiceIntegration;
+  const isMetro = pair === "METRO/METRO";
+
+  if (isMetro && (!invoice || Array.isArray(invoice) || typeof invoice !== "object"
+      || typeof invoice.enabled !== "boolean")) {
+    errors.push("metro scenario.json must record the provider invoice choice as invoiceIntegration.enabled=true or false");
+    return;
+  }
+  if (!invoice) {
+    if (hasInvoiceImplementationTraces()) {
+      errors.push("invoice implementation exists but scenario.json does not enable invoiceIntegration");
+    }
+    return;
+  }
+  if (Array.isArray(invoice) || typeof invoice !== "object" || typeof invoice.enabled !== "boolean") {
+    errors.push("scenario.json invoiceIntegration.enabled must be true or false");
+    return;
+  }
+  if (!isMetro) {
+    errors.push("non-metro scenario.json must omit invoiceIntegration; this solution Skill only offers invoice integration for METRO/METRO");
+    return;
+  }
+
+  const selected = scenario.modules && Array.isArray(scenario.modules.invoice)
+    ? scenario.modules.invoice
+    : [];
+  const required = ["enterprise-title", "open-rule", "invoice-message", "single-invoice-query"];
+  if (invoice.enabled) {
+    for (const module of required) {
+      if (!selected.includes(module)) {
+        errors.push(`invoiceIntegration.enabled requires scenario.json modules.invoice to include ${module}`);
+      }
+    }
+  } else {
+    if (selected.length) errors.push("invoiceIntegration.enabled=false must not select modules.invoice");
+    if (hasInvoiceImplementationTraces()) {
+      errors.push("invoice implementation exists while scenario.json invoiceIntegration.enabled=false");
+    }
+  }
 }
 
 function validateThirdPartyWithholdingScenario(scenario, errors) {
@@ -407,8 +485,45 @@ function validateScenarioFundingSourcePresence(scenario, errors) {
 function isInternalExpenseControlScenario(scenario) {
   const mode = String(scenario.expenseControlMode || scenario.feeControlMode || "").toLowerCase();
   if (["internal", "0", "inside"].includes(mode)) return true;
-  const values = scalarScenarioValues(scenario.consultMode || scenario.consult_mode || (scenario.ruleFactorValues && scenario.ruleFactorValues.consult_mode));
+  const values = scalarScenarioValues(scenario.consultMode || scenario.consult_mode);
   return values.includes("0");
+}
+
+function validateRuleFactorCapability(factor, capability, errors) {
+  if (!capability || Array.isArray(capability) || typeof capability !== "object") {
+    errors.push(`scenario.json ruleFactorCapabilities.${factor} must declare the rule value source and validation`);
+    return;
+  }
+  if (!RULE_FACTOR_VALUE_SOURCES.has(capability.valueSource)) {
+    errors.push(`scenario.json ruleFactorCapabilities.${factor}.valueSource must be SCENARIO_FIXED or ENTERPRISE_INPUT`);
+    return;
+  }
+  if (!RULE_FACTOR_VALIDATIONS.has(capability.validation)) {
+    errors.push(`scenario.json ruleFactorCapabilities.${factor}.validation must reference a documented enum, range, schema, identifier, constraint, or exact match`);
+  }
+  if (capability.valueSource === "SCENARIO_FIXED") {
+    if (!hasConfirmedScenarioValue(capability.value)) {
+      errors.push(`scenario.json ruleFactorCapabilities.${factor}.value is required for SCENARIO_FIXED`);
+    }
+    if (capability.validation !== "EXACT_MATCH") {
+      errors.push(`scenario.json ruleFactorCapabilities.${factor}.validation must be EXACT_MATCH for SCENARIO_FIXED`);
+    }
+  } else if (Object.prototype.hasOwnProperty.call(capability, "value")) {
+    errors.push(`scenario.json ruleFactorCapabilities.${factor}.value is only allowed for SCENARIO_FIXED`);
+  }
+}
+
+function validateScenarioFixedEvidence(factor, capability, constraintRule, errors) {
+  if (!capability || capability.valueSource !== "SCENARIO_FIXED" || !hasConfirmedScenarioValue(capability.value)) return;
+  const expected = normalizeDocumentEvidence(JSON.stringify(capability.value));
+  const documented = normalizeDocumentEvidence(constraintRule.rowText || "");
+  if (!expected || !documented.includes(expected)) {
+    errors.push(`scenario.json ruleFactorCapabilities.${factor}.value is not an exact fixed value documented for the selected scenario`);
+  }
+}
+
+function normalizeDocumentEvidence(value) {
+  return String(value).replace(/[\\`\s]/g, "");
 }
 
 function parseExpenseTypePairs(text) {
@@ -498,6 +613,7 @@ function parseScenarioConstraint(text, expenseType, subtype, variant, knownFacto
     allowed: new Set(tokens),
     allOf,
     anyOf,
+    rowText,
   };
 }
 
@@ -516,6 +632,21 @@ function scalarScenarioValues(value) {
   return [String(value)];
 }
 
+function checkRuleFactorImplementation(factor, capability, scopeText, allText, errors) {
+  if (capability && capability.valueSource === "SCENARIO_FIXED") {
+    checkFixedRuleFactorMapping(factor, capability.value, scopeText, allText, errors);
+    return;
+  }
+  checkEnterpriseRuleFactorMapping(factor, scopeText, allText, errors);
+}
+
+function checkFixedRuleFactorMapping(factor, value, scopeText, allText, errors) {
+  const values = scalarScenarioValues(value);
+  if (!values.length || !values.every((item) => hasFactorValueBinding(scopeText, allText, factor, item))) {
+    errors.push(`SCENARIO_FIXED rule_factor=${factor} must bind its documented exact value in institution create/modify code`);
+  }
+}
+
 function hasFactorValueBinding(scopeText, allText, factor, value) {
   for (const factorToken of valueTokens(allText, factor)) {
     for (const valueToken of valueTokens(allText, value)) {
@@ -523,6 +654,61 @@ function hasFactorValueBinding(scopeText, allText, factor, value) {
     }
   }
   return false;
+}
+
+function checkEnterpriseRuleFactorMapping(factor, scopeText, allText, errors) {
+  const factorTokens = valueTokens(allText, factor);
+  const dynamicValue = /(?:["']rule_value["']|\bruleValue\b|\.setRuleValue)\s*(?::|=|\()\s*(?!["'\[{]|-?\d+(?:\.\d+)?\b)([A-Za-z_$][\w$]*)(?:\s*(?:\.|\[|\())?/;
+  const hardcodedValue = /(?:["']rule_value["']|\bruleValue\b|\.setRuleValue)\s*(?::|=|\()\s*(?:["']|\[(?:\s*["']|\s*\d)|\{\s*["']|\d)/;
+  let mapped = false;
+  let hardcoded = false;
+  for (const token of factorTokens) {
+    const usage = tokenUsagePattern(token, factor);
+    for (const match of scopeText.matchAll(new RegExp(usage, "g"))) {
+      const window = scopeText.slice(Math.max(0, match.index - 500), match.index + match[0].length + 1200);
+      const dynamicMatch = dynamicValue.exec(window);
+      if (dynamicMatch) {
+        const valueToken = dynamicMatch[1];
+        const constantLiteral = /^[A-Z][A-Z0-9_]*$/.test(valueToken)
+          && new RegExp(`\\b${escapeRegExp(valueToken)}\\b\\s*=\\s*(?:["'\\[{]|-?\\d)`).test(allText);
+        if (constantLiteral) hardcoded = true;
+        else mapped = true;
+      }
+      if (hardcodedValue.test(window)) hardcoded = true;
+    }
+  }
+  if (!mapped) {
+    errors.push(`required rule_factor=${factor} must map validated enterprise runtime configuration to rule_value`);
+  }
+  if (hardcoded && !mapped) {
+    errors.push(`required rule_factor=${factor} must not use an undocumented provider-level hardcoded rule_value`);
+  }
+}
+
+function checkEnterpriseRuleFactorLifecycle(scenario, allText, errors) {
+  const factors = Array.from(new Set([
+    ...scenario.requiredRuleFactors,
+    ...((scenario.businessPriority && scenario.businessPriority.enabled)
+      ? ["ALARM_CLOCK_TIME", ...(scenario.businessPriority.merchantRestrictionFactors || [])]
+      : []),
+  ])).filter((factor) => {
+    const capability = scenario.ruleFactorCapabilities && scenario.ruleFactorCapabilities[factor];
+    return capability && capability.valueSource === "ENTERPRISE_INPUT";
+  });
+  if (factors.length && !/(?:enterprise|tenant|company|corp)[_A-Za-z0-9]*(?:id|no)|(?:enterprise|tenant|company|corp)\s*(?:Id|No)/i.test(allText)) {
+    errors.push("rule-factor configuration must be scoped and persisted by enterprise/tenant identifier");
+  }
+  if (factors.length && !/(?:save|persist|upsert|insert|update|repository|dao|store)[A-Za-z0-9_]*(?:rule|factor|config)|(?:rule|factor|config)[A-Za-z0-9_]*(?:save|persist|upsert|repository|dao|store)/i.test(allText)) {
+    errors.push("rule-factor configuration must provide enterprise-scoped persistence instead of provider-level constants");
+  }
+  for (const factor of factors) {
+    const factorPattern = escapeRegExp(factor);
+    const validatorPattern = "(?:validate|validator|check|allowed|constraint|schema|enum|range|format)";
+    const nearValidation = new RegExp(`(?:${factorPattern})[\\s\\S]{0,1600}${validatorPattern}|${validatorPattern}[\\s\\S]{0,1600}(?:${factorPattern})`, "i").test(allText);
+    if (!nearValidation) {
+      errors.push(`rule_factor=${factor} must validate enterprise input against its documented constraints before the Alipay call`);
+    }
+  }
 }
 
 function checkBusinessPriorityScenario(scenario, scopeText, allText, errors) {
@@ -536,10 +722,10 @@ function checkBusinessPriorityScenario(scenario, scopeText, allText, errors) {
       errors.push(`businessPriority factor ${factor} is not implemented in institution create/modify code`);
       continue;
     }
-    const values = scalarScenarioValues(scenario.ruleFactorValues[factor]);
-    if (values.length && !values.some((value) => hasFactorValueBinding(scopeText, allText, factor, value))) {
-      errors.push(`businessPriority factor ${factor} is not bound to its confirmed value in institution create/modify code`);
-    }
+    checkRuleFactorImplementation(factor, scenario.ruleFactorCapabilities[factor], scopeText, allText, errors);
+  }
+  if (hasFieldValue(scopeText, allText, ["rule_factor", "ruleFactor", "RuleFactor"], ["setRuleFactor"], "ALARM_CLOCK_TIME")) {
+    checkRuleFactorImplementation("ALARM_CLOCK_TIME", scenario.ruleFactorCapabilities.ALARM_CLOCK_TIME, scopeText, allText, errors);
   }
 }
 

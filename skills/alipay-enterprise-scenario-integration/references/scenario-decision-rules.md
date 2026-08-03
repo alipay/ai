@@ -19,6 +19,14 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
 
 不得手工 unzip 该扩展 zip；安装后应存在 `<skillsRoot>/alipay-third-party-withholding/SKILL.md`，而不是在 `<skillsRoot>/SKILL.md`、`<skillsRoot>/references/` 或 `<skillsRoot>/scripts/` 出现扩展文件。
 
+发票集成是地铁场景的选接域。确认地铁场景后必须让服务商选择是否接入；只有选择接入后才执行：
+
+```bash
+node alipay-enterprise-scenario-integration/tools/install_subskills.js --with alipay-enterprise-invoice
+```
+
+未启用时不安装、不读取发票 Skill，但仍要在地铁的 `scenario.json` 中记录 `invoiceIntegration.enabled=false`，证明已形成明确决策。
+
 ## 单场景决策
 
 每次只生成一个场景，决策结果至少包含：
@@ -28,20 +36,56 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
 - 因公场景（写入 `scenario.json` 的 `sceneType` 字段）
 - `constraintVariant`（约束文档存在多个商户范围分支时）
 - `requiredRuleFactors`
-- 每个必用规则因子的已确认业务值
+- 每个必用规则因子的值来源、取值方式和文档约束校验
 - 费控模式；内部费控时还必须包含制度额度/发放来源
 - 因公优先状态；默认关闭，只有用户明确提出需要时才进入启用判断
 - 账单识别字段
-- 三域模块范围
+- 三个基础域及已启用发票/扩展域的模块范围
 - 火车票免密代扣启用状态；默认不写入，用户明确提出且场景合法时才写入 `thirdPartyWithholding.enabled=true`
+- 地铁场景的发票集成决策；必须写入 `invoiceIntegration.enabled=true/false`
 
-上下文可唯一推断时展示结果后继续；存在歧义或缺少规则值时必须询问。问询必须只覆盖未决项，不得把已经由用户或上下文确认的模式、模块或默认策略重新混入选项。
+上下文可唯一推断时展示结果后继续；存在场景、模式或模块歧义时必须询问。问询必须只覆盖未决项，不得要求服务商选择企业运行期规则值，也不得把已经由用户或上下文确认的模式、模块或默认策略重新混入选项。
 
 因公场景不是默认询问项。用户未明确指定、上下文也不能识别出加班、补贴福利、差旅、招待等因公场景时，默认使用“默认”（接口值 `DEFAULT`）；票务类场景（`expenseType=TICKET`）默认使用“差旅”（接口值 `TRAVEL`）。用户明确提出其它因公场景，或上下文能唯一识别出其它场景时，才改用对应枚举，并校验该枚举来自制度接口文档。
 
 线下到店类同时提供“指定门店”和“广泛商户”约束时，必须确认其中一个分支，并在 `scenario.json` 中分别写为 `SPECIFIED_MERCHANT` 或 `BROAD_MERCHANT`；不同分支的必用规则因子不能混为一组。
 
-例如地铁场景可以从文档确定 `METRO/METRO` 和必用 `CARD_TYPE`，但不能凭空选择城市卡编码。必须根据用户城市或明确卡编码生成。
+例如地铁场景可以从文档确定 `METRO/METRO` 和必用 `CARD_TYPE`，但具体卡编码随企业而异，应由企业配置。票务 `TICKET/TICKET` 的 `MERCHANT` 则由文档唯一限定为 12306 商户 PID `2088011519249952`，服务商直接预置，不让企业选择。
+
+## 规则因子配置责任
+
+规则因子的关键是确定配置责任，而不是一律要求企业输入。对所有必用因子以及已启用增强能力引入的因子，先从费控约束文档判断以下来源：
+
+1. `SCENARIO_FIXED`：当前费用场景文档给出唯一精确值。服务商使用具名场景常量预置并阻止企业覆盖，`validation=EXACT_MATCH`；`value` 必须能在当前场景约束行中精确找到。
+2. `ENTERPRISE_INPUT`：值取决于企业策略。服务商提供企业维度的配置输入、约束校验和租户隔离持久化，配置变化后为该企业重建并提交制度。
+
+两类配置都必须在调用支付宝前失败关闭，并在制度创建或修改时映射到对应 `rule_value`。只有 `SCENARIO_FIXED` 可以在 `ruleFactorCapabilities` 内记录 `value`；不得恢复无归属信息的顶层 `ruleFactorValues`，也不得把服务商自行选择的默认值标成场景固定值。
+
+企业输入的 `validation` 使用 `DOCUMENTED_ENUM`、`DOCUMENTED_RANGE`、`DOCUMENTED_SCHEMA`、`BUSINESS_IDENTIFIER` 或 `DOCUMENTED_CONSTRAINTS`。具体枚举和结构仍以费控子 Skill 文档为事实源。
+
+订单商户、门店、金额、时间等运行期数据用于匹配已配置的制度，或作为外部费控咨询、扣减、退还等 SPI 的请求字段。它们不是制度 `rule_value` 的配置来源，不得写入 `ruleFactorCapabilities`。
+
+火车票固定商户示例：
+
+```json
+"ruleFactorCapabilities": {
+  "MERCHANT": {
+    "valueSource": "SCENARIO_FIXED",
+    "value": {"2088011519249952": ["-1"]},
+    "validation": "EXACT_MATCH"
+  }
+}
+```
+
+## 地铁发票集成
+
+地铁 `METRO/METRO` 场景必须向服务商确认是否接入企业发票能力。该问题是地铁场景的必要范围决策，不适用“其他扩展默认静默”规则。
+
+- 选择不接入：写入 `invoiceIntegration.enabled=false`，不安装发票 Skill，`modules.invoice` 必须省略或为空。
+- 选择接入：写入 `invoiceIntegration.enabled=true`，安装并加载 `alipay-enterprise-invoice`，`modules.invoice` 至少包含 `enterprise-title`、`open-rule`、`invoice-message`、`single-invoice-query`。
+- 启用即完整接入发票 Skill 的四个基础模块，不提供只选企业抬头、只选发票查询等不完整路径。
+- 员工抬头、企业抬头批量查询和发票批量查询仍遵循发票 Skill 的选接规则，只在服务商明确要求时加入。
+- 非地铁场景不主动展示该选项；用户明确提出时，说明当前方案 Skill 仅编排地铁发票，不自行泛化到其他场景。
 
 ## 内部费控制度额度/发放来源
 
@@ -86,12 +130,12 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
 
 用户已明确选择启用，且场景支持因公优先时：
 
-1. 必须配置 `ALARM_CLOCK_TIME`。
-2. 必须至少配置一个当前费用场景约束中允许的有效商户限制因子。
+1. 必须支持企业配置 `ALARM_CLOCK_TIME`。
+2. 必须支持企业配置至少一个当前费用场景约束中允许的有效商户限制因子。
 3. `COMPOSITE_MERCHANT` 只有同时配置 `receiptIdentityWhiteList`、`shopIdList` 或 `shopGroupIdList` 中至少一个非空列表时，才能计为有效商户限制。
 4. 因公优先不能替代场景自身的必用规则因子。
 
-`ALARM_CLOCK_TIME` 表示可使用时间段，值必须按规则因子文档生成 JSON 对象字符串。
+`ALARM_CLOCK_TIME` 表示可使用时间段，企业输入必须按规则因子文档校验并生成 JSON 对象字符串。若企业运行期选择的其它因子值与因公优先不兼容（例如淘系平台值），必须在提交制度前拒绝该组合。
 
 ## 火车票三方免密代扣
 
@@ -130,15 +174,18 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "CONFIRMED",
   "businessScene": "差旅地铁",
   "expenseType": "METRO",
   "expenseTypeSubCategory": "METRO",
   "sceneType": "TRAVEL",
   "requiredRuleFactors": ["CARD_TYPE"],
-  "ruleFactorValues": {
-    "CARD_TYPE": ["S0110000"]
+  "ruleFactorCapabilities": {
+    "CARD_TYPE": {
+      "valueSource": "ENTERPRISE_INPUT",
+      "validation": "DOCUMENTED_ENUM"
+    }
   },
   "expenseControlMode": "internal",
   "internalFundingSource": {
@@ -153,6 +200,9 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
     "expenseTypeSubCategory": "METRO",
     "sceneCode": "METRO",
     "orderType": "METRO"
+  },
+  "invoiceIntegration": {
+    "enabled": false
   },
   "modules": {
     "ec": ["enterprise-onboarding", "employee-signing", "enterprise-management", "employee-management"],

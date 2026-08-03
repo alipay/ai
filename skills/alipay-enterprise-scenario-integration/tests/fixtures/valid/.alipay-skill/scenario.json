@@ -1,13 +1,16 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "CONFIRMED",
   "businessScene": "差旅地铁",
   "expenseType": "METRO",
   "expenseTypeSubCategory": "METRO",
   "sceneType": "TRAVEL",
   "requiredRuleFactors": ["CARD_TYPE"],
-  "ruleFactorValues": {
-    "CARD_TYPE": ["S0110000"]
+  "ruleFactorCapabilities": {
+    "CARD_TYPE": {
+      "valueSource": "ENTERPRISE_INPUT",
+      "validation": "DOCUMENTED_ENUM"
+    }
   },
   "businessPriority": {
     "enabled": false,
@@ -18,6 +21,9 @@
     "expenseTypeSubCategory": "METRO",
     "sceneCode": "METRO",
     "orderType": "METRO"
+  },
+  "invoiceIntegration": {
+    "enabled": false
   },
   "modules": {
     "ec": ["enterprise-onboarding", "employee-signing", "enterprise-management", "employee-management"],

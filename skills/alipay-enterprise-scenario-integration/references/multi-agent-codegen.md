@@ -20,6 +20,8 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 
 火车票三方免密代扣是可选扩展域，不属于默认三域生成。用户未明确提出免密代扣、三方代扣、代扣协议、自动扣款、先签约后扣款、火车票/12306 出票扣款或票代代扣时，主 Agent 不得启动免密代扣 Agent，不得读取该 Skill 或接口文档。已确认启用时，该扩展走 MAPI 接入预检，不适用企业码 OpenAPI SDK Request/Model/Response 预检。
 
+发票是地铁场景的选接域。只有 `.alipay-skill/scenario.json` 已确认 `invoiceIntegration.enabled=true` 时，主 Agent 才安装、加载并启动 `alipay-enterprise-invoice` Agent。发票域与员企、费控、账单共用项目已确定的 SDK、`AlipayClient`、消息通道和公共配置，不得另建第二套消息客户端或网关。
+
 ## 新工程与已有项目
 
 代码生成前必须按 [项目判断与已有项目衔接契约](integration-contract.md) 自动判断目标目录是新工程还是已有项目；只有目录不可访问、证据冲突或上下文无法推断时才询问用户。
@@ -27,13 +29,13 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 已有项目增量接入时：
 
 - 主 Agent 必须先盘点技术栈、构建工具、现有 SDK 版本、Central Portal 当前 SDK 版本、配置体系、通知入口、目录结构和已实现接口。
-- 主 Agent 必须盘点已有 Entity、Service、Repository、Controller，并标出企业、员工、订单、账单、费用记录、报销或对账等可衔接对象。
+- 主 Agent 必须盘点已有 Entity、Service、Repository、Controller，并标出企业、员工、订单、账单、费用记录、报销、对账、发票、抬头或开票规则等可衔接对象。
 - 第一轮只能输出项目盘点、增量改造计划和拟定 `.alipay-skill/integration-contract.json`，列出拟新增文件、拟修改文件、不会触碰的公共文件、已有能力复用点和业务衔接点；Java/Maven 项目必须把 `alipay-sdk-java` 升级到 Central Portal 当前版本列入计划；不得修改代码、接口文档、构建文件或写入契约文件。
 - 用户确认增量改造计划后，才能启动分域子 Agent 进入代码生成或修改。
 - 用户确认后，主 Agent 先写入 `.alipay-skill/integration-contract.json`，再启动分域子 Agent。契约结构见 [已有项目衔接契约](integration-contract.md)；其中不得保留 `NEEDS_USER_CONFIRM`。
 - 公共文件只允许最小补丁；不得重写既有 `pom.xml`、`build.gradle`、`package.json`、配置中心接入、启动入口、README 或 CI 配置。
 - 已有 `AlipayClient`、HTTP 通知网关、WebSocket 消息入口和业务 service 优先复用；已有 Alipay SDK 依赖只复用坐标和配置方式，版本必须升级到 Central Portal 当前版本。
-- 子 Agent 只补本域缺口：先识别已有接口/通知实现，再生成缺失接口或补齐字段、验签、幂等和测试。不得只新增孤立支付宝模块；如果上下文可推断，企业/员工通知必须衔接已有企业/员工对象，账单通知必须衔接已有订单、费用记录、报销或对账对象。
+- 子 Agent 只补本域缺口：先识别已有接口/通知实现，再生成缺失接口或补齐字段、验签、幂等和测试。不得只新增孤立支付宝模块；如果上下文可推断，企业/员工通知必须衔接已有企业/员工对象，账单通知必须衔接已有订单、费用记录、报销或对账对象，发票通知必须查询单笔发票并衔接已有发票、报销、账单或档案对象。
 - 如果无法从已有代码推断业务衔接点，必须在计划中说明缺口并暂停确认；用户明确选择旁路验证前，不得把通知处理生成为仅日志、仅幂等记录或无业务落库的成功路径。
 - 子 Agent 接收主 Agent 写入的契约后，只读取自己 domain 下的 `joinPoints`、`changes` 和 `gaps`；子 Skill 单独接入已有项目时也使用同一契约结构，但只填写自己的 domain。
 - 如果既有项目的全量构建或测试原本失败，必须记录 baseline；交付时至少证明本次改动没有新增失败，并运行可执行的本域/聚合校验。
@@ -49,6 +51,7 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 多域代码生成时：
 
 - 必须启动员企、费控、账单三个分域子 Agent。
+- 只有 `.alipay-skill/scenario.json` 中 `invoiceIntegration.enabled=true` 时，才额外启动发票 Agent。
 - 只有 `.alipay-skill/scenario.json` 中 `thirdPartyWithholding.enabled=true` 时，才额外启动三方免密代扣 Agent。
 - 如果某个域未被用户选择，可以不启动该域，但必须在启动状态中说明未选择原因。
 - 不得仅凭模型判断声明“不支持多 Agent”。
@@ -66,8 +69,9 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 启动子 Agent 时必须显式传入对应子 Skill，而不是只让子 Agent 自行读取 references 文档。若 sub Agent/Task 工具支持结构化输入，必须把对应 `SKILL.md` 作为 skill item/mention 传入；若工具只支持文本输入，任务消息必须写明对应子 Skill 路径，并要求子 Agent 第一步加载该 `SKILL.md`。
 
 - 员企 Agent：加载 `alipay-enterprise-ec/SKILL.md`；沿用企业入驻模式、员工签约模式、消息接入方式和员企模块清单；只写员企目录。
-- 费控 Agent：加载 `alipay-enterprise-expense-control/SKILL.md`；读取主 Agent 已确认的 `.alipay-skill/scenario.json`，沿用费控模式、模块清单、费用类型、费用子类、因公场景、规则因子及其值；只写费控目录，不重新猜测场景。
+- 费控 Agent：加载 `alipay-enterprise-expense-control/SKILL.md`；读取主 Agent 已确认的 `.alipay-skill/scenario.json`，沿用费控模式、模块清单、费用类型、费用子类、因公场景、必用规则因子及其配置来源；只写费控目录。场景固定值按文档预置，企业输入按租户配置契约实现，不重新猜测场景或默认值。
 - 账单 Agent：加载 `alipay-enterprise-bill/SKILL.md`；读取主 Agent已确认的 `.alipay-skill/scenario.json`，沿用账单模式、消息接入方式、账单模块清单和场景识别字段；只写账单目录。
+- 发票 Agent：仅在地铁发票已启用时加载 `alipay-enterprise-invoice/SKILL.md`；沿用 `invoiceIntegration.enabled=true`、发票模块清单、SDK 版本和统一消息接入方式；完整生成企业抬头、开票规则、发票消息和单笔查询，只写发票目录。
 - 三方免密代扣 Agent：仅在火车票免密代扣启用时加载 `alipay-third-party-withholding/SKILL.md`；沿用上游已确认的 `thirdPartyWithholding.enabled=true`、MAPI 网关和火车票场景；一次性生成完整签约 + 代扣链路，只写 `withholding/**`、`mapi/**` 或用户确认的免密代扣目录。
 
 ## 子 Skill 加载握手
@@ -97,6 +101,7 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 - 员企 Agent 只读取 `alipay-enterprise-ec`，只生成或修改员企代码，例如 `src/main/java/**/ec/**`。
 - 费控 Agent 只读取 `alipay-enterprise-expense-control`，只生成或修改费控代码，例如 `src/main/java/**/expense/**`。
 - 账单 Agent 只读取 `alipay-enterprise-bill`，只生成或修改账单代码，例如 `src/main/java/**/bill/**`。
+- 发票 Agent 只读取 `alipay-enterprise-invoice`，只生成或修改发票代码，例如 `src/main/java/**/invoice/**`；不得修改公共消息客户端、构建文件或全局配置。
 - 三方免密代扣 Agent 只读取 `alipay-third-party-withholding`，只生成或修改 MAPI 免密代扣代码；不得修改员企、费控、账单代码，不得修改公共构建文件、全局配置、README、启动入口或跨域消息聚合配置。需要公共配置时只能在最终回执中提出。
 
 公共文件由主 Agent 统一维护，包括构建文件（如 `pom.xml`、`build.gradle`、`package.json`、`composer.json`）、配置文件（如 `application.yml`、`.env`）、`README.md`、启动入口、SDK 配置和消息聚合配置。
@@ -112,6 +117,8 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 证据表不是交付说明的装饰项，而是生成前闸门。某个接口无法确认文档、示例、SDK 类或字段路径时，只能继续查找或暂停反馈，不得先写代码再用编译错误、反射、Map 包装、本地 SDK stub 或删除接口能力补救。
 
 启用三方免密代扣时，本域接口证据表必须覆盖五个 MAPI 接口、MAPI 签名/验签、`submit_param` 白名单和来源、协议状态确认、代扣订单状态和主动查询对账。不得输出“只签约”或“只代扣”的证据表。
+
+启用发票时，本域接口证据表必须覆盖发票 Skill 定义的 8 个基础接口/通知，并明确通知与账单/员企共用的消息入口、企业身份衔接、发票业务落库点和本域 validator 结果。
 
 ## 公共聚合规则
 
@@ -137,7 +144,7 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 
 主 Agent 聚合消息路由时必须确保：
 
-- 每个子域的消息通知都被路由器实际分发到已注入的 Spring Bean handler 方法。
+- 每个已选子域（包括发票）的消息通知都被路由器实际分发到已注入的 Spring Bean handler 方法。
 - 如果某个子 Agent 生成的通知处理器不是 Spring Bean，主 Agent 必须将其改造为 Spring Bean 并注入路由器，或将通知处理逻辑内联到路由器中。
 - 路由器 switch/case 中不得出现只有注释或空 break 的分支。
 - 子域 handler 返回 `false`、`fail` 或抛异常时，主路由不能吞掉结果；需要转换为异常或明确失败路径，让平台重试语义不被破坏。
@@ -166,11 +173,12 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 - 已有项目场景下的复用点、未触碰文件和仍需主 Agent 处理的公共改动需求
 - 已有项目场景下本域契约执行结果：确认的 `joinPoints`、实际 `changes` 和是否仍有缺口
 - 明确状态：`COMPLETED` 或 `FAILED`
-- 费控和账单 Agent 还必须确认其实现使用的场景值与 `scenario.json` 一致
+- 费控 Agent 必须确认规则因子配置来源与 `scenario.json` 一致：固定值来自场景文档，企业值来自租户配置；运行期订单和支付数据留在制度匹配或外部 SPI 链路。账单 Agent 必须确认其场景识别值与 `scenario.json` 一致
+- 发票 Agent 还必须确认基础四模块全部覆盖、通知沿用统一消息入口，且查询结果已衔接真实业务对象
 
 子 Agent 的 `COMPLETED` 只代表本域任务结束，不等于全局交付完成。全局完成态只能由主 Agent 在 SDK 预检、子域 validator、主聚合 validator 和必要构建/测试都通过后，在最终回复中说明。
 
-子 Agent 完成后必须输出已读文档、生成文件、接口覆盖、本域自检结果和未覆盖边界。主 Agent 合并三域代码后，运行三个子域 validator 和主聚合 validator；失败时按所属域退回对应 Agent 或阶段修正。
+子 Agent 完成后必须输出已读文档、生成文件、接口覆盖、本域自检结果和未覆盖边界。主 Agent 合并所有已选域代码后，必须补充加载真实启动类的完整 Spring 上下文测试，并验证至少一个已选业务通知 Handler 或共享路由中的非空业务 route 已装配；不得以只扫描公共配置/消息包的嵌套测试应用代替。随后运行三个基础子域、已启用发票/扩展域 validator 和主聚合 validator；失败时按所属域退回对应 Agent 或阶段修正。
 
 主 Agent 在收齐所有已启动子 Agent 的 `COMPLETED` / `FAILED` 回执前：
 
