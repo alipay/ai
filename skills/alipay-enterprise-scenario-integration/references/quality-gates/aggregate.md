@@ -57,7 +57,7 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 
 1. 代码生成必须存在 `.alipay-skill/scenario.json`，且 `status` 为 `CONFIRMED`。
 2. 每个字段只描述一个场景，不允许数组化的多场景输入。
-3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，因公场景必须来自制度接口文档，并写入 `scenario.json` 的 `sceneType` 字段；用户或上下文未明确时应为“默认”（接口值 `DEFAULT`），票务类场景应默认为“差旅”（接口值 `TRAVEL`）。
+3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，因公场景必须来自制度接口文档，并写入 `scenario.json` 的 `sceneType` 字段；用户或上下文未明确时，费用类型为 `METRO` 的地铁场景和票务类场景应默认为“差旅”（接口值 `TRAVEL`），其他场景应默认为“通用”（接口值 `DEFAULT`）。明确选择其它合法因公场景时可覆盖默认值。
 4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorCapabilities` 必须为每个必用因子声明 `SCENARIO_FIXED` 或 `ENTERPRISE_INPUT`。顶层不得使用缺少归属信息的 `ruleFactorValues`，也不得把运行期校验数据声明为配置来源。
 5. `SCENARIO_FIXED` 必须携带当前场景文档明确给出的精确 `value` 和 `EXACT_MATCH`，允许生成具名场景常量；`ENTERPRISE_INPUT` 必须具备企业输入、校验和租户持久化。两类都必须正确映射到 `rule_value`。
 6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源，且不得残留待确认值。具体来源类型、限额因子、手工发放接口和制度实现合法性由费控子 Skill 校验，主聚合层只检查该决策已形成并参与聚合。
