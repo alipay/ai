@@ -12,6 +12,8 @@
  */
 
 const express = require('express');
+const cookieParser = require('cookie-parser');
+const csurf = require('csurf');
 const { AlipaySdk } = require('alipay-sdk');
 const config = require('./config');
 
@@ -20,6 +22,9 @@ const app = express();
 // 解析 application/x-www-form-urlencoded（异步通知使用 POST 表单）
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(cookieParser());
+const csrfProtection = csurf({ cookie: true });
+app.use(csrfProtection);
 
 // 初始化支付宝 SDK
 const alipaySdk = new AlipaySdk({
