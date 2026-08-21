@@ -41,6 +41,20 @@ function checkJavaTransportContracts(javaFiles, errors, relative = (file) => fil
   }
 }
 
+function checkSdkReflectionBypass(javaFiles, errors, relative = (file) => file) {
+  for (const file of javaFiles) {
+    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
+    const sdkRelevant = /com\.alipay\.api|Alipay[A-Za-z0-9_]*(?:Request|Response|Model)|alipayClient\s*\.\s*execute/.test(text);
+    // getClass() alone is ordinary Java and is commonly used to log an
+    // exception type.  Require an actual reflection/property-access API before
+    // treating an SDK-relevant file as a compile-time type bypass.
+    const reflectionBypass = /java\.lang\.reflect|Class\s*\.\s*forName\s*\(|\.get(?:Declared)?(?:Method|Field|Constructor)s?\s*\(|\.invoke\s*\(|\.setAccessible\s*\(|BeanUtils|PropertyUtils/.test(text);
+    if (sdkRelevant && reflectionBypass) {
+      errors.push(`${relative(file)}: generated Java must not use reflection/BeanUtils to bypass official SDK Request/Model/Response compile-time types; inspect the SDK jar with jar tf or javap and use real getters/setters`);
+    }
+  }
+}
+
 function checkJavaStateTransitionPersistence(javaFiles, errors, relative = (file) => file) {
   for (const file of javaFiles) {
     const text = fs.readFileSync(file, "utf8");
@@ -204,6 +218,19 @@ function checkJavaAlipayMsgClientContracts(javaFiles, errors, relative = (file) 
   const sources = javaFiles.map((file) => ({ file, text: fs.readFileSync(file, "utf8") }));
   const projectText = sources.map((source) => stripJavaComments(source.text)).join("\n");
   const hasConnector = /\.setConnector\s*\(/.test(projectText);
+
+  const connectionRetrySources = sources
+    .map((source) => stripJavaComments(source.text))
+    .filter((text) => /\.connect\s*\(/.test(text) && /(?:retry|reconnect|backoff|schedule)/i.test(text));
+  const retriesAfterConnectFailure = connectionRetrySources.length > 0;
+  const claimsHealthSignal = /(?:health|readiness|availability|REFUSING_TRAFFIC|\bDOWN\b)/i.test(projectText);
+  const failsFast = connectionRetrySources.some((text) => /catch\s*\([^)]*\)\s*\{[^}]*\bthrow\s+new\b/s.test(text));
+  const hasRealReadinessIntegration = /\b(?:HealthIndicator|ReactiveHealthIndicator|ReadinessState|AvailabilityChangeEvent|ApplicationAvailability|REFUSING_TRAFFIC)\b/.test(projectText);
+  if (retriesAfterConnectFailure && claimsHealthSignal && !failsFast && !hasRealReadinessIntegration) {
+    errors.push(
+      "AlipayMsgClient initial connection uses background retry with a health-looking flag but has no real readiness integration; implement Spring HealthIndicator/ReadinessState/AvailabilityChangeEvent (or fail fast) so the application actually refuses traffic while message intake is unavailable",
+    );
+  }
 
   for (const source of sources) {
     const text = stripJavaComments(source.text);
@@ -584,6 +611,7 @@ module.exports = {
   checkSpringBeanMethodBypass,
   checkJavaTestEvidence,
   checkJavaTransportContracts,
+  checkSdkReflectionBypass,
   checkSpringProfileWiring,
   runMavenTests,
 };

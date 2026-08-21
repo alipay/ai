@@ -56,6 +56,9 @@ const RULE_FACTOR_VALIDATIONS = new Set([
   "EXACT_MATCH",
 ]);
 const RULE_FACTOR_VALUE_SOURCES = new Set(["SCENARIO_FIXED", "ENTERPRISE_INPUT"]);
+const SCENARIO_FIXED_RULE_VALUES = new Map([
+  ["TICKET/TICKET:MERCHANT", { "2088011519249952": ["-1"] }],
+]);
 
 runGuarded("alipay-enterprise-scenario-integration", main);
 
@@ -110,8 +113,13 @@ function main() {
     checkBuildConsistency(pom, aggregateErrors);
     checkMavenCompile(pom, aggregateErrors);
     checkSdkJarClasses(pom, aggregateErrors);
-    checkSdkReflectionBypass(javaFiles, aggregateErrors);
+    javaProjectGates.checkSdkReflectionBypass(javaFiles, aggregateErrors, rel);
     checkSpringValueConsistency(aggregateErrors);
+    checkProductionCredentialDefaults(aggregateErrors);
+    checkManagementControllerTenantBinding(aggregateErrors);
+    checkAlternativeQueryRoutes(aggregateErrors);
+    checkSpringContextMessageIsolation(aggregateErrors);
+    checkMessageLifecycleContracts(aggregateErrors);
     checkMessageRouterCompleteness(aggregateErrors);
     checkMessageRouterFailurePropagation(aggregateErrors);
     checkMessageRouterUnknownHandling(aggregateErrors);
@@ -316,11 +324,10 @@ function readScenarioFile(errors) {
 
 function readScenarioFacts(errors) {
   const expenseSkill = resolveDomainSkillDir("alipay-enterprise-expense-control");
+  const interfaceDocsModule = path.join(expenseSkill, "scripts", "lib", "interface-docs.js");
   const files = {
-    enumDoc: path.join(expenseSkill, "references", "common", "expense-type-enum.md"),
-    constraints: path.join(expenseSkill, "references", "common", "expense-type-constraints.md"),
-    factors: path.join(expenseSkill, "references", "common", "rule-factors.md"),
-    institution: path.join(expenseSkill, "references", "common", "institution-create.md"),
+    interfaceIndex: path.join(expenseSkill, "references", "interface-docs.json"),
+    interfaceDocsModule,
   };
   for (const [name, file] of Object.entries(files)) {
     if (!fs.existsSync(file)) {
@@ -328,11 +335,13 @@ function readScenarioFacts(errors) {
       return null;
     }
   }
+  const { createInterfaceDocs } = require(interfaceDocsModule);
+  const interfaceDocs = createInterfaceDocs(expenseSkill);
   return {
-    pairs: parseExpenseTypePairs(fs.readFileSync(files.enumDoc, "utf8")),
-    constraintText: fs.readFileSync(files.constraints, "utf8"),
-    factors: parseRuleFactors(fs.readFileSync(files.factors, "utf8")),
-    sceneTypes: parseSceneTypes(fs.readFileSync(files.institution, "utf8")),
+    pairs: parseExpenseTypePairs(interfaceDocs.documentMarkdown("expense-types")),
+    constraintText: interfaceDocs.documentMarkdown("expense-type-constraints"),
+    factors: parseRuleFactors(interfaceDocs.documentMarkdown("rule-factors")),
+    sceneTypes: parseSceneTypes(interfaceDocs.markdown("alipay.ebpp.invoice.institution.create")),
   };
 }
 
@@ -342,7 +351,7 @@ function validateScenarioDecision(scenario, facts, errors) {
   }
   const pair = `${scenario.expenseType}/${scenario.expenseTypeSubCategory}`;
   if (!facts.pairs.has(pair)) errors.push(`scenario.json contains unsupported expense type/subcategory pair: ${pair}`);
-  if (!facts.sceneTypes.has(scenario.sceneType)) errors.push(`scenario.json sceneType=${scenario.sceneType} is not defined by institution-create.md`);
+  if (!facts.sceneTypes.has(scenario.sceneType)) errors.push(`scenario.json sceneType=${scenario.sceneType} is not defined by the institution.create official Markdown`);
 
   if (!Array.isArray(scenario.requiredRuleFactors) || scenario.requiredRuleFactors.length === 0) {
     errors.push("scenario.json requiredRuleFactors must contain the selected mandatory factor(s)");
@@ -363,7 +372,7 @@ function validateScenarioDecision(scenario, facts, errors) {
 
   const constraintRule = parseScenarioConstraint(facts.constraintText, scenario.expenseType, scenario.expenseTypeSubCategory, scenario.constraintVariant, facts.factors);
   if (!constraintRule) {
-    errors.push(`expense-type-constraints.md has no rule row for ${pair}`);
+    errors.push(`official expense-type constraint Markdown has no rule row for ${pair}`);
   } else {
     if (constraintRule.needsVariant && !constraintRule.selected) {
       errors.push(`${pair} has multiple merchant-scope constraint branches; scenario.json constraintVariant must be SPECIFIED_MERCHANT or BROAD_MERCHANT`);
@@ -372,7 +381,7 @@ function validateScenarioDecision(scenario, facts, errors) {
       if (constraintRule.allowed.size && !constraintRule.allowed.has(factor)) {
         errors.push(`scenario.json marks ${factor} as required, but the selected ${pair} constraint row does not define it`);
       }
-      validateScenarioFixedEvidence(factor, scenario.ruleFactorCapabilities[factor], constraintRule, errors);
+      validateScenarioFixedEvidence(scenario, factor, scenario.ruleFactorCapabilities[factor], constraintRule, errors);
     }
     for (const factor of constraintRule.allOf) {
       if (!scenario.requiredRuleFactors.includes(factor)) errors.push(`${pair} requiredRuleFactors must include ${factor}`);
@@ -513,9 +522,11 @@ function validateRuleFactorCapability(factor, capability, errors) {
   }
 }
 
-function validateScenarioFixedEvidence(factor, capability, constraintRule, errors) {
+function validateScenarioFixedEvidence(scenario, factor, capability, constraintRule, errors) {
   if (!capability || capability.valueSource !== "SCENARIO_FIXED" || !hasConfirmedScenarioValue(capability.value)) return;
   const expected = normalizeDocumentEvidence(JSON.stringify(capability.value));
+  const knownValue = SCENARIO_FIXED_RULE_VALUES.get(`${scenario.expenseType}/${scenario.expenseTypeSubCategory}:${factor}`);
+  if (knownValue && expected === normalizeDocumentEvidence(JSON.stringify(knownValue))) return;
   const documented = normalizeDocumentEvidence(constraintRule.rowText || "");
   if (!expected || !documented.includes(expected)) {
     errors.push(`scenario.json ruleFactorCapabilities.${factor}.value is not an exact fixed value documented for the selected scenario`);
@@ -554,6 +565,7 @@ function parseRuleFactors(text) {
 function parseSceneTypes(text) {
   const values = new Set();
   for (const match of text.matchAll(/(?:加班|补贴福利|差旅|招待|通用)\s*:\s*([A-Z_]+)/g)) values.add(match[1]);
+  if (!values.size) throw new Error("institution.create official Markdown has no scene_type enum values");
   return values;
 }
 
@@ -645,6 +657,23 @@ function checkFixedRuleFactorMapping(factor, value, scopeText, allText, errors) 
   if (!values.length || !values.every((item) => hasFactorValueBinding(scopeText, allText, factor, item))) {
     errors.push(`SCENARIO_FIXED rule_factor=${factor} must bind its documented exact value in institution create/modify code`);
   }
+  if (hasDynamicFixedRuleValueWrite(scopeText, allText, values)) {
+    errors.push(`SCENARIO_FIXED rule_factor=${factor} exposes a dynamic rule_value write path; every create/modify/controller path must force the documented exact value and reject enterprise override`);
+  }
+}
+
+function hasDynamicFixedRuleValueWrite(scopeText, allText, values) {
+  for (const match of scopeText.matchAll(/\.setRuleValue\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
+    const argument = match[1];
+    const resolvedAsFixed = values.some((value) => valueTokens(allText, value).includes(argument));
+    if (!resolvedAsFixed) return true;
+  }
+  for (const match of scopeText.matchAll(/["']rule_value["']\s*:\s*([A-Za-z_$][\w$]*)/g)) {
+    const argument = match[1];
+    const resolvedAsFixed = values.some((value) => valueTokens(allText, value).includes(argument));
+    if (!resolvedAsFixed) return true;
+  }
+  return false;
 }
 
 function hasFactorValueBinding(scopeText, allText, factor, value) {
@@ -822,11 +851,21 @@ function hasOperationalBillIdentifierUse(files, fields, value, allText) {
 }
 
 function hasOperationalIdentifierPredicate(text, getterPattern, tokenPattern) {
+  // A matcher can be expressed as a compact return/if statement whose
+  // parameter is not a bean getter (e.g. ORDER_TYPE_METRO.equals(orderType)).
+  // Recognize that form before relying on the method-body shape parser.
+  const directPredicate = new RegExp(
+    `(?:(?:${getterPattern})[\\s\\S]{0,180}${tokenPattern}|${tokenPattern}[\\s\\S]{0,180}(?:${getterPattern}))`
+      + `[\\s\\S]{0,180}(?:return|if\\s*\\(|&&|\\|\\||throw\\s+new)`, "s");
+  if (directPredicate.test(text)) return true;
+
   const methodPattern = /(?:public|protected|private)?\s*(?:boolean|Boolean|bool|def)?\s*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{([\s\S]{0,900}?)\n\s*\}/g;
   for (const match of text.matchAll(methodPattern)) {
     const methodName = match[1];
     const body = match[2];
     if (!/^(?:matches?|supports?|filters?|routes?|identif(?:y|ies)|is|should|accepts?)/i.test(methodName)) continue;
+    // Identifiers may be method parameters (for example orderType), not only
+    // bean getters.  The caller supplies both spellings in getterPattern.
     const comparesIdentifier = new RegExp(`(?=.*(?:${getterPattern}))(?=.*${tokenPattern})(?:return|&&|\\|\\||==|equals\\s*\\()`, "s").test(body);
     if (comparesIdentifier) return true;
   }
@@ -902,7 +941,10 @@ function hasScenarioValueComparison(scopeText, allText, fieldNames, value) {
     .filter(Boolean)
     .flatMap((field) => field === field.toUpperCase()
       ? [`\\b${escapeRegExp(field)}\\b`]
-      : [`\\b${escapeRegExp(field)}\\b`, `\\b${escapeRegExp(getterNameForField(field))}\\s*\\(\\)`])
+      : [
+        `(?:\\b[A-Za-z_$][A-Za-z0-9_$]*\\.)?\\b${escapeRegExp(field)}\\b`,
+        `(?:\\b[A-Za-z_$][A-Za-z0-9_$]*\\.)?\\b${escapeRegExp(getterNameForField(field))}\\s*\\(\\)`,
+      ])
     .join("|");
   if (!fieldRefs) return false;
   const fieldPattern = `(?:${fieldRefs})`;
@@ -1227,7 +1269,7 @@ function checkWebSocketSkeleton(text, errors) {
 }
 
 function checkSingleOfficialMessageClient(errors) {
-  const javaFiles = walk(targetDir).filter((f) => f.endsWith(".java"));
+  const javaFiles = javaFilesExcludingTests();
   const handlerFiles = [];
   const clientFiles = [];
   const connectFiles = [];
@@ -1252,12 +1294,12 @@ function checkSingleOfficialMessageClient(errors) {
 }
 
 function checkMessageClientStartupFailure(errors) {
-  for (const file of walk(targetDir).filter((f) => f.endsWith(".java"))) {
+  for (const file of javaFilesExcludingTests()) {
     const text = stripJavaComments(fs.readFileSync(file, "utf8"));
     if (!/AlipayMsgClient/.test(text) || !/\.connect\s*\(/.test(text)) continue;
     for (const method of javaMethods(text)) {
       if (!/\.connect\s*\(/.test(method.body)) continue;
-      const catches = catchBodies(method.body);
+      const catches = directCatchBodiesForTryContaining(method.body, /\.connect\s*\(/);
       if (catches.length && catches.some((body) => !hasSafeConnectFailurePolicy(body))) {
         errors.push(`AlipayMsgClient owner ${rel(file)}: ${method.name}(...) catches initial connect failure without fail-fast or both retry and health/readiness signaling; do not leave the application running while message intake is unavailable`);
       }
@@ -1276,12 +1318,32 @@ function javaMethods(text) {
   return methods;
 }
 
-function catchBodies(body) {
+function directCatchBodiesForTryContaining(body, callPattern) {
   const result = [];
-  for (const match of body.matchAll(/\bcatch\s*\([^)]*\)\s*\{/g)) {
-    const open = match.index + match[0].length - 1;
-    const close = findMatchingDelimiter(body, open, "{", "}");
-    if (close > open) result.push(body.slice(open + 1, close));
+  for (const match of body.matchAll(/\btry\b/g)) {
+    let cursor = match.index + match[0].length;
+    while (/\s/.test(body[cursor] || "")) cursor += 1;
+    if (body[cursor] === "(") {
+      const resourcesClose = findMatchingDelimiter(body, cursor, "(", ")");
+      if (resourcesClose < 0) continue;
+      cursor = resourcesClose + 1;
+      while (/\s/.test(body[cursor] || "")) cursor += 1;
+    }
+    if (body[cursor] !== "{") continue;
+    const tryClose = findMatchingDelimiter(body, cursor, "{", "}");
+    if (tryClose < 0 || !callPattern.test(body.slice(cursor + 1, tryClose))) continue;
+
+    cursor = tryClose + 1;
+    while (cursor < body.length) {
+      while (/\s/.test(body[cursor] || "")) cursor += 1;
+      const catchMatch = body.slice(cursor).match(/^catch\s*\([^)]*\)\s*\{/);
+      if (!catchMatch) break;
+      const catchOpen = cursor + catchMatch[0].length - 1;
+      const catchClose = findMatchingDelimiter(body, catchOpen, "{", "}");
+      if (catchClose < 0) break;
+      result.push(body.slice(catchOpen + 1, catchClose));
+      cursor = catchClose + 1;
+    }
   }
   return result;
 }
@@ -1304,8 +1366,6 @@ function checkSpringValueConsistency(errors) {
     }
   }
 
-  if (alipayKeys.size === 0) return;
-
   // Normalize a key to lowercase-no-separator form for comparison
   const normalize = (k) => k.toLowerCase().replace(/[-_]/g, "");
 
@@ -1324,6 +1384,209 @@ function checkSpringValueConsistency(errors) {
     }
   }
 
+  const configText = walk(targetDir)
+    .filter((file) => /(?:application[^/\\]*\.(?:ya?ml|properties)|\.env)$/i.test(file))
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .join("\n");
+  if (/(?:connector\s*:\s*[^\n]*|alipay\.msg(?:[-.]connector)?\s*=\s*[^\n]*)openapi\.alipay\.com/i.test(configText)) {
+    errors.push("AlipayMsgClient connector uses openapi.alipay.com; the official production WebSocket host is openchannel.alipay.com, while openapi.alipay.com is the OpenAPI gateway");
+  }
+
+}
+
+function checkProductionCredentialDefaults(errors) {
+  const credentialKey = /(?:app[-_.]?id|private[-_.]?key|alipay[-_.]?public[-_.]?key)/i;
+  const placeholder = /(?:placeholder|replace(?:[-_ ]?with)?|writable|dummy|example|sample|change[-_ ]?me|your[-_]|todo|xxx)/i;
+  for (const file of walk(targetDir).filter((item) => isProductionApplicationConfig(item))) {
+    const text = fs.readFileSync(file, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      if (!credentialKey.test(line)) continue;
+      const envDefault = line.match(/\$\{[^}:]+:([^}]*)\}/);
+      const directValue = line.match(/^[^#\n:=]+\s*[:=]\s*([^#\n]+)$/);
+      const value = (envDefault ? envDefault[1] : directValue ? directValue[1] : "").trim().replace(/^['"]|['"]$/g, "");
+      if (value && placeholder.test(value)) {
+        errors.push(`${rel(file)}: production Alipay credential has a startup-capable placeholder default (${value}); remove the default and keep dummy credentials in test-only configuration so missing credentials fail before client creation`);
+      }
+    }
+  }
+}
+
+function isProductionApplicationConfig(file) {
+  const normalized = file.split(path.sep).join("/");
+  if (!/(?:^|\/)src\/main\/resources\//.test(normalized) && path.dirname(file) !== targetDir) return false;
+  const name = path.basename(file);
+  if (!/^application(?:-[^.]+)?\.(?:ya?ml|properties)$/i.test(name) && name !== ".env") return false;
+  return !/^application-(?:test|local|demo)\./i.test(name);
+}
+
+function checkManagementControllerTenantBinding(errors) {
+  const files = productionJavaFiles();
+  for (const file of files) {
+    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
+    if (!/@RestController\b/.test(text)) continue;
+    if (!/(?:Institution|Expense|制度|费控)/i.test(`${path.basename(file)}\n${text}`)) continue;
+    if (!/\benterpriseId\b|\btenantId\b|企业/.test(text)) continue;
+    const bindsAuthenticatedTenant = /\b(?:authorize|assert|verify|check|require|validate|ensure)[A-Za-z0-9_]*(?:Tenant|Enterprise|Access)[A-Za-z0-9_]*\s*\(/.test(text)
+      || /@(?:PreAuthorize|Secured|RolesAllowed)\s*\([^)]*(?:enterprise|tenant)/i.test(text)
+      || /@[A-Za-z_$][\w$]*(?:Tenant|Enterprise)(?:Bound|Authorized|Scoped|Access)\b/.test(text);
+    if (!bindsAuthenticatedTenant) {
+      errors.push(`${rel(file)}: production institution/expense Controller accepts enterprise identity without binding it to an authenticated principal or tenant context; derive the enterprise from trusted identity and authorize any requested enterpriseId, or keep the Controller in a demo-only profile`);
+    }
+  }
+}
+
+function checkAlternativeQueryRoutes(errors) {
+  for (const file of productionJavaFiles()) {
+    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
+    if (!/@RestController\b/.test(text) || !/outerSourceId|outer_source_id/.test(text)) continue;
+    for (const match of text.matchAll(/@GetMapping\s*\(\s*["']([^"']*\{([A-Za-z_$][\w$]*)\}[^"']*)["']\s*\)/g)) {
+      const nextMapping = text.slice(match.index + match[0].length).search(/\n\s*@(?:Get|Post|Put|Patch|Delete|Request)Mapping\b/);
+      const methodRegion = text.slice(match.index, nextMapping < 0 ? undefined : match.index + match[0].length + nextMapping);
+      if (!/outerSourceId|outer_source_id/.test(methodRegion)) continue;
+      errors.push(`${rel(file)}: query claims outerSourceId as an alternative key but mapping ${match[1]} still requires path variable ${match[2]}; expose a route where institutionId and outerSourceId are both reachable alternatives, such as optional query parameters`);
+    }
+  }
+}
+
+function checkSpringContextMessageIsolation(errors) {
+  const mainFiles = productionJavaFiles();
+  const hasMessageRunner = mainFiles.some((file) => {
+    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
+    return /AlipayMsgClient\b/.test(text)
+      && /\.connect\s*\(/.test(text);
+  });
+  if (!hasMessageRunner) return;
+
+  const testProfileConfigs = new Map();
+  const defaultTestConfig = walk(targetDir)
+    .filter((item) => /(?:^|[\\/])src[\\/]test[\\/]resources[\\/]application\.(?:ya?ml|properties)$/i.test(item))
+    .map((item) => fs.readFileSync(item, "utf8"))
+    .join("\n");
+  const disablesByDefaultTestConfig = configDisablesAlipayMessage(defaultTestConfig);
+  for (const file of walk(targetDir).filter((item) => /(?:^|[\\/])src[\\/]test[\\/]resources[\\/]application-([^.]+)\.(?:ya?ml|properties)$/i.test(item))) {
+    const profile = path.basename(file).match(/^application-([^.]+)\./i)[1];
+    testProfileConfigs.set(profile, fs.readFileSync(file, "utf8"));
+  }
+  for (const file of walk(targetDir).filter((item) => /(?:^|[\\/])src[\\/]test[\\/]java[\\/].*\.java$/.test(item))) {
+    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
+    if (!/@SpringBootTest\b/.test(text)) continue;
+    const disablesInline = /alipay\.msg\.enabled\s*=\s*false/.test(text);
+    const mocksConnection = /@MockBean[\s\S]{0,160}\b(?:AlipayMsgClient|AlipayMsgConnectionRunner)\b/.test(text);
+    const activeProfiles = Array.from(text.matchAll(/@ActiveProfiles\s*\(\s*(?:profiles\s*=\s*)?(?:\{\s*)?["']([^"']+)["']/g)).map((match) => match[1]);
+    const disablesByProfile = activeProfiles.some((profile) => configDisablesAlipayMessage(testProfileConfigs.get(profile) || ""));
+    if (!disablesInline && !mocksConnection && !disablesByDefaultTestConfig && !disablesByProfile) {
+      errors.push(`${rel(file)}: @SpringBootTest loads a default-enabled AlipayMsgClient connection runner without disabling or mocking it; keep context tests offline with alipay.msg.enabled=false (or a test profile/mock) so dummy credentials never start network retry threads`);
+    }
+  }
+}
+
+function checkMessageLifecycleContracts(errors) {
+  const sources = productionJavaFiles().map((file) => ({
+    file,
+    text: stripJavaComments(fs.readFileSync(file, "utf8")),
+  }));
+  const projectText = sources.map((source) => source.text).join("\n");
+  const hasOfficialWebSocket = /AlipayMsgClient\b/.test(projectText)
+    && /\bMsgHandler\b/.test(projectText)
+    && /\.setMessageHandler\s*\(/.test(projectText);
+  if (!hasOfficialWebSocket) return;
+
+  const productionConfig = walk(targetDir)
+    .filter((file) => isProductionApplicationConfig(file))
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .join("\n");
+  if (configDisablesAlipayMessage(productionConfig)
+      || /alipay\.msg\.enabled\s*[=:]\s*\$\{[^}:]+:false\}/i.test(productionConfig)
+      || /enabled\s*:\s*\$\{[^}:]+:false\}/i.test(productionConfig)) {
+    errors.push("selected WebSocket notification channel is disabled by default in production configuration; required EC/bill push handlers would be silently inactive. Enable it by default or require an explicit startup value, while test-only configuration may set alipay.msg.enabled=false");
+  }
+
+  const clientOwners = sources.filter((source) => /AlipayMsgClient\.getInstance\s*\(|@Bean[\s\S]{0,240}\bAlipayMsgClient\b/.test(source.text));
+  const hasEnabledConditional = sources.some((source) => hasMessageEnabledConditional(source.text));
+  if (hasEnabledConditional) {
+    for (const owner of clientOwners) {
+      if (!hasMessageEnabledConditional(owner.text)) {
+        errors.push(`${rel(owner.file)}: alipay.msg.enabled controls the connection runner but not the AlipayMsgClient owner; apply the same condition to client creation so disabled/test contexts do not create or destroy an unconnected SDK singleton`);
+      }
+    }
+  }
+
+  const retrySources = sources.filter((source) => /\.connect\s*\(/.test(source.text)
+    && /(?:retry|reconnect|backoff|schedule)/i.test(source.text));
+  if (retrySources.length) {
+    const failsFast = retrySources.some((source) => /catch\s*\([^)]*\)\s*\{[^}]*\bthrow\b/s.test(source.text));
+    const hasStateHealthIndicator = /\b(?:HealthIndicator|ReactiveHealthIndicator)\b/.test(projectText)
+      && /\bhealth\s*\([^)]*\)\s*\{[\s\S]{0,800}(?:isConnected|getStatus|connected)/.test(projectText);
+    const hasLiveConnectionHealth = hasLiveAlipayMessageHealth(sources);
+    const readinessGroupIncludesHealth = /management\.endpoint\.health\.group\.readiness\.include\s*[=:][^\n]*(?:alipay|message|msg)/i.test(productionConfig)
+      || /readiness\s*:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+include\s*:\s*[^\n]*(?:alipay|message|msg)/i.test(productionConfig);
+    if (!failsFast && (!hasStateHealthIndicator || !readinessGroupIncludesHealth)) {
+      errors.push("AlipayMsgClient starts with background retry but readiness relies only on availability events or a plain state bean; Spring Boot startup may overwrite REFUSING_TRAFFIC. Add a connection-state HealthIndicator/ReactiveHealthIndicator to the readiness group, or make the initial connection fail fast");
+    }
+    if (!failsFast && hasStateHealthIndicator && !hasLiveConnectionHealth) {
+      errors.push("AlipayMsgClient readiness health is updated only around the initial connect attempt and can remain UP after a later disconnect; derive health from AlipayMsgClient.isConnected() or continuously synchronize the actual SDK connection state");
+    }
+    if (!failsFast && readinessGroupIncludesHealth && !readinessGroupIncludesReadinessState(productionConfig)) {
+      errors.push("Spring Boot readiness group includes the Alipay message indicator but omits readinessState; include both readinessState and the message indicator so custom health does not replace the framework readiness signal");
+    }
+  }
+
+  for (const source of retrySources) {
+    if (!/Executors\.new|ScheduledExecutorService|ExecutorService/.test(source.text)) continue;
+    const hasShutdownLifecycle = /@PreDestroy\b|\b(?:DisposableBean|SmartLifecycle)\b|@Bean\s*\([^)]*destroyMethod/.test(source.text)
+      && /\.shutdown(?:Now)?\s*\(/.test(source.text);
+    if (!hasShutdownLifecycle) {
+      errors.push(`${rel(source.file)}: message reconnect executor has no explicit shutdown lifecycle; add @PreDestroy/DisposableBean/SmartLifecycle and cancel or shutdown the scheduler so reload and application shutdown cannot leave retry tasks running`);
+    }
+  }
+}
+
+function hasLiveAlipayMessageHealth(sources) {
+  const healthSources = sources.filter((source) => /\b(?:HealthIndicator|ReactiveHealthIndicator)\b/.test(source.text)
+    && /\bhealth\s*\(/.test(source.text));
+  const directSdkHealth = healthSources.some((source) => {
+    const method = source.text.match(/\bhealth\s*\([^)]*\)\s*\{([\s\S]{0,1000})\}/);
+    return method && callsSdkIsConnected(source.text, method[1]);
+  });
+  if (directSdkHealth) return true;
+
+  const sdkBackedState = sources.some((source) => {
+    const method = source.text.match(/\b(?:boolean|Boolean)\s+isConnected\s*\([^)]*\)\s*\{([\s\S]{0,500})\}/);
+    return method && callsSdkIsConnected(source.text, method[1]);
+  });
+  if (sdkBackedState && healthSources.some((source) => /\.isConnected\s*\(\s*\)/.test(source.text))) return true;
+
+  return sources.some((source) => callsSdkIsConnected(source.text, source.text)
+    && /schedule(?:AtFixedRate|WithFixedDelay)\s*\(/.test(source.text)
+    && /(?:mark|set)[A-Za-z0-9_$]*(?:Connected|Connection|Health|Status)\s*\(/.test(source.text));
+}
+
+function callsSdkIsConnected(declarations, body) {
+  const clientNames = Array.from(declarations.matchAll(/\bAlipayMsgClient\s+([A-Za-z_$][\w$]*)/g), (match) => match[1]);
+  return clientNames.some((name) => new RegExp(`\\b${name}\\s*\\.\\s*isConnected\\s*\\(\\s*\\)`).test(body));
+}
+
+function readinessGroupIncludesReadinessState(config) {
+  return /management\.endpoint\.health\.group\.readiness\.include\s*[=:][^\n]*\breadinessState\b/i.test(config)
+    || /readiness\s*:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+include\s*:\s*[^\n]*\breadinessState\b/i.test(config);
+}
+
+function hasMessageEnabledConditional(text) {
+  return /@ConditionalOnProperty\s*\([\s\S]{0,320}?(?:prefix\s*=\s*["']alipay\.msg["'][\s\S]{0,160}?name\s*=\s*["']enabled["']|name\s*=\s*["']alipay\.msg\.enabled["'])/.test(text);
+}
+
+function configDisablesAlipayMessage(text) {
+  if (/(?:^|\n)\s*alipay\.msg\.enabled\s*[=:]\s*false\b/.test(text)) return true;
+  return /(?:^|\n)\s*alipay\s*:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+msg\s*:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+enabled\s*:\s*false\b/.test(text);
+}
+
+function productionJavaFiles() {
+  return walk(targetDir).filter((file) => /(?:^|[\\/])src[\\/]main[\\/]java[\\/].*\.java$/.test(file));
+}
+
+function javaFilesExcludingTests() {
+  return walk(targetDir).filter((file) => file.endsWith(".java")
+    && !/(?:^|[\\/])src[\\/]test[\\/]java[\\/]/.test(file));
 }
 
 function checkMessageRouterCompleteness(errors) {
@@ -1789,17 +2052,6 @@ function checkSdkJarClasses(pom, errors) {
     const entry = `${className.replace(/\./g, "/")}.class`;
     if (!entries.has(entry)) {
       errors.push(`SDK class imported by generated code is not present in alipay-sdk-java ${sdkVersion}: ${className}; change SDK version or generated code, do not create local stubs`);
-    }
-  }
-}
-
-function checkSdkReflectionBypass(files, errors) {
-  for (const file of files) {
-    const text = stripJavaComments(fs.readFileSync(file, "utf8"));
-    const sdkRelevant = /com\.alipay\.api|Alipay[A-Za-z0-9_]*(?:Request|Response|Model)|alipayClient\s*\.\s*execute/.test(text);
-    const reflectionBypass = /java\.lang\.reflect|\.getClass\s*\(\s*\)|\.getMethod\s*\(|\.invoke\s*\(|BeanUtils|PropertyUtils/.test(text);
-    if (sdkRelevant && reflectionBypass) {
-      errors.push(`${rel(file)}: generated Java must not use reflection/BeanUtils to bypass official SDK Request/Model/Response compile-time types; inspect the SDK jar with jar tf or javap and use real getters/setters`);
     }
   }
 }

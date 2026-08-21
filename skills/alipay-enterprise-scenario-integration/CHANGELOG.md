@@ -1,22 +1,27 @@
 # Changelog
 
+## 0.4.0
+
+- **文档保鲜：** 接口字段、枚举和规则校验改为以官方 Markdown 链接为事实源，支持运行时获取与失败重试，减少本地快照过期风险。
+- **场景接入：** 明确场景固定值与企业策略配置的边界，完善规则因子来源、企业输入校验和来源标识约定。
+- **生成与验收：** 强化 SDK 预检、WebSocket 生命周期、生产持久化边界、共享消息路由和聚合 validator，降低跨域生成代码的误报与漏检。
+
 ## 0.3.0
 
-- Add enterprise invoice as an explicit optional domain for metro scenarios, including installation, orchestration, shared routing, and aggregate validation.
-- Clarify rule-factor ownership and default metro institution `scene_type` to `TRAVEL`.
-- Harden invoice SDK compatibility, response semantics, notification reliability, and production persistence boundaries.
-- Strengthen fail-closed Spring wiring and greenfield application-context gates.
+- **发票集成：** 将发票作为地铁场景的显式选接域，支持子 Skill 编排和端到端校验。
+- **场景规则：** 明确固定值与企业配置值的边界，并将地铁 `scene_type` 默认设为 `TRAVEL`。
+- **交付质量：** 加强 SDK 兼容性、通知可靠性、失败关闭持久化边界和应用上下文校验。
 
 ## 0.2.0
 
-- Refine scenario decisions so default funding source, public-payment priority, and project type are inferred first and only ask users when required evidence is missing or conflicting.
-- Add project-type inference and existing-project integration contract rules for safer incremental adoption.
-- Improve code generation guardrails for SDK preflight, interface evidence, fail-closed integration points, message routing, and aggregate validation.
-- Add optional extension installation support while keeping non-selected extensions silent by default.
-- Refresh bundled domain Skill ZIP files and validator regression coverage.
+- **场景决策：** 优先推断默认资金来源、公付优先级和项目类型，仅在证据缺失或冲突时询问用户。
+- **项目衔接：** 增加项目类型推断和已有项目增量接入契约。
+- **代码生成：** 完善 SDK 预检、接口证据、失败关闭扩展点、消息路由和聚合校验门禁。
+- **可选扩展：** 支持按需安装扩展，未选扩展默认不读取、不生成。
+- **维护质量：** 更新内置子 Skill 压缩包和 validator 回归覆盖。
 
 ## 0.1.0
 
-- Establish the version baseline for the enterprise scenario integration Skill.
-- Support single-scenario enterprise-code integration across EC, expense-control, and bill domains.
-- Include subskill auto-install, scenario decision rules, code generation guardrails, and aggregate validation.
+- **版本基线：** 建立企业码场景接入 Skill 的版本基线。
+- **基础场景：** 支持员企、费控和账单域的单场景企业码接入。
+- **接入能力：** 提供子 Skill 自动安装、场景决策规则、代码生成门禁和聚合校验。

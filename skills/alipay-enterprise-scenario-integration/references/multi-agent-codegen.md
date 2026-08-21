@@ -69,7 +69,7 @@ Java/Maven 项目中，SDK 预检是启动子 Agent 生成接口调用代码前�
 启动子 Agent 时必须显式传入对应子 Skill，而不是只让子 Agent 自行读取 references 文档。若 sub Agent/Task 工具支持结构化输入，必须把对应 `SKILL.md` 作为 skill item/mention 传入；若工具只支持文本输入，任务消息必须写明对应子 Skill 路径，并要求子 Agent 第一步加载该 `SKILL.md`。
 
 - 员企 Agent：加载 `alipay-enterprise-ec/SKILL.md`；沿用企业入驻模式、员工签约模式、消息接入方式和员企模块清单；只写员企目录。
-- 费控 Agent：加载 `alipay-enterprise-expense-control/SKILL.md`；读取主 Agent 已确认的 `.alipay-skill/scenario.json`，沿用费控模式、模块清单、费用类型、费用子类、因公场景、必用规则因子及其配置来源；只写费控目录。场景固定值按文档预置，企业输入按租户配置契约实现，不重新猜测场景或默认值。
+- 费控 Agent：加载 `alipay-enterprise-expense-control/SKILL.md`；读取主 Agent 已确认的 `.alipay-skill/scenario.json`，沿用费控模式、模块清单、费用类型、费用子类、因公场景、必用规则因子及其配置来源；只写费控目录。场景固定值按文档预置，企业输入按租户配置契约实现，不重新猜测场景或默认值；同时沿用费控 Skill 的接入来源标识约定，该约定不是用户决策项或业务配置。
 - 账单 Agent：加载 `alipay-enterprise-bill/SKILL.md`；读取主 Agent已确认的 `.alipay-skill/scenario.json`，沿用账单模式、消息接入方式、账单模块清单和场景识别字段；只写账单目录。
 - 发票 Agent：仅在地铁发票已启用时加载 `alipay-enterprise-invoice/SKILL.md`；沿用 `invoiceIntegration.enabled=true`、发票模块清单、SDK 版本和统一消息接入方式；完整生成企业抬头、开票规则、发票消息和单笔查询，只写发票目录。
 - 三方免密代扣 Agent：仅在火车票免密代扣启用时加载 `alipay-third-party-withholding/SKILL.md`；沿用上游已确认的 `thirdPartyWithholding.enabled=true`、MAPI 网关和火车票场景；一次性生成完整签约 + 代扣链路，只写 `withholding/**`、`mapi/**` 或用户确认的免密代扣目录。
