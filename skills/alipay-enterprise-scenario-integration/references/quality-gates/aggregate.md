@@ -21,6 +21,18 @@
 5. 发票通知沿用主方案已确定的 HTTP(S) 或 WebSocket 通道。WebSocket 时仅生成可被共享 `MsgHandler` 路由的发票 handler；HTTP(S) 时沿用已有统一应用网关和验签入口。
 6. 非地铁场景必须省略 `invoiceIntegration`；不展示发票选项，也不用 `enabled=false` 污染其他场景决策。
 
+## 生产入口与配置门禁
+
+1. Java WebSocket 线上连接地址使用官方文档规定的 `openchannel.alipay.com`；不得把 OpenAPI 网关域名 `openapi.alipay.com` 配成消息 connector。自定义 connector 只能来自接入方明确提供的合法环境配置，不能以错误默认值兜底。
+2. 首次消息建连失败选择“后台重试 + readiness”时，readiness 必须真实接入 Spring Boot 可用性状态、Actuator `HealthIndicator` 或接入方已有健康检查框架；只维护普通 Bean 布尔值或写日志不算拒绝流量。无法证明真实 readiness 时使用 fail-fast。
+3. 生产配置不得给 `app-id`、应用私钥或支付宝公钥提供可启动的占位默认值。测试凭据只放在测试 profile；生产缺少凭据或仍为占位值时必须在创建 `AlipayClient` / `AlipayMsgClient` 前失败启动。
+4. 新工程生成可直接访问的制度创建、修改、删除等管理 Controller 时，必须绑定接入方认证身份与企业租户，不能信任请求参数中的 `enterpriseId` 作为授权依据。无法确定认证体系时只交付 Service/Port，或把 Controller 明确限制为不可生产使用的 demo profile。
+5. 同一查询能力支持多个替代键时，HTTP 路由必须让每个合法分支都可达；不得把声明可选的键放进必选 path segment，导致另一分支只能在 Service 中存在、无法通过入口调用。
+6. 加载真实应用的 Spring 上下文测试必须关闭或 mock 消息连接 Runner；测试 profile 可使用 dummy 凭据，但不得让其进入真实 `AlipayMsgClient.connect()`、后台重试或销毁流程。所有 `@SpringBootTest` 都要独立满足该约束，不能依赖另一个测试类的上下文配置。
+7. 方案已选择 WebSocket 且员企/账单推通知属于必选能力时，生产配置不得默认关闭消息通道；可以默认启用，或要求部署方显式提供开关并在缺失时启动失败。测试配置可显式关闭。开关必须同时控制 `AlipayMsgClient` 创建和连接 Runner，禁用时不得创建、销毁未连接的 SDK 单例。
+8. 首次连接采用后台重试时，不能只依赖 `AvailabilityChangeEvent` 切换 readiness：Spring Boot 完成启动可能再次发布 `ACCEPTING_TRAFFIC`。必须提供基于 `AlipayMsgClient.isConnected()` 实时判定、或持续同步实际连接状态的 `HealthIndicator` / `ReactiveHealthIndicator`；只在首次 `connect()` 成功/失败时写一次布尔值不算持续健康检查。指标必须明确加入 readiness group；Spring Boot 自定义该组时同时保留 `readinessState`，不能用消息指标覆盖框架自身的就绪状态。无法满足时改为同步 fail-fast。
+9. 自建重连调度器必须通过 `@PreDestroy`、`DisposableBean` 或 `SmartLifecycle` 停止并取消待执行任务。启动/关闭竞争测试属于专项工程质量检查，不作为场景接入完整交付的聚合硬门禁。测试中的 SDK 建连桩接不属于生产建连站点，单一客户端所有权只按生产源码判断。
+
 ## SDK 来源门禁
 
 1. Java 代码生成前必须完成 SDK 预检：确认 SDK 版本来源、Maven 依赖可解析，并在生成后验证实际使用的 SDK 类存在。预检未通过不得生成 Java 接口调用代码。
@@ -59,7 +71,7 @@ curl -sL "https://central.sonatype.com/artifact/com.alipay.sdk/alipay-sdk-java"
 2. 每个字段只描述一个场景，不允许数组化的多场景输入。
 3. `expenseType` 与 `expenseTypeSubCategory` 必须是费控枚举文档中的合法组合，因公场景必须来自制度接口文档，并写入 `scenario.json` 的 `sceneType` 字段；用户或上下文未明确时，费用类型为 `METRO` 的地铁场景和票务类场景应默认为“差旅”（接口值 `TRAVEL`），其他场景应默认为“通用”（接口值 `DEFAULT`）。明确选择其它合法因公场景时可覆盖默认值。
 4. `requiredRuleFactors` 必须覆盖费控约束文档要求，`ruleFactorCapabilities` 必须为每个必用因子声明 `SCENARIO_FIXED` 或 `ENTERPRISE_INPUT`。顶层不得使用缺少归属信息的 `ruleFactorValues`，也不得把运行期校验数据声明为配置来源。
-5. `SCENARIO_FIXED` 必须携带当前场景文档明确给出的精确 `value` 和 `EXACT_MATCH`，允许生成具名场景常量；`ENTERPRISE_INPUT` 必须具备企业输入、校验和租户持久化。两类都必须正确映射到 `rule_value`。
+5. `SCENARIO_FIXED` 必须携带当前场景文档或场景接入规则明确给出的精确 `value` 和 `EXACT_MATCH`，允许生成具名场景常量；`ENTERPRISE_INPUT` 必须具备企业输入、校验和租户持久化。两类都必须正确映射到 `rule_value`。
 6. 内部费控时，`scenario.json` 必须确认制度额度/发放来源，且不得残留待确认值。具体来源类型、限额因子、手工发放接口和制度实现合法性由费控子 Skill 校验，主聚合层只检查该决策已形成并参与聚合。
 7. 用户未明确提出因公优先需求时，`businessPriority.enabled` 必须为 `false`，不得额外生成因公优先规则。
 8. 用户明确启用因公优先时，`businessPriority` 必须记录服务商支持的商户限制因子，`ruleFactorCapabilities` 必须包含这些因子和 `ALARM_CLOCK_TIME`；企业运行期输入及组合合法性由费控子 Skill 文档和本域 validator 校验。

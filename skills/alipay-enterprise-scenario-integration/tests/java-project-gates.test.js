@@ -7,6 +7,7 @@ const path = require("path");
 
 function run(gates) {
   testTransportContract(gates);
+  testSdkReflectionBypass(gates);
   testProductionState(gates);
   testStateTransitionPersistence(gates);
   testProfileWiring(gates);
@@ -16,6 +17,34 @@ function run(gates) {
   testBeanMethodBypass(gates);
   testAlipayMsgClientContracts(gates);
   testTestEvidence(gates);
+}
+
+function testSdkReflectionBypass(gates) {
+  const dir = temp("sdk-reflection");
+  const service = writeJava(dir, "EnterpriseTitleService.java", [
+    "import com.alipay.api.response.AlipayEbppInvoiceEnterpriseexctrlEmployertitleQueryResponse;",
+    "class EnterpriseTitleService {",
+    "  void parse(AlipayEbppInvoiceEnterpriseexctrlEmployertitleQueryResponse response) {",
+    "    try { parseBody(response.getBody()); }",
+    "    catch (Exception e) { log.warn(\"parse failed {}\", e.getClass().getSimpleName()); }",
+    "  }",
+    "}",
+  ]);
+  const loggingErrors = [];
+  gates.checkSdkReflectionBypass([service], loggingErrors, path.basename);
+  assert.deepStrictEqual(loggingErrors, []);
+
+  fs.writeFileSync(service, [
+    "import com.alipay.api.response.AlipayEbppInvoiceEnterpriseexctrlEmployertitleQueryResponse;",
+    "class EnterpriseTitleService {",
+    "  Object readMissingField(AlipayEbppInvoiceEnterpriseexctrlEmployertitleQueryResponse response) throws Exception {",
+    "    return response.getClass().getDeclaredMethod(\"getTitleCode\").invoke(response);",
+    "  }",
+    "}",
+  ].join("\n"));
+  const bypassErrors = [];
+  gates.checkSdkReflectionBypass([service], bypassErrors, path.basename);
+  assert.ok(bypassErrors.some((error) => /must not use reflection\/BeanUtils/.test(error)), bypassErrors.join("\n"));
 }
 
 function testStateTransitionPersistence(gates) {
@@ -228,6 +257,47 @@ function testAlipayMsgClientContracts(gates) {
   const validErrors = [];
   gates.checkJavaAlipayMsgClientContracts([initializer], validErrors, path.basename);
   assert.deepStrictEqual(validErrors, []);
+
+  const fakeHealth = writeJava(dir, "RetryingMsgClient.java", [
+    "class RetryingMsgClient {",
+    "  private AlipayMsgClient client;",
+    "  void connect() {",
+    "    try { client.connect(); } catch (Exception e) {",
+    "      health.markDown();",
+    "      retryScheduler.schedule(this::connect);",
+    "    }",
+    "  }",
+    "}",
+    "class MessageConnectionHealth { void markDown() {} }",
+  ]);
+  const fakeHealthErrors = [];
+  const unrelatedThrow = writeJava(
+    dir,
+    "UnrelatedService.java",
+    [
+      "class UnrelatedService {",
+      "  void call() { try { work(); } catch (Exception e) { throw new IllegalStateException(e); } }",
+      "  void work() {}",
+      "}",
+    ],
+  );
+  gates.checkJavaAlipayMsgClientContracts([fakeHealth, unrelatedThrow], fakeHealthErrors, path.basename);
+  assert.ok(fakeHealthErrors.some((error) => /no real readiness integration/.test(error)), fakeHealthErrors.join("\n"));
+
+  fs.writeFileSync(fakeHealth, [
+    "class RetryingMsgClient {",
+    "  private AlipayMsgClient client;",
+    "  void connect() {",
+    "    try { client.connect(); } catch (Exception e) {",
+    "      AvailabilityChangeEvent.publish(context, ReadinessState.REFUSING_TRAFFIC);",
+    "      retryScheduler.schedule(this::connect);",
+    "    }",
+    "  }",
+    "}",
+  ].join("\n"));
+  const readinessErrors = [];
+  gates.checkJavaAlipayMsgClientContracts([fakeHealth], readinessErrors, path.basename);
+  assert.ok(!readinessErrors.some((error) => /no real readiness integration/.test(error)), readinessErrors.join("\n"));
 }
 
 function testConcreteDemoDependency(gates) {

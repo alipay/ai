@@ -1,7 +1,7 @@
 {
   "name": "alipay-enterprise-scenario-integration",
-  "version": "0.3.0",
-  "updated_at": "2026-07-31",
+  "version": "0.4.0",
+  "updated_at": "2026-08-21",
   "source": "https://github.com/alipay/ai/tree/main/skills/alipay-enterprise-scenario-integration",
   "status": "pilot"
 }

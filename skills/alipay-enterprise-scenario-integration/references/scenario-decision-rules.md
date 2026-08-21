@@ -4,11 +4,11 @@
 
 开始场景决策前必须已通过 `tools/install_subskills.js` 安装并验证三个平级子 Skill。场景决策随后实时读取以下子 Skill 文档，不维护另一份字段白名单：
 
-- 费控 `references/common/expense-type-enum.md`
-- 费控 `references/common/expense-type-constraints.md`
-- 费控 `references/common/rule-factors.md`
+- 费控[费用类型枚举](https://ideservice.alipay.com/cms/site/07nn3i.md)
+- 费控[费用类型与规则因子约束](https://ideservice.alipay.com/cms/site/07nqp0.md)
+- 费控[使用规则因子枚举](https://ideservice.alipay.com/cms/site/07nqoz.md)
 - 制度创建/修改文档中的因公场景枚举（接口字段为 `scene_type`）
-- 账单 `references/common/expense-type-enum.md`
+- 账单[费用类型枚举](https://ideservice.alipay.com/cms/site/07nn3i.md)
 - 账单查询和订单文档中的 `expense_type`、`scene_code`、`order_type`、`order_content`
 
 火车票三方免密代扣是可选扩展，不属于开始场景决策的默认事实来源。只有用户明确提出免密代扣、三方代扣、代扣协议、自动扣款、先签约后扣款、火车票/12306 出票扣款或票代代扣等需求时，才通过以下命令额外安装并读取 `alipay-third-party-withholding`：
@@ -50,16 +50,16 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
 
 线下到店类同时提供“指定门店”和“广泛商户”约束时，必须确认其中一个分支，并在 `scenario.json` 中分别写为 `SPECIFIED_MERCHANT` 或 `BROAD_MERCHANT`；不同分支的必用规则因子不能混为一组。
 
-例如地铁场景可以从文档确定 `METRO/METRO` 和必用 `CARD_TYPE`，但具体卡编码随企业而异，应由企业配置。票务 `TICKET/TICKET` 的 `MERCHANT` 则由文档唯一限定为 12306 商户 PID `2088011519249952`，服务商直接预置，不让企业选择。
+例如地铁场景可以从文档确定 `METRO/METRO` 和必用 `CARD_TYPE`，但具体卡编码随企业而异，应由企业配置。票务 `TICKET/TICKET` 的 `MERCHANT` 按场景接入规则固定为 12306 商户 PID `2088011519249952`，服务商直接预置，不让企业选择。
 
 ## 规则因子配置责任
 
 规则因子的关键是确定配置责任，而不是一律要求企业输入。对所有必用因子以及已启用增强能力引入的因子，先从费控约束文档判断以下来源：
 
-1. `SCENARIO_FIXED`：当前费用场景文档给出唯一精确值。服务商使用具名场景常量预置并阻止企业覆盖，`validation=EXACT_MATCH`；`value` 必须能在当前场景约束行中精确找到。
+1. `SCENARIO_FIXED`：当前费用场景文档或场景接入规则给出唯一精确值。服务商使用具名场景常量预置并阻止企业覆盖，`validation=EXACT_MATCH`；`value` 必须能在对应规则中精确找到。创建、增加规则、修改条件、重建制度和对外 Controller 等所有写路径都只能重新写入该固定值，不得暴露通用 `newRuleValue`、Map 或请求体字段绕过固定值。
 2. `ENTERPRISE_INPUT`：值取决于企业策略。服务商提供企业维度的配置输入、约束校验和租户隔离持久化，配置变化后为该企业重建并提交制度。
 
-两类配置都必须在调用支付宝前失败关闭，并在制度创建或修改时映射到对应 `rule_value`。只有 `SCENARIO_FIXED` 可以在 `ruleFactorCapabilities` 内记录 `value`；不得恢复无归属信息的顶层 `ruleFactorValues`，也不得把服务商自行选择的默认值标成场景固定值。
+两类配置都必须在调用支付宝前失败关闭，并在制度创建或修改时映射到对应 `rule_value`。只有 `SCENARIO_FIXED` 可以在 `ruleFactorCapabilities` 内记录 `value`；不得恢复无归属信息的顶层 `ruleFactorValues`，也不得把服务商自行选择的默认值标成场景固定值。测试必须覆盖固定值写入以及任意其它值在 SDK 调用前被拒绝，不能只用正确固定值调用通用修改方法来证明不可覆盖。
 
 企业输入的 `validation` 使用 `DOCUMENTED_ENUM`、`DOCUMENTED_RANGE`、`DOCUMENTED_SCHEMA`、`BUSINESS_IDENTIFIER` 或 `DOCUMENTED_CONSTRAINTS`。具体枚举和结构仍以费控子 Skill 文档为事实源。
 
@@ -103,7 +103,7 @@ node alipay-enterprise-scenario-integration/tools/install_subskills.js --with al
 
 因公优先是可选增强能力，不属于场景接入的默认必选项。除非用户明确提出“需要因公优先”“企业码优先”“因公支付优先”等需求，否则不要主动询问，也不要把“是否启用因公优先”放进选择题或确认项；`scenario.json` 直接写入 `businessPriority.enabled=false` 和空的 `merchantRestrictionFactors`，继续后续决策。
 
-用户明确提出需要因公优先时，才判断当前场景是否支持。判断时读取费控子 Skill 的 `expense-type-constraints.md`，看当前费用类型/子类及已选约束分支是否能配置有效商户限制因子。
+用户明确提出需要因公优先时，才判断当前场景是否支持。判断时读取[官方费用类型与规则因子约束](https://ideservice.alipay.com/cms/site/07nqp0.md)，看当前费用类型/子类及已选约束分支是否能配置有效商户限制因子。
 
 以下场景不支持因公优先：
 

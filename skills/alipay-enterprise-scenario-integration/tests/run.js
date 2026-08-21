@@ -15,12 +15,14 @@ const runtime = require(path.join(scriptsDir, "lib", "validator-runtime.js"));
 const runtimePath = path.join(scriptsDir, "lib", "validator-runtime.js");
 const resolver = require(path.join(scriptsDir, "lib", "value-resolver.js"));
 const javaProjectGates = require(path.join(scriptsDir, "lib", "java-project-gates.js"));
+const docCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-doc-cache-"));
 
 testRuntime();
 testMissingSupportIsBroken();
 testValueResolver();
 require("./java-project-gates.test").run(javaProjectGates);
 testFixtures();
+testInstitutionSourceMarker();
 testScenarioDecisionGates();
 testRuleFactorValueSources();
 testMetroInvoiceSelectionGates();
@@ -28,6 +30,8 @@ testBillSceneIdentification();
 testBillIdentifierConstantComparison();
 testIfElseRouterGates();
 testMessageClientStartupFailurePolicy();
+testProductionEntryGates();
+testMessageLifecycleGates();
 testIntegrationContract();
 testSubskillInstaller();
 testSubskillInstallerUserRootResolution();
@@ -148,6 +152,47 @@ function testFixtures() {
   assertExit(path.join(__dirname, "fixtures", "invalid"), 1);
 }
 
+function testInstitutionSourceMarker() {
+  const validFixture = path.join(__dirname, "fixtures", "valid");
+
+  const nestedOnly = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-marker-nested-"));
+  copyDir(validFixture, nestedOnly);
+  const nestedExpense = fs.readFileSync(path.join(nestedOnly, "expense_service.py"), "utf8")
+    .replace(/^\s*"outer_source_id": build_ecs_outer_source_id.*\n/m, "")
+    .replace("\"outer_source_id\": \"metro-default-issue-rule\"", "\"outer_source_id\": build_ecs_outer_source_id(app_id, enterprise_id, provider_institution_id)");
+  fs.writeFileSync(path.join(nestedOnly, "expense_service.py"), nestedExpense);
+  const nestedResult = runNode([validator, nestedOnly]);
+  assert.strictEqual(nestedResult.status, 1, output(nestedResult));
+  assert.match(output(nestedResult), /integration source identifier to top-level outer_source_id/);
+
+  const versioned = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-marker-versioned-"));
+  copyDir(validFixture, versioned);
+  const versionedMarker = fs.readFileSync(path.join(versioned, "ecs_marker.py"), "utf8").replace("ECS_", "ECS_V1_");
+  fs.writeFileSync(path.join(versioned, "ecs_marker.py"), versionedMarker);
+  const versionedResult = runNode([validator, versioned]);
+  assert.strictEqual(versionedResult.status, 1, output(versionedResult));
+  assert.match(output(versionedResult), /must not contain a Skill version segment/);
+
+  const shortMarker = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-marker-short-"));
+  copyDir(validFixture, shortMarker);
+  const shortMarkerCode = fs.readFileSync(path.join(shortMarker, "ecs_marker.py"), "utf8").replace("[:60]", "[:32]");
+  fs.writeFileSync(path.join(shortMarker, "ecs_marker.py"), shortMarkerCode);
+  const shortMarkerResult = runNode([validator, shortMarker]);
+  assert.strictEqual(shortMarkerResult.status, 1, output(shortMarkerResult));
+  assert.match(output(shortMarkerResult), /documented deterministic 64-character format/);
+
+  const random = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-marker-random-"));
+  copyDir(validFixture, random);
+  fs.writeFileSync(path.join(random, "ecs_marker.py"), [
+    "import uuid",
+    "def build_ecs_outer_source_id(app_id, enterprise_id, provider_institution_id):",
+    "    return \"ECS_\" + (uuid.uuid4().hex * 2)[:60]",
+  ].join("\n"));
+  const randomResult = runNode([validator, random]);
+  assert.strictEqual(randomResult.status, 1, output(randomResult));
+  assert.match(output(randomResult), /documented deterministic 64-character format|stable across retries/);
+}
+
 function testScenarioDecisionGates() {
   const metro = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-scenario-metro-"));
   copyDir(path.join(__dirname, "fixtures", "valid"), metro);
@@ -165,11 +210,13 @@ function testScenarioDecisionGates() {
     "def save_rule_factor_config(enterprise_id, card_type):",
     "    validate_card_type(card_type)",
     "    RULE_CONFIG_STORE[enterprise_id] = {CARD_FACTOR: [card_type]}",
-    "def create_metro_institution(enterprise_id):",
+    "from ecs_marker import build_ecs_outer_source_id",
+    "def create_metro_institution(app_id, enterprise_id, provider_institution_id):",
     "    rule_factor_config = RULE_CONFIG_STORE[enterprise_id]",
     "    validate_card_type(rule_factor_config[CARD_FACTOR][0])",
     "    return {",
     "        \"method\": \"alipay.ebpp.invoice.institution.create\",",
+    "        \"outer_source_id\": build_ecs_outer_source_id(app_id, enterprise_id, provider_institution_id),",
     "        \"consult_mode\": \"0\",",
     "        \"issue_rule_info_list\": [{",
     "            \"issue_rule_name\": \"默认发放规则\",",
@@ -293,9 +340,11 @@ function testRuleFactorValueSources() {
     "SCENE_TYPE = \"TRAVEL\"",
     "MERCHANT_FACTOR = \"MERCHANT\"",
     "TICKET_MERCHANT_RULE = \"{\\\"2088011519249952\\\":[\\\"-1\\\"]}\"",
-    "def create_ticket_institution():",
+    "from ecs_marker import build_ecs_outer_source_id",
+    "def create_ticket_institution(app_id, enterprise_id, provider_institution_id):",
     "    return {",
     "        \"method\": \"alipay.ebpp.invoice.institution.create\",",
+    "        \"outer_source_id\": build_ecs_outer_source_id(app_id, enterprise_id, provider_institution_id),",
     "        \"consult_mode\": \"0\",",
     "        \"issue_rule_info_list\": [{\"issue_rule_name\": \"默认发放规则\", \"outer_source_id\": \"ticket-default-rule\"}],",
     "        \"standard_info_list\": [{",
@@ -335,6 +384,15 @@ function testRuleFactorValueSources() {
   };
   writeScenario(ticket, scenario);
   assertExit(ticket, 0);
+
+  const fixedExpenseCode = fs.readFileSync(path.join(ticket, "expense_service.py"), "utf8");
+  fs.writeFileSync(path.join(ticket, "expense_service.py"), `${fixedExpenseCode}\n`
+    + "def modify_condition(new_rule_value):\n"
+    + "    return {\"rule_factor\": MERCHANT_FACTOR, \"rule_value\": new_rule_value}\n");
+  const dynamicFixedOverride = runNode([validator, ticket]);
+  assert.strictEqual(dynamicFixedOverride.status, 1, output(dynamicFixedOverride));
+  assert.match(output(dynamicFixedOverride), /exposes a dynamic rule_value write path/);
+  fs.writeFileSync(path.join(ticket, "expense_service.py"), fixedExpenseCode);
 
   scenario.ruleFactorCapabilities.MERCHANT.value = { "999": ["-1"] };
   writeScenario(ticket, scenario);
@@ -647,6 +705,248 @@ function testMessageClientStartupFailurePolicy() {
     "}",
   ]);
   assert.doesNotMatch(output(retryAndHealth), /catches initial connect failure without fail-fast/);
+  assert.match(output(retryAndHealth), /no real readiness integration/);
+
+  const retryAndRealReadiness = runRouterFixture([
+    "if (ecNotifyHandler.supports(msgApi)) {",
+    "  if (!ecNotifyHandler.onNotify(msgApi, msgId, bizContent)) throw new RuntimeException();",
+    "  return;",
+    "}",
+    "throw new RuntimeException(\"unknown\");",
+  ], [
+    "try { client.connect(); } catch (Exception e) {",
+    "  AvailabilityChangeEvent.publish(context, ReadinessState.REFUSING_TRAFFIC);",
+    "  retryScheduler.schedule(this::start);",
+    "}",
+  ]);
+  assert.doesNotMatch(output(retryAndRealReadiness), /no real readiness integration/);
+
+  const wrongConnectorDir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-wrong-connector-"));
+  fs.mkdirSync(path.join(wrongConnectorDir, "src", "main", "resources"), { recursive: true });
+  fs.writeFileSync(path.join(wrongConnectorDir, "src", "main", "resources", "application.yml"), [
+    "alipay:",
+    "  msg:",
+    "    connector: ${ALIPAY_MSG_CONNECTOR:openapi.alipay.com}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(wrongConnectorDir, "Config.java"), [
+    "class Config {",
+    "  @Value(\"${alipay.msg.connector}\") String connector;",
+    "}",
+  ].join("\n"));
+  const wrongConnector = runNode([validator, wrongConnectorDir], { ALIPAY_VALIDATE_SKIP_COMPILE: "1" });
+  assert.match(output(wrongConnector), /official production WebSocket host is openchannel\.alipay\.com/);
+}
+
+function testProductionEntryGates() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-production-entry-gates-"));
+  const mainJava = path.join(dir, "src", "main", "java", "example");
+  const mainResources = path.join(dir, "src", "main", "resources");
+  const testJava = path.join(dir, "src", "test", "java", "example");
+  const testResources = path.join(dir, "src", "test", "resources");
+  fs.mkdirSync(mainJava, { recursive: true });
+  fs.mkdirSync(mainResources, { recursive: true });
+  fs.mkdirSync(testJava, { recursive: true });
+  fs.mkdirSync(testResources, { recursive: true });
+  fs.writeFileSync(path.join(mainResources, "application.yml"), [
+    "alipay:",
+    "  app-id: ${ALIPAY_APP_ID:writable-app-id}",
+    "  private-key: ${ALIPAY_PRIVATE_KEY:replace-with-rsa2-private-key}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(mainJava, "AlipayMsgConnectionRunner.java"), [
+    "@ConditionalOnProperty(name = \"alipay.msg.enabled\", matchIfMissing = true)",
+    "class AlipayMsgConnectionRunner {",
+    "  private AlipayMsgClient client;",
+    "  void connect() { client.connect(); }",
+    "}",
+  ].join("\n"));
+  const controller = path.join(mainJava, "InstitutionController.java");
+  fs.writeFileSync(controller, [
+    "@RestController",
+    "class InstitutionController {",
+    "  @GetMapping(\"/{institutionId}\")",
+    "  Object detail(@PathVariable(required = false) String institutionId,",
+    "      @RequestParam String enterpriseId, @RequestParam(required = false) String outerSourceId) { return null; }",
+    "}",
+  ].join("\n"));
+  const contextTest = path.join(testJava, "ApplicationContextTest.java");
+  fs.writeFileSync(contextTest, "@SpringBootTest\nclass ApplicationContextTest {}\n");
+
+  const unsafe = runNode([validator, dir], { ALIPAY_VALIDATE_SKIP_COMPILE: "1" });
+  const unsafeOutput = output(unsafe);
+  assert.match(unsafeOutput, /startup-capable placeholder default/);
+  assert.match(unsafeOutput, /without binding it to an authenticated principal or tenant context/);
+  assert.match(unsafeOutput, /outerSourceId as an alternative key/);
+  assert.match(unsafeOutput, /loads a default-enabled AlipayMsgClient connection runner/);
+
+  fs.writeFileSync(path.join(testResources, "application.yml"), [
+    "alipay:",
+    "  msg:",
+    "    enabled: false",
+  ].join("\n"));
+
+  fs.writeFileSync(path.join(mainResources, "application.yml"), [
+    "alipay:",
+    "  app-id: ${ALIPAY_APP_ID}",
+    "  private-key: ${ALIPAY_PRIVATE_KEY}",
+  ].join("\n"));
+  fs.writeFileSync(controller, [
+    "@RestController",
+    "class InstitutionController {",
+    "  @GetMapping(\"/detail\")",
+    "  Object detail(Authentication authentication, @RequestParam(required = false) String institutionId,",
+    "      @RequestParam String enterpriseId, @RequestParam(required = false) String outerSourceId) {",
+    "    tenantAccess.assertEnterpriseAccess(authentication, enterpriseId); return null;",
+    "  }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(contextTest, [
+    "@SpringBootTest(properties = \"alipay.msg.enabled=false\")",
+    "class ApplicationContextTest {}",
+  ].join("\n"));
+  const safe = runNode([validator, dir], { ALIPAY_VALIDATE_SKIP_COMPILE: "1" });
+  const safeOutput = output(safe);
+  assert.doesNotMatch(safeOutput, /startup-capable placeholder default/);
+  assert.doesNotMatch(safeOutput, /without binding it to an authenticated principal or tenant context/);
+  assert.doesNotMatch(safeOutput, /outerSourceId as an alternative key/);
+  assert.doesNotMatch(safeOutput, /loads a default-enabled AlipayMsgClient connection runner/);
+}
+
+function testMessageLifecycleGates() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alipay-message-lifecycle-gates-"));
+  const mainJava = path.join(dir, "src", "main", "java", "example");
+  const mainResources = path.join(dir, "src", "main", "resources");
+  const testJava = path.join(dir, "src", "test", "java", "example");
+  fs.mkdirSync(mainJava, { recursive: true });
+  fs.mkdirSync(mainResources, { recursive: true });
+  fs.mkdirSync(testJava, { recursive: true });
+  const config = path.join(mainJava, "AlipayMsgClientConfig.java");
+  const runner = path.join(mainJava, "AlipayMsgConnectionRunner.java");
+  fs.writeFileSync(config, [
+    "@Configuration",
+    "class AlipayMsgClientConfig {",
+    "  @Bean AlipayMsgClient client(MsgHandler router) {",
+    "    AlipayMsgClient client = AlipayMsgClient.getInstance(appId);",
+    "    client.setConnector(connector); client.setMessageHandler(router); return client;",
+    "  }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(runner, [
+    "@ConditionalOnProperty(prefix = \"alipay.msg\", name = \"enabled\", havingValue = \"true\")",
+    "class AlipayMsgConnectionRunner {",
+    "  ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();",
+    "  AlipayMsgClient client;",
+    "  void start() { try { client.connect(); } catch (Exception e) {",
+    "    AvailabilityChangeEvent.publish(context, ReadinessState.REFUSING_TRAFFIC);",
+    "    scheduler.schedule(this::start, 1, TimeUnit.SECONDS);",
+    "  } }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(mainJava, "Router.java"), "class Router implements MsgHandler {}\n");
+  fs.writeFileSync(path.join(mainResources, "application.yml"), [
+    "alipay:",
+    "  msg:",
+    "    enabled: ${ALIPAY_MSG_ENABLED:false}",
+  ].join("\n"));
+
+  const unsafe = runNode([validator, dir], { ALIPAY_VALIDATE_SKIP_COMPILE: "1" });
+  const unsafeOutput = output(unsafe);
+  assert.match(unsafeOutput, /disabled by default in production configuration/);
+  assert.match(unsafeOutput, /controls the connection runner but not the AlipayMsgClient owner/);
+  assert.match(unsafeOutput, /startup may overwrite REFUSING_TRAFFIC/);
+  assert.match(unsafeOutput, /reconnect executor has no explicit shutdown lifecycle/);
+
+  fs.writeFileSync(runner, [
+    "@ConditionalOnProperty(prefix = \"alipay.msg\", name = \"enabled\", havingValue = \"true\")",
+    "class AlipayMsgConnectionRunner {",
+    "  ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();",
+    "  AlipayMsgClient client; AlipayMsgConnectionHealth state;",
+    "  void start() { try { client.connect(); state.markConnected(true); } catch (Exception e) {",
+    "    state.markConnected(false); scheduler.schedule(this::start, 1, TimeUnit.SECONDS);",
+    "  } }",
+    "  @PreDestroy void stop() { scheduler.shutdownNow(); }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(mainJava, "AlipayMessageHealthIndicator.java"), [
+    "class AlipayMessageHealthIndicator implements HealthIndicator {",
+    "  AlipayMsgConnectionHealth state;",
+    "  public Health health() { return state.isConnected() ? Health.up().build() : Health.down().build(); }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(mainResources, "application.yml"), [
+    "alipay:",
+    "  msg:",
+    "    enabled: ${ALIPAY_MSG_ENABLED}",
+    "management:",
+    "  endpoint:",
+    "    health:",
+    "      group:",
+    "        readiness:",
+    "          include: alipayMessage",
+  ].join("\n"));
+  const staleLifecycle = runNode([validator, dir], { ALIPAY_VALIDATE_SKIP_COMPILE: "1" });
+  const staleLifecycleOutput = output(staleLifecycle);
+  assert.match(staleLifecycleOutput, /updated only around the initial connect attempt/);
+  assert.match(staleLifecycleOutput, /omits readinessState/);
+
+  fs.writeFileSync(config, [
+    "@Configuration",
+    "@ConditionalOnProperty(prefix = \"alipay.msg\", name = \"enabled\", havingValue = \"true\")",
+    "class AlipayMsgClientConfig {",
+    "  @Bean AlipayMsgClient client(MsgHandler router) {",
+    "    AlipayMsgClient client = AlipayMsgClient.getInstance(appId);",
+    "    client.setConnector(connector); client.setMessageHandler(router); return client;",
+    "  }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(runner, [
+    "@ConditionalOnProperty(prefix = \"alipay.msg\", name = \"enabled\", havingValue = \"true\")",
+    "class AlipayMsgConnectionRunner {",
+    "  ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();",
+    "  volatile boolean stopping;",
+    "  AlipayMsgClient client;",
+    "  void start() { try { client.connect(); } catch (Exception e) {",
+    "    health.markDown(); AvailabilityChangeEvent.publish(context, ReadinessState.REFUSING_TRAFFIC);",
+    "    if (stopping) return;",
+    "    try { scheduler.schedule(this::start, 1, TimeUnit.SECONDS); }",
+    "    catch (RejectedExecutionException rejected) { if (!stopping) throw rejected; }",
+    "  } }",
+    "  @PreDestroy void stop() { stopping = true; scheduler.shutdownNow(); }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(mainJava, "AlipayMessageHealthIndicator.java"), [
+    "class AlipayMessageHealthIndicator implements HealthIndicator {",
+    "  AlipayMsgClient client;",
+    "  public Health health() { return client.isConnected() ? Health.up().build() : Health.down().build(); }",
+    "}",
+  ].join("\n"));
+  fs.writeFileSync(path.join(mainResources, "application.yml"), [
+    "alipay:",
+    "  msg:",
+    "    enabled: ${ALIPAY_MSG_ENABLED}",
+    "management:",
+    "  endpoint:",
+    "    health:",
+    "      group:",
+    "        readiness:",
+    "          include: readinessState,alipayMessage",
+  ].join("\n"));
+  fs.writeFileSync(path.join(testJava, "AlipayMsgConnectionRunnerTest.java"), [
+    "class AlipayMsgConnectionRunnerTest {",
+    "  void mockConnectFailure() throws Exception {",
+    "    doThrow(new RuntimeException()).when(client).connect();",
+    "  }",
+    "}",
+  ].join("\n"));
+  const safe = runNode([validator, dir], { ALIPAY_VALIDATE_SKIP_COMPILE: "1" });
+  const safeOutput = output(safe);
+  assert.doesNotMatch(safeOutput, /disabled by default in production configuration/);
+  assert.doesNotMatch(safeOutput, /controls the connection runner but not the AlipayMsgClient owner/);
+  assert.doesNotMatch(safeOutput, /startup may overwrite REFUSING_TRAFFIC/);
+  assert.doesNotMatch(safeOutput, /reconnect executor has no explicit shutdown lifecycle/);
+  assert.doesNotMatch(safeOutput, /updated only around the initial connect attempt/);
+  assert.doesNotMatch(safeOutput, /omits readinessState/);
+  assert.doesNotMatch(safeOutput, /multiple connect sites detected/);
+  assert.doesNotMatch(safeOutput, /catches initial connect failure without fail-fast/);
 }
 
 function testIntegrationContract() {
@@ -887,7 +1187,10 @@ function assertExit(target, expected, extraEnv = {}) {
 function runNode(args, extraEnv = {}) {
   return spawnSync(process.execPath, args, {
     encoding: "utf8",
-    env: Object.assign({}, process.env, extraEnv),
+    env: Object.assign({}, process.env, {
+      NODE_ENV: "test",
+      ALIPAY_VALIDATOR_TEST_DOC_CACHE_DIR: docCacheDir,
+    }, extraEnv),
     maxBuffer: 1024 * 1024 * 8,
   });
 }

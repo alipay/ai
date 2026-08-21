@@ -1,4 +1,7 @@
 EXPENSE_TYPE_METRO = "METRO"
+from ecs_marker import build_ecs_outer_source_id
+
+
 SCENE_TYPE_TRAVEL = "TRAVEL"
 RULE_FACTOR_CARD_TYPE = "CARD_TYPE"
 RULE_FACTOR_QUOTA_TOTAL = "QUOTA_TOTAL"
@@ -20,11 +23,12 @@ def load_rule_factor_config(enterprise_id):
     return RULE_CONFIG_STORE[enterprise_id]
 
 
-def create_metro_institution(enterprise_id):
+def create_metro_institution(app_id, enterprise_id, provider_institution_id):
     rule_factor_config = load_rule_factor_config(enterprise_id)
     validate_card_type(rule_factor_config[RULE_FACTOR_CARD_TYPE][0])
     return {
         "method": "alipay.ebpp.invoice.institution.create",
+        "outer_source_id": build_ecs_outer_source_id(app_id, enterprise_id, provider_institution_id),
         "consult_mode": "0",
         "issue_rule_info_list": [{
             "issue_rule_name": "默认发放规则",
