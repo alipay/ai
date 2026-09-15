@@ -1,6 +1,6 @@
 # 统一收单通用本地契约
 
-本文适用于网站支付和 APP 支付。按量付费不使用统一收单通用接口。
+本文适用于 AI 网页应用收款和 AI 移动应用收款。AI 按量付费不使用统一收单通用接口。
 
 sourceUrl:
 
@@ -21,13 +21,13 @@ sourceUrl:
 
 `out_trade_no` 和 `trade_no` 二选一；同时存在时优先 `trade_no`。常见触发时机：未收到异步通知、支付接口返回系统错误或未知状态、用户可能已支付但本地订单状态未知、关闭或重新下单前确认上一笔订单结果。
 
-支付成功只认 `TRADE_SUCCESS` 或 `TRADE_FINISHED`。`WAIT_BUYER_PAY` 不得判定成功；重新下单前应先关闭未支付订单。
+SDK 调用成功只表示查询请求成功，不表示支付成功。业务状态必须显式映射：`TRADE_SUCCESS`、`TRADE_FINISHED` 为已支付，`WAIT_BUYER_PAY` 为待支付，`TRADE_CLOSED` 为已关闭，其他或缺失状态为未知。待支付和未知状态不得返回 HTTP 500，也不得判定支付成功；重新下单前应先关闭未支付订单。
 
 ## 退款
 
 接口：`alipay.trade.refund`
 
-`refund_amount` 必填；`out_trade_no` 和 `trade_no` 二选一。部分退款或异常重试必须保持同一 `out_request_no`，防止重复退款。接口返回 `code=10000` 只代表退款请求受理成功；只有 `fund_change=Y` 才通常表示发生退款资金变化，`fund_change=N` 或缺失时必须通过退款查询确认。
+`refund_amount` 必填；`out_trade_no` 和 `trade_no` 二选一。金额计算使用十进制定点语义，并在调用前校验累计退款金额不超过原订单实付金额。每次新退款（包括新的一次部分退款）使用新的 `out_request_no`；同一次退款发生网络异常、超时或未知结果后重试时，必须复用原 `out_request_no`、退款金额和原请求参数，防止重复退款。接口返回 `code=10000` 只代表退款请求受理成功；只有 `fund_change=Y` 才通常表示发生退款资金变化，`fund_change=N` 或缺失时必须使用同一 `out_request_no` 通过退款查询确认。
 
 ## 退款查询
 

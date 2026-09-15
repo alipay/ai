@@ -86,9 +86,9 @@ case "$PRODUCT_TYPE" in
   apppay) target_marker="$apppay_marker" ;;
 esac
 
-[ -z "$(scan "$webpay_marker")" ] || [ "$PRODUCT_TYPE" = "webpay" ] || other_products="${other_products}网站支付,"
-[ -z "$(scan "$apppay_marker")" ] || [ "$PRODUCT_TYPE" = "apppay" ] || other_products="${other_products}APP 支付,"
-[ -z "$(scan "$aipay_marker")" ] || [ "$PRODUCT_TYPE" = "aipay" ] || other_products="${other_products}按量付费,"
+[ -z "$(scan "$webpay_marker")" ] || [ "$PRODUCT_TYPE" = "webpay" ] || other_products="${other_products}AI 网页应用收款,"
+[ -z "$(scan "$apppay_marker")" ] || [ "$PRODUCT_TYPE" = "apppay" ] || other_products="${other_products}AI 移动应用收款,"
+[ -z "$(scan "$aipay_marker")" ] || [ "$PRODUCT_TYPE" = "aipay" ] || other_products="${other_products}AI 按量付费,"
 other_products="${other_products%,}"
 [ -n "$other_products" ] || other_products="无"
 

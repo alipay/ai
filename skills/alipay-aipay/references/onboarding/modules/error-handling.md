@@ -1,250 +1,62 @@
-# 错误处理规范
+# 错误处理业务语义
 
-> ⚠️ **全流程错误参考文档**：本文档涵盖签约全流程（Step 1~Step 6）各步骤可能出现的错误及处理方式。**当任何 Step 执行过程中遇到错误时，均可查阅本文档进行问题排查**。
-> 本文档位于 `references/onboarding/modules/`，文中的 `scripts/...` 路径相对本目录；从技能包根目录执行时对应 `references/onboarding/modules/scripts/...`。
->
-> 📎 **可执行版本**：shell 公共函数位于 `../../normal/scripts/common.sh`，错误检测和处理函数位于 `scripts/error_handler.sh`。`scripts/network_retry.sh` 只在原命令外围处理网络尝试、stdout/stderr 分离和写后核验信号；各签约 `.sh` 脚本仍在每次 MCP 调用后使用原错误处理和业务解析。**本文档为说明参考，实际执行以脚本为准。**
+只在 Onboarding 脚本报错、需要解释登记分类或用户要求排障细节时读取本模块。运行时 Agent 只执行 flow 中的脚本入口；`../../normal/scripts/common.sh` 初始化 CLI 上下文，`scripts/network_retry.sh` 保持原 argv 执行有限重试，`scripts/error_handler.sh` 负责解包、分类、脱敏和登记输出。不得在脚本外追加 MCP 调用、`handle_error`、`unwrap_mcp` 或临时解析命令。
 
----
+## 分类与恢复
 
-## 错误检测函数索引
+| 内部分类 | 已验证触发 | 恢复边界 |
+| --- | --- | --- |
+| `MCP_AUTH_ERROR` | 非 JSON 传输错误中的 HTTP 401/认证强证据；JSON 顶层或登记 error/response 层中的数字/字符串 `401`、`unauthorized`、`Authorization is empty`、非法认证信息、`用户未登录`、`not_logged_in` 等明确登录失效证据；已认证资源动作顶层或 `data.logged_in=false` | 停止查询组；logout 后置条件成立后重授权。仍登录则阻断；不可确认或无网络时只重试同一动作，不解释为用户本机或支付宝业务失败。成功候选、说明或请求示例中的相同文本不构成认证错误 |
+| `AUTH_MISMATCH` | `mccCode is not auth`、`salesProductCodes is not auth`、`scope is not auth` | 停止当前动作，只进 `auth.sh mismatch`；logout 后置条件未成立前禁重授权 |
+| `MCP_SERVICE_ERROR` / `SERVICE_UNSTABLE` | 已识别连接、网络或服务异常 | 按下方有限重试规则处理；耗尽后记录受影响分支，依赖允许时继续其他独立分支，最终统一收口 |
+| `DISCOVERY_FLOW:RETRY_WITH_NETWORK` | discovery 子查询重试耗尽，且原始输出包含 DNS、连接、timeout、socket/TLS、`fetch failed`、`network_error`、`网络连接失败` 或连接前沙箱禁网强证据 | 只在无授权阻断时输出一次；暂存首次 stdout，申请联网权限后原样重试同一 discovery 命令一次。拒绝、不支持或再次命中时停止申请，只送达最新一次既有 stdout |
+| `DISCOVERY_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION` | discovery 任一子查询在 CLI 调用前探测失败，或只读调用后命中 CLI 私有状态权限证据 | 授权阻断优先；本次不渲染 discovery 摘要，取得两个 CLI 私有状态目录权限后原样重试同一 discovery 命令一次，不改产品、salesCode 或签约复用回执 |
+| `CLI_LOCAL_FS_PERMISSION` | 受控 CLI 动作 preflight 失败；或原始 stdout+stderr 命中私有状态写失败强证据，或私有状态路径与权限错误组合 | auth 使用唯一 `AUTH_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION`；其他未发送或只读动作使用唯一 `CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION`。取得目录权限后原样重试一次；写动作已执行则保持 `MAYBE_SENT` 并只核验/标记 `UNKNOWN`，不得重放 |
+| `APP_LOCAL_CONFIG_PERMISSION` | 已取 RSA2 支付宝公钥但 config 探针失败 | stdout 空；输出两个本地权限 marker，取权后原样重试当前 app 命令一次，不重开公钥页 |
+| `OPEN_ERROR_KIND` | URL 已交付但 opener 失败 | 保留 URL 兜底；诊断不对客，不改写为业务、网络或授权失败 |
+| `ERROR:<code>` | 当前响应中存在可识别业务错误 | 展示登记且脱敏的业务错误，修正业务条件前不重试 |
+| `CLI_ERROR:<message>` | CLI 失败、异常结构或结果不可唯一解析 | 隐藏原始输出，停止并按登记 CLI 错误恢复，不猜成功或空结果 |
+| `SUCCESS` | 唯一合法成功结构 | 才允许进入当前脚本的业务字段解析 |
 
-> ⚠️ `require_command` / `init_dev_tool_name` 定义于 `normal/scripts/common.sh`；`error_handler.sh` 会在加载公共函数后显式调用 `init_dev_tool_name`。以下错误处理函数定义于 `error_handler.sh`，本文档仅说明其用途和触发条件。
+发现阶段的单分支失败不得伪装为空列表，也不得回滚其他已成功分支；认证失效或授权不匹配属于查询组全局阻断，重新授权后恢复尚未执行的查询，主体一致性无法确认时重新查询全部适用状态。`logged_in=false` 只在已认证的签约、服务、应用和上传等资源动作中属于认证失效；`auth.sh whoami` 的成功未登录结果仍是正常登录入口，失败响应即使携带该字段也不能证明已退出。discovery 的恢复优先级固定为真实认证/授权阻断、本地 CLI 状态权限、网络权限、普通分支失败；`AUTH_FLOW:RETRY_WITH_NETWORK|RETRY_WITH_LOCAL_FS_PERMISSION|LOGOUT_STILL_LOGGED_IN` 不是 discovery 子查询的认证失效证据，不得映射为 `AUTHORIZATION_INVALID`。
 
-| 函数 | 说明 | 返回 |
-|------|------|------|
-| `unwrap_mcp` | MCP 信封解包，通过单次状态扫描提取 `content[0].text` 中的业务 JSON；混合输出只从完整闭合结构形成候选，并只接受唯一可确定的 MCP 信封或 JSON，候选不唯一时不猜测结果，由错误检测阻断 | 解包后的 JSON 字符串或无法唯一解析的原始文本 |
-| `detect_error` | 统一错误检测入口，自动解包 MCP 信封后按优先级匹配所有错误类型 | `MCP_AUTH_ERROR` / `MCP_SERVICE_ERROR` / `AUTH_MISMATCH` / `SERVICE_UNSTABLE` / `ERROR:xxx` / `CLI_ERROR:xxx` / `SUCCESS` |
-| `handle_error` | 统一错误处理入口，调用 `detect_error` 后路由到对应 handler（内含 `unwrap_mcp` 自动解包信封） | `0`=成功, `1`=需用户干预 |
-| `handle_mcp_auth_error` | 处理 MCP 认证错误（HTTP 401），校验 logout 成功后再引导重新授权；logout 返回合法失败时阻断；当前 Agent 执行环境无法确认 logout 结果时要求联网重试同一动作 | - |
-| `handle_mcp_service_error` | 处理 MCP 服务不可用（网络/连接错误）；网络重试预算耗尽后记录受影响分支，独立分支继续，最终统一收口 | - |
-| `handle_auth_mismatch` | 识别授权不匹配（MCC/产品/scope），停止当前操作并引导调用 `auth.sh mismatch` | - |
-| `handle_service_unstable` | 处理 MCP 服务不稳定；停止当前动作并交由主流程最终统一收口 | - |
-| `handle_backend_error` | 处理后端业务错误（errorCode），展示错误信息、bizTips、checkedError | - |
+discovery runner 的并发子查询不得让每个子进程各自 logout。三张截图固定串行上传，禁止多个 `alipay-cli file upload` 进程并发读取认证态；截图和 discovery 子脚本在受抑制环境下只上报一次认证失效事实，不渲染“正在退出当前登录”，由 flow 登记的唯一授权恢复入口处理。
 
----
+## 解包与业务错误
 
-## 一、MCP 认证错误
+`unwrap_mcp` 兼容纯业务 JSON、唯一 MCP `content[0].text` 信封和混合日志。所有受控 CLI 捕获先合并 stdout/stderr 检查 `写入临时文件失败|删除凭据文件失败|can't rename log file` 强证据，或 `poll_state.enc.tmp|session.enc|.alipay-cli/credentials|alipay-cli/logs` 与 `permission denied|operation not permitted|EACCES|EPERM` 组合；命中时不得按成功 JSON 或 `network_error` 处理，裸后端 `permission denied` 不算本地权限。其他 CLI 捕获再执行唯一性解析：单个 JSON 加普通日志可接受，相同 JSON 重复可去重，多个不同 JSON 或成功/失败冲突不得选择任一路，也不得回显原始响应。每次 MCP 调用先把唯一原始结果交给 `handle_error`，返回成功后才调用 `unwrap_mcp` 和当前脚本的业务解析；不得统一假定成功字段位于 `.success`。认证分类只扫描真实响应错误层，禁止递归扫描成功候选、业务说明或请求示例中的错误样例。
 
-### 识别关键词
-`HTTP 401`、`Authorization is empty`、`非法的认证信息`、`MCP 调用失败`
+每次 logout 失败后只执行一次 `whoami` 后置核验；logout 明确成功时无需额外核验，最多尝试 3 次 logout。`whoami` 后置核验必须先满足唯一 JSON、退出码为 0 且 `detect_error=SUCCESS`，再读取类型正确的 `logged_in/is_expired`；业务失败响应即使携带 `logged_in=false` 也不能证明已退出。logout 网络/服务异常、冲突输出或结果无法确认时，即使 `whoami` 仍显示已登录，也只能转 `AUTH_FLOW:RETRY_WITH_NETWORK` 并重试同一动作。logout 是可由 `whoami` 验证最终状态的幂等恢复动作：明确业务失败且仍登录时，脚本内部使用“初次 + 2 次”固定预算、间隔 3 秒重试完全相同的 logout；任一次确认已退出即继续，全部耗尽且仍登录才转 `AUTH_FLOW:LOGOUT_STILL_LOGGED_IN`。所有失败分支都不得执行 login。每个 auth 动作只允许产生一个最终 `AUTH_FLOW:*`，具体恢复 marker 已由错误处理器输出时，调用方不得追加 `AUTH_FLOW:FAILED`。
 
-### 错误码表格
-| 错误码 | 错误信息 | 说明 |
-|--------|----------|------|
-| `api_error` | `HTTP 401` + `Authorization is empty` | 未登录或授权已过期 |
-| `api_error` | `非法的认证信息` | 认证信息无效 |
-| `-32602` | `Authorization is empty` | MCP 请求缺少认证头 |
+业务错误对象可能位于顶层、`data.response` 或 `errorContext.errorStack[]`。保留脚本当前字段优先级：读取 `errorCode` 的字符串或对象形式、`errorMessage|errorMsg`、`bizTips`、`checkedError`、`errorScene` 和 `errorSpecific`；只有已验证的服务写入协议 `data.success=false` 才优先使用 `data.subMsg|data.msg`，并忽略只表示外层调用成功的顶层 `msg="Success"`。`APP_MAX_ERROR` 只说明应用数量达到上限，引导复用已有上线应用或前往支付宝开放平台处理配额，不推断其他审核规则。
 
-### 处理原则
-```
-✅ 检测到 HTTP 401 → 执行并校验 logout → 仅退出成功后引导用户重新授权
-❌ logout 返回合法失败 → 明确报错并停止重新授权，禁止宣称已退出登录
-✅ logout 输出不可唯一解析或疑似 Agent 环境无联网权限 → 表述为“无法确认退出登录结果”，要求 Agent 申请联网权限后重试同一动作；禁止解释为用户本机 logout 失败或支付宝业务失败
-✅ 清理对话上下文中的授权相关数据
-✅ 提供清晰的错误说明和下一步操作指引
-❌ 禁止自动重试 MCP 调用（会导致相同的认证错误）
-❌ 禁止静默忽略错误
-❌ 禁止跳过登录流程直接继续
-```
+`needRetry=true` 仍是业务提示，不构成自动重试授权。不得丢弃实际业务错误后改称“未知错误”，也不得把现有服务写入协议扩展到其他响应结构。
 
-### 错误示例
-```json
-{
-  "success": false,
-  "error": {
-    "code": "api_error",
-    "message": "MCP 调用失败: MCP 请求失败: HTTP 401 - {\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"非法的认证信息, Authorization is empty\"}}",
-    "action": "重新执行登录授权"
-  }
-}
-```
+## 网络重试与写后核验
 
-> 📎 处理脚本：见 `error_handler.sh` → `handle_mcp_auth_error()`
+- `MCP_SERVICE_ERROR`、`SERVICE_UNSTABLE` 和已识别本地网络错误：初次调用后最多重试 2 次，每次间隔 3 秒，始终复用完全相同的 argv、请求 JSON、业务请求号、资源名和动态字段。连接前沙箱明确拒绝联网时立即结束子脚本预算，由 discovery 的单次权限恢复处理，不额外等待两次 3 秒。
+- discovery 只有强网络证据才输出 `DISCOVERY_FLOW:RETRY_WITH_NETWORK`；远端服务异常、业务错误、裸 `permission denied` 和响应结构异常仍保留既有失败分类。授权阻断优先且不得同时输出网络恢复 marker。
+- 认证、授权不匹配、参数、业务错误和结构歧义不进入通用网络重试。唯一例外是上述可验证最终状态的幂等 logout 恢复，它使用同一三次总预算且不经通用 `network_retry.sh`。stderr 不拼入待解析 JSON。
+- 只读调用可使用完整重试预算。非幂等写操作只有明确 `NOT_SENT` 才自动重试；DNS 失败、connection refused 或宿主在连接前明确拒绝网络访问可归为 `NOT_SENT`。
+- timeout、连接中断、发送阶段不明和 `SERVICE_UNSTABLE` 一律归为 `MAYBE_SENT`，停止写重试并使用现有只读能力核验；无法确认输出 `UNKNOWN`。
+- 签约提交用签约查询核验；服务修改只有列表按完整 `serviceId` 和五项资料精确匹配才算成功；服务新建和应用创建不得按同名候选猜测；应用提审只看现有应用信息状态。没有登记核验能力的公钥确认页不得凭页面或同名结果推断成功。
 
----
+`MESSAGE_RENDER_ERROR` 不是写操作是否发出的证据，不得据此自动重写。
 
-## 二、MCP 服务不可用（网络/服务错误）
+写动作除既有成功 marker 外，还必须输出动作级结果事实：签约 `SIGN_APPLY_RESULT=SUCCESS|FAILED|UNKNOWN`，服务保存 `SERVICE_SAVE_RESULT=SUCCESS|FAILED|UNKNOWN`，应用创建 `APPLICATION_CREATE_RESULT=SUCCESS|FAILED|UNKNOWN`，公钥确认页 `KEY_PAGE_RESULT=READY_TO_OPEN|FAILED|UNKNOWN`，应用提审 `APPLICATION_AUDIT_RESULT=SUBMITTED|FAILED|UNKNOWN`。`UNKNOWN` 表示禁止自动重复同一写动作，只能按 flow 进入当前分支待办或最终收口。
 
-### 识别关键词
-`MCP 调用失败`、`connection refused`、`timeout`、`network error`
+## 授权轮询恢复
 
-### 错误码表格
-| 错误码 | 错误信息 | 说明 |
-|--------|----------|------|
-| `api_error` | `MCP 调用失败` 非 401 | 网络或服务异常 |
-| `api_error` | `connection refused` | 无法连接服务器 |
-| `api_error` | `timeout` | 请求超时 |
+`authorization_pending` 或自动轮询中 `whoami` 尚未形成有效本机登录态时，只由 `auth.sh wait` 在固定最多 12 次、未成功相邻查询间隔 5 秒内继续。耗尽后输出一次 `auth.pending`，等待用户明确表示页面操作已完成；登记表达只执行一次 `auth.sh confirm`，不得重启 `wait` 或自行循环 `login --complete`。`auth_expired` 才重新执行登录流程。
 
-### 处理原则
-```
-✅ 只读调用检测到 MCP_SERVICE_ERROR / SERVICE_UNSTABLE → 同一参数最多自动重试 2 次，每次等待 3 秒
-✅ 写调用只有明确 NOT_SENT 时直接使用相同预算；MAYBE_SENT 先走现有只读核验，无法确认时标记 UNKNOWN
-✅ 重试预算耗尽 → 停止当前动作并记录失败事实；依赖允许时继续其他独立分支；全部可推进动作结束后，在 Step 6 逐分支结果中一次说明失败动作和恢复方式
-✅ 沙箱化 Agent 的宿主网络授权仍按环境权限机制处理，不能伪装成业务确认
-❌ 禁止因重试重新生成 REQUEST_JSON、bizRequestNo、资源名称或其他动态字段
-❌ 禁止业务错误、认证错误、授权不匹配、参数错误或结构歧义进入网络重试
-❌ 禁止静默忽略错误
-```
+公钥轮询次数、单次恢复和页面失效判断以 application phase 与 `app.sh` 为准，本模块不维护第二份状态机。
 
-> 📎 处理脚本：见 `error_handler.sh` → `handle_mcp_service_error()`、`handle_service_unstable()`
+## 对客错误边界
 
-`MCP_SERVICE_ERROR` 和 `SERVICE_UNSTABLE` 是现有错误处理脚本的内部分类，不是支付宝外部业务错误码。执行器保持 `detect_error`、`unwrap_mcp`、`handle_error` 和业务字段解析不变，只重复同一组已分词 CLI argv；stdout 仍单独交给原解析，stderr 不拼入 MCP JSON。
+后端和 CLI 错误必须经 `sanitize_customer_error_text` 与登记 renderer 输出。`{{`、`}}`、`<INTERNAL_`、临时 URL、deviceCode、Authorization、`Payment-Proof`、token、password、secret、key、证书头以及未脱敏响应只能变为受控隐藏文案；普通业务错误应保留可操作内容。禁止向用户输出 trace、原始 MCP/CLI 文本、内部 marker 或技术栈。
 
-写操作的保守判定固定为：DNS 解析失败、connection refused、宿主在连接前明确拒绝网络访问可记为 `NOT_SENT`；timeout、连接中断、`SERVICE_UNSTABLE` 或发送阶段不明一律为 `MAYBE_SENT`。签约提交使用现有签约查询核验；服务修改只有列表按 `serviceId` 精确匹配完整五项资料才算成功；服务新建和应用创建不能按同名候选猜测；公钥确认页没有可用核验查询；应用提审只使用现有应用信息状态。无法证明成功或未生效时禁止重复写入。
+错误正文必须说明受影响分支和确定下一步；网络预算耗尽不立即增加“重试/退出”确认，而是在其他可推进分支完成后统一收口。脚本 stdout 是登记的唯一对客正文，内部事实行按 flow 剔除。
 
----
+## 维护边界
 
-## 三、授权信息不匹配
-
-### 识别关键词
-`mccCode is not auth`、`salesProductCodes is not auth`、`scope is not auth`
-
-### 错误类型
-| 错误码 | 错误信息 | 说明 | 处理方式 |
-|--------|----------|------|----------|
-| `AE05010000001200` | `mccCode is not auth` | 经营类目未授权 | logout → 重新授权 |
-| `AE05010000001200` | `salesProductCodes is not auth` | 产品未授权 | logout → 重新授权 |
-| - | `scope is not auth` | 授权 scope 不满足 | logout → 重新授权 |
-
-### 处理原则
-```
-✅ 检测到授权不匹配 → 停止当前操作 → 调用 auth.sh mismatch → 由 mismatch 执行 logout 后重新授权
-✅ 重新授权时使用正确的 scope（根据当前 salesCode 确定）
-✅ 多查询流程中检测到认证失败或授权不匹配 → 立即停止剩余查询；重新授权后只恢复未执行查询，主体无法确认一致时重新查询全部适用状态
-❌ 禁止：检测到授权范围不满足后继续执行后续操作
-❌ 禁止：不执行 logout 直接重新登录
-```
-
-> 📎 处理脚本：见 `error_handler.sh` → `handle_auth_mismatch()`，以及 `scripts/auth.sh mismatch`
-
----
-
-## 四、登录授权错误
-
-### 识别关键词
-`authorization_pending`、`auth_expired`
-
-### 错误码表格
-| 错误码 | 说明 | 处理方式 |
-|--------|------|----------|
-| `authorization_pending` | 用户尚未扫码或未确认授权 | 继续等待或提示用户 |
-| `auth_expired` | 授权已过期（10分钟） | 重新执行登录流程 |
-
-### 处理原则
-```
-✅ 检测到 authorization_pending → 提示用户继续扫码
-✅ 检测到 auth_expired → 重新执行登录流程
-❌ 禁止：自动轮询检查授权状态
-❌ 禁止：循环调用 login --complete
-```
-
-> 📎 处理脚本：授权确认逻辑见 `scripts/auth.sh confirm`
-
----
-
-## 五、后端业务错误
-
-### 响应格式
-```json
-{
-  "errorCode": "xxx",
-  "errorMessage": "错误描述",
-  "bizTips": "业务提示（可展示给用户）",
-  "needRetry": true,
-  "resultObj": {
-    "checkedError": [
-      { "errorDesc": "字段级校验错误描述" }
-    ]
-  }
-}
-```
-
-> ⚠️ 有些 MCP 返回会把真实业务响应包在 `data.response` 或 `errorContext.errorStack[]` 下。错误检测必须优先定位业务错误对象：既要兼容 `errorCode: "xxx"`，也要兼容 `errorCode: { "code": "xxx", "desc": "...", "message": "...", "errorScene": "...", "errorSpecific": "..." }`。常规错误继续按 `errorMessage` / `errorMsg` / `errorCode.desc` / `errorCode.message` 等既有字段处理；只有已验证的当前服务写入协议 `data.success=false` 才优先读取 `data.subMsg` / `data.msg`，并忽略仅表示外层调用成功的顶层 `msg="Success"`。不得把该优先级扩展到其他响应结构，也不得丢弃真实业务错误后兜底为“未知错误”。
-
-### 处理原则
-```
-✅ errorCode 存在 → 展示 errorMessage
-✅ data.success=false → 优先展示 data.subMsg / data.msg，不把顶层 msg="Success" 当作业务错误
-✅ 如有 bizTips → 一并展示给用户
-✅ 如有 checkedError → 逐条展示字段级校验错误描述
-✅ 如有 errorScene / errorSpecific → 一并展示，便于技术支持定位
-✅ createApplication 返回 APP_MAX_ERROR → 告知用户应用数量达到上限，引导复用已有上线应用或前往支付宝开放平台处理配额
-✅ needRetry=true 仍属于业务错误提示 → 展示实际错误与 bizTips，但不自动重试、不立即询问“重试/退出”；业务条件修正后才能重新执行受影响动作
-❌ 禁止：忽略 errorCode 继续执行
-❌ 禁止：向用户暴露技术性内部错误
-❌ 禁止：只输出"未知错误"而丢弃 errorCode / bizTips / checkedError
-```
-
-> 📎 处理脚本：见 `error_handler.sh` → `handle_backend_error()`
-
----
-
-## 六、脚本内错误处理契约
-
-当前 onboarding 主流程的 MCP 调用全部由已登记 `.sh` 脚本封装。运行时 Agent 只执行 flow 中的脚本入口，不直调 MCP、不追加 `handle_error` / `unwrap_mcp` 命令，也不在脚本成功后重新解析 stdout。
-
-维护脚本时保持既有顺序：每次 MCP 调用先把原始 stdout 交给 `handle_error`；只有返回 0 才调用 `unwrap_mcp`，然后按当前模块已经确认的响应契约解析业务字段。CLI stdout 混有日志时，`unwrap_mcp` 只接受唯一可确定的 MCP 信封或 JSON；存在多个候选时不猜测、不回显原始响应，并由错误检测阻断。不得统一假定成功字段位于 `.success`；例如服务写入的当前协议使用 `code="10000"`、`data.success=true`，并从 `data.serviceId` 读取服务 ID。
-
-新增尚未封装的 MCP 调用不属于运行时排障动作。必须先取得确定 schema，并同步脚本、模块、flow 和契约测试后才能进入主流程；禁止用占位方法名或通用 JSON 模板临场试调。
-
----
-
-## 七、错误类型速查表
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        错误识别速查表                            │
-├─────────────────────────────────────────────────────────────────┤
-│ 📦 MCP 信封解包（unwrap_mcp）                                    │
-│   所有 mcp call 返回 {content:[{text:"<业务JSON>"}]}            │
-│   必须先 unwrap_mcp 解包，再按当前模块契约解析业务字段          │
-├─────────────────────────────────────────────────────────────────┤
-│ 🔐 MCP_AUTH_ERROR                                               │
-│   关键词：HTTP 401 / Authorization is empty / 非法的认证信息     │
-│   动作：引导用户重新登录授权                                     │
-├─────────────────────────────────────────────────────────────────┤
-│ 🌐 MCP_SERVICE_ERROR                                            │
-│   关键词：MCP 调用失败 / connection refused / timeout            │
-│   动作：沙箱化 Agent 环境申请可联网权限重试；其他环境提示检查网络连接 │
-├─────────────────────────────────────────────────────────────────┤
-│ 🔄 AUTH_MISMATCH                                                │
-│   关键词：mccCode is not auth / salesProductCodes is not auth    │
-│   动作：退出登录 → 重新授权                                      │
-├─────────────────────────────────────────────────────────────────┤
-│ 📋 BUSINESS_ERROR                                               │
-│   关键词：errorCode 字段存在（含 data.response 或 errorStack）    │
-│   动作：展示错误信息 + bizTips + checkedError + errorScene       │
-├─────────────────────────────────────────────────────────────────┤
-│ ⚠️ CLI_ERROR                                                    │
-│   关键词：success=false 但无 errorCode                           │
-│   动作：展示错误信息 + bizTips（如有）+ checkedError（如有）     │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 八、调用位置索引
-
-| Step | MCP 调用位置 | 建议使用的检测函数 |
-|------|---------------|-------------------|
-| Step 1 环境检查 | alipay-cli 可用性与安装检查 | 由 `../../normal/alipay-cli-env.md` 处理，不执行登录状态预检 |
-| Step 3 登录授权 | whoami / login / login --complete / logout | 由 `auth.sh` 内置处理 |
-| Step 3.1 状态与资源查询（签约状态） | ar-query.queryArInfosBySalesProd | 由 `query_sign_status.sh` 内置（source error_handler.sh；建议设置 PRODUCT_TYPE 做产品码一致性校验） |
-| Step 3.1 应用/服务资源查询 | apprelease.queryApplicationList / a2a-pay-service.discoverBazaarServicesForMcp | 分别由 `app.sh list` / `service.sh list` 内置，禁止将失败结果当作空列表 |
-| Step 4 签约材料类别 | file upload | 由 `upload_screenshots.sh` 内置（source error_handler.sh + unwrap_mcp 解包信封） |
-| Step 5.1 产品签约 | ar-sign.apply | 由 `ar_sign_apply.sh` 内置（source error_handler.sh） |
-| Step 5.2 服务注册 | a2a-pay-service.* | 由 `service.sh` 内置（source error_handler.sh） |
-| Step 5.3 应用发布 | apprelease.* | 由 `app.sh` 内置（source error_handler.sh） |
-
----
-
-## 九、注意事项
-
-```
-✅ 必须：任何 MCP 调用后都必须进行错误检测
-✅ 必须：给用户友好的错误提示
-✅ 必须：提供下一步操作指引
-❌ 禁止：忽略错误继续执行
-❌ 禁止：给用户显示技术性错误信息（如 traceId、内部错误码等）
-```
+修改错误处理时至少覆盖：合法 JSON、唯一 MCP 信封、混合输出、多个候选、认证错误、授权不匹配、业务错误、网络错误、空列表和异常结构。新增未封装 MCP 调用必须先取得确定 schema，并同步脚本、业务模块、flow、MCP 契约 fixture 和测试；禁止用占位方法或通用 JSON 模板临场试调。

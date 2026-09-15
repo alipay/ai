@@ -14,11 +14,10 @@
 ### 1.2 Windows 用户注意事项
 **快速沙箱 CLI 工具暂不支持 Windows 系统**。
 
-Windows 分支固定使用 `customer-messages.json` 的 `sandbox.windows.manual_setup`：执行下列命令引导用户前往支付宝开放平台控制台获取沙箱应用，并一次提供当前沙箱的 APPID、公私钥和账号信息。资料完整且校验通过后，由 Agent 写入目标项目实际使用的本地敏感配置；不得要求用户自行配置、理解 `sandbox_config.sh`、执行 Bash 或手工拼接 Skill 的规范化 JSON。该资料输入例外只适用于沙箱，生产环境应用私钥和密码禁止提供给 Agent；Agent 不得在回复、摘要或普通日志中复述收到的值。
+Windows 普通代码开发或完整接入请求未明确要求当前配置沙箱时，记录 `sandboxConfigState=VERIFY_PENDING` 并继续代码实现，不展示资料收集消息。只有用户明确要求现在配置或恢复 Windows 沙箱时，才使用 `../../../normal/json/customer-messages.json` 的既有 `sandbox.windows.manual_setup`，引导用户前往支付宝 AI 付站点的“选择产品 → 一站式接入 → 技术集成”页面获取当前沙箱的 APPID、公私钥和账号信息；随后只处理用户针对本轮该消息提供的资料，完整时校验并写入目标项目实际使用的本地敏感配置，部分或错误时只补问对应字段。不得要求用户自行配置、理解 `sandbox_config.sh`、执行 Bash 或手工拼接 Skill 的规范化 JSON。该资料输入例外只适用于沙箱，生产环境应用私钥和密码禁止提供给 Agent；Agent 不得在回复、摘要或普通日志中复述收到的值。
 
 ```bash
-printf '%s' '{}' \
-  | node ../../../normal/scripts/render_customer_message.mjs sandbox.windows.manual_setup --variant DEFAULT
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-setup
 ```
 
 ### 1.3 其他说明
@@ -47,7 +46,7 @@ printf '%s' '{}' \
 ### 3.1 获取候选沙箱配置
 
 - Unix/macOS/Linux：运行时只执行 integration flow 的 `sandbox_config.sh ensure`；[alipay-sandbox-tool](alipay-sandbox-tool.md) 只记录脚本内部冻结的 MCP 契约和维护依据，不作为 Agent 直调入口。
-- Windows：快速沙箱 CLI 工具暂不支持，按第 1.2 节完成官方申领和本机项目配置；该分支不调用 `sandbox_config.sh create|verify`，也不伪造 `FLOW:SANDBOX_CONFIGURED`。
+- Windows：快速沙箱 CLI 工具暂不支持，按第 1.2 节记录 `READY|VERIFY_PENDING`；该分支不调用 `sandbox_config.sh create|verify`，也不伪造 `FLOW:SANDBOX_CONFIGURED`。
 - 工具返回 `success === true` 只代表拿到候选 `data`；必须完成第 4 节字段完整性校验后，才允许写入正式配置文件。
 - `success !== true`、`data` 缺失或字段不完整时，先执行第 6 节既定重试；耗尽后进入本轮待配置状态，只阻断沙箱字段使用、摘要、配置校验和沙箱测试，不阻断代码实现。
 
@@ -58,16 +57,17 @@ Unix/macOS/Linux 快速沙箱由 `sandbox_config.sh` 在内部完成以下动作
 1. 提取候选 `data`。
 2. 按第 4 节逐项校验必含字段。
 3. 校验通过后，将候选 `data` 按原始 JSON 结构写入正式本地配置文件。
-4. 确认配置未被 Git 跟踪、项目根目录 `.gitignore` 已包含 `/.alipay-sandbox.json` 且文件权限为 `0600`，创建阶段只输出受控机器标记和实际配置文件路径，不对客展示关键字段摘要。
+4. 确认配置未被 Git 跟踪、项目根目录 `.gitignore` 已包含 `/.alipay-sandbox.json` 且文件权限为 `0600`，创建阶段只通过带 `ALIPAY_AIPAY_INTERNAL:` 前缀的 stderr 内部事实返回机器标记和实际配置文件路径，不对客展示关键字段摘要。
 5. 后续由商家服务端代码使用当前语言标准 JSON 解析器在运行时读取该文件并映射到 SDK；Agent 不通过 shell 输出字段原文，也不把沙箱密钥复制到源码或重复写入 `.env`。
 6. 代码开发完成且配置后置校验通过后，再使用第 5.2 节的摘要输出入口对客展示沙箱环境配置。
 
 Windows 手工沙箱：
 
-1. 使用标准消息一次收集当前沙箱应用的 APPID、支付宝公钥、应用公钥、与已确认语言匹配的应用私钥和沙箱账号信息；缺失或校验失败时只补问对应字段。
-2. 按第 4 节校验资料，随后由 Agent 写入目标项目实际使用的本地敏感配置；不要求采用快速沙箱 `data` 的嵌套结构，不把值复制到源码或普通日志。
-3. 检查敏感配置未被 Git 跟踪，并已有适用于实际路径的版本控制忽略保护；能检查 Windows 文件访问控制时确认仅当前用户可访问，不能取得证据时标记为人工待验证。
-4. 输出第 5 节规定的摘要和 Windows 提醒，再从实际本机配置映射到 SDK；Agent 不得在回复或摘要中复述用户提供的沙箱密钥和密码，生产环境应用私钥和密码禁止提供给 Agent。
+1. 没有资料且没有明确配置请求时记录 `VERIFY_PENDING` 并继续代码实现，不渲染消息、不探测猜测配置。
+2. 用户明确要求配置且尚未提供资料时，才使用标准消息一次收集当前沙箱应用的 APPID、支付宝公钥、应用公钥、与已确认语言匹配的应用私钥和沙箱账号信息；缺失或校验失败时只补问对应字段。
+3. 按第 4 节校验资料，随后由 Agent 写入目标项目实际使用的本地敏感配置；不要求采用快速沙箱 `data` 的嵌套结构，不把值复制到源码或普通日志。
+4. 检查敏感配置未被 Git 跟踪，并已有适用于实际路径的版本控制忽略保护；能检查 Windows 文件访问控制时确认仅当前用户可访问，不能取得证据时标记为人工待验证。
+5. 只有 `READY` 时才输出第 5 节规定的摘要和 Windows 提醒并从实际本机配置映射到 SDK；Agent 不得在回复或摘要中复述用户提供的沙箱密钥和密码，生产环境应用私钥和密码禁止提供给 Agent。
 
 Unix/macOS/Linux 快速沙箱的流程准备必须使用 integration flow 登记的 `sandbox_config.sh ensure` 入口：配置缺失时脚本内部创建，已存在时脚本内部复核；步骤 3 仅在首次准备为 `READY` 时执行 `reverify`，待配置时直接继续代码开发；代码开发完成且配置仍为 `READY` 后才使用 `summary` 展示摘要。`ensure|reverify` 会把既定重试耗尽转换为受控 `CREATE_PENDING|VERIFY_PENDING`，直接渲染统一消息并返回终态标记；Agent 不得直接选择创建分支、重复检查文件存在性或权限、读取字段结构、拼接沙箱 JSON、另写解析逻辑或自制摘要表。Windows 手工申领分支检查目标项目实际读取的本地配置，不把平台字段擅自改造成快速沙箱返回结构。
 
@@ -109,7 +109,7 @@ Unix/macOS/Linux 由 `sandbox_config.sh` 内部逐项校验，Agent 只消费退
 □ 检查 alipayPublicKey / appPublicKey / 商家账号 / 买家账号 userId / 买家登录账号 email / 买家账号 logonPassword / 买家账号 payPassword
   IF 任一缺失：当前校验失败 → RETRY_OR_PENDING
 
-□ 全部通过 → 不对客输出字段核对表、字段列表、独立的“字段完整性校验通过”提示或任何“沙箱测试通过”表述；创建阶段直接进入安全落盘，只输出机器标记和实际本机配置路径。代码开发完成且配置后置校验通过后，才按第 5.2 节只输出一张沙箱环境摘要表。
+□ 全部通过 → 不对客输出字段核对表、字段列表、独立的“字段完整性校验通过”提示或任何“沙箱测试通过”表述；创建阶段直接进入安全落盘，机器标记和实际本机配置路径只写入带统一前缀的内部事实。代码开发完成且配置后置校验通过后，才按第 5.2 节只输出一张沙箱环境摘要表。
 ```
 
 ---
@@ -131,21 +131,14 @@ Windows 手工沙箱：
 - 配置必须未被 Git 跟踪，并建立适用于该实际路径的忽略保护；不得因为 Windows 不使用 POSIX `0600` 而声称完成了该权限检查。
 - 只有实际检查到的字段才能进入后续 SDK 映射；无法自动核验的 Windows 文件访问控制或平台页面信息必须标记为人工待验证。
 
-Unix/macOS/Linux 创建阶段只输出实际本机配置路径和 `FLOW:SANDBOX_CONFIG_READY` 机器标记；不展示账号、密码、公钥或摘要。Windows 手工分支完成后输出实际本机配置路径。两条分支在代码开发完成且配置后置校验通过后，才进入摘要展示。
+Unix/macOS/Linux 创建阶段把实际本机配置路径和 `FLOW:SANDBOX_CONFIG_READY` 作为带 `ALIPAY_AIPAY_INTERNAL:` 前缀的 stderr 内部事实，stdout 为空；不展示账号、密码、公钥或摘要。Windows 手工分支完成后只在内部保留实际本机配置路径。两条分支在代码开发完成且配置后置校验通过后，才进入摘要展示。
 
 ### 5.2 对话摘要
 
-代码开发完成且配置后置校验通过后，Unix/macOS/Linux 从本文件所在的 `references/integration/modules/sandbox/` 目录使用 `bash ../scripts/sandbox_config.sh summary "<productType>" "<规范化项目路径>" "<已确认服务端语言>"` 复核并展示摘要；该脚本内部负责渲染 `sandbox.environment.summary` 与 `sandbox.environment.reminder`，Agent 不得绕过脚本自写摘要。Windows 使用同一消息目录从项目实际读取的本机配置生成摘要，执行：
+代码开发完成且配置后置校验通过后，Unix/macOS/Linux 从本文件所在的 `references/integration/modules/sandbox/` 目录使用 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox summary "<productType>" "<规范化项目路径>" "<已确认服务端语言>"` 复核并展示摘要；该脚本内部负责渲染 `sandbox.environment.summary` 与 `sandbox.environment.reminder`，Agent 不得绕过脚本自写摘要。Windows 使用同一消息目录从项目实际读取的本机配置生成摘要，执行：
 
-```bash
-MESSAGE_INPUT_JSON=$(jq -cn \
-  --arg productName "$PRODUCT_NAME" \
-  --arg configPath "$CONFIG_PATH" \
-  --arg environmentRows "$ENVIRONMENT_ROWS" \
-  '{productName:$productName,configPath:$configPath,environmentRows:$environmentRows}')
-printf '%s' "$MESSAGE_INPUT_JSON" \
-  | node ../../../normal/scripts/render_customer_message.mjs sandbox.environment.summary --variant DEFAULT
-printf '%s' '{}' | node ../../../normal/scripts/render_customer_message.mjs sandbox.environment.reminder --variant WINDOWS
+```powershell
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-summary --product-name "$PRODUCT_NAME" --config-path "$CONFIG_PATH" --environment-rows "$ENVIRONMENT_ROWS"
 ```
 
 摘要行按当前分支的实际来源依次包含应用 `appId/pid`、商家账号、买家账号及沙箱标识；账号未返回的可选字段直接省略，禁止编造。只有 Unix/macOS/Linux 快速沙箱工具实际返回且已校验的沙箱登录密码和支付密码可以进入摘要行；Windows 手工沙箱虽然允许用户在资料收集时提供当前沙箱密码，Agent 仍不得在摘要或后续回复中复述，只展示非敏感标识和本机保存提示。两类例外都不得扩展到生产环境账号、私钥或密码。
@@ -154,7 +147,7 @@ renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置�
 
 ### 5.3 配置准备完成后提示（卡点）
 
-输出 `sandbox.environment.summary` 后立即渲染 `sandbox.environment.reminder`：Unix/macOS/Linux 快速沙箱由 `sandbox_config.sh summary` 内部使用 `DEFAULT`；Windows 手工沙箱执行上方 `WINDOWS` 命令。该消息统一维护测试资金边界、本地文件与仓库安全、同一套生产密钥、私钥格式、沙箱/生产网关和按量付费 `api_mock_service_id` 替换提醒；不得在本文件或 Agent 回复中维护第二份近似话术。创建阶段不得提前渲染本提醒。
+`sandbox.environment.summary` 后立即渲染 `sandbox.environment.reminder`：Unix/macOS/Linux 由 `sandbox_config.sh summary` 使用 `DEFAULT`，Windows 使用上方 `WINDOWS` 命令。该消息只说明测试资金边界和配置位置；安全控制由脚本执行，生产配置与上线要求由步骤 7 的 `integration.safety.closeout` 输出。创建阶段不渲染，不维护文案副本。
 
 ### 5.4 沙箱对客展示白名单
 
@@ -181,7 +174,7 @@ renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置�
 
 `curl` 调用下单接口并取得 HTML 支付表单只属于接口冒烟检查，不能替代用户付款指引，也不能据此标记步骤 6 完成。必须提供用户可在浏览器中打开的支付页面地址；页面打开沙箱收银台后，以下两种体验方式同时告知用户，由用户自行二选一。
 
-紧接当前系统对应的网站支付付款指引渲染 `sandbox.android.client`，统一输出 Android-only、官方直链、直链/页面二维码失败后的开放平台沙箱工具页，以及禁止 iOS、应用市场、第三方站点和自编 URL 的口径。
+紧接当前系统对应的网站支付付款指引执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message sandbox-android-client`，统一输出 Android-only、官方直链、直链/页面二维码失败后的开放平台沙箱工具页，以及禁止 iOS、应用市场、第三方站点和自编 URL 的口径。
 
 `resultPageInstruction` 必须按实际回跳分支二选一，禁止同时输出两项：
 
@@ -221,6 +214,7 @@ renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置�
 | 创建失败且既定重试耗尽 | `ensure` 使用 `sandbox.configuration.pending/CREATE`，记录 `CREATE_PENDING` 并继续代码实现；代码开发完成后固定提醒用户可对 Agent 说“重新创建并配置沙箱” |
 | 候选字段或已有配置字段复核失败 | 最多自动重试 2 次、每次间隔 3 秒；仍失败时使用 `sandbox.configuration.pending/CREATE|VERIFY` 并继续代码实现，不展示原始字段或响应 |
 | 待配置状态 | 跳过摘要、配置后置校验、按量付费联调和网站支付付款体验；最终 checklist 保持部分通过或未通过，不得宣称代码开发全部通过或生产就绪 |
+| Windows 未提供资料且未明确要求当前配置 | 记录 `VERIFY_PENDING` 并继续代码实现；不输出失败或申领消息，不探测、不读取、不伪造配置 |
 | Windows 手工申领资料或本地项目配置校验未通过 | 使用 `sandbox.create.failure/WINDOWS`；按第 4 节逐项校验，只补问或更正实际缺失、错误字段后由 Agent 更新本机配置，不要求用户执行 Skill 内部脚本，不伪造快速沙箱结果，也不调用快速沙箱重建 |
 
 本模块不维护失败话术副本；Unix/macOS/Linux 待配置正文由 `sandbox.configuration.pending` 固定维护，Windows 缺失字段和恢复动作仍通过 `sandbox.create.failure/WINDOWS` 的受控变量传入。

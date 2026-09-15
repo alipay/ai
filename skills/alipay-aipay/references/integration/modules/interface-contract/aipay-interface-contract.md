@@ -1,6 +1,6 @@
-# 按量付费本地接口契约
+# AI 按量付费本地接口契约
 
-本文是按量付费代码开发的默认本地依据。在线文档只在本地契约或示例缺失、字段不确定、排查官方错误码、用户明确要求或官方能力变化时作为 fallback 读取。
+本文是 AI 按量付费代码开发的默认本地依据。在线文档只在本地契约或示例缺失、字段不确定、排查官方错误码、用户明确要求或官方能力变化时作为 fallback 读取。
 
 sourceUrl:
 
@@ -10,7 +10,7 @@ sourceUrl:
 
 ## 默认范围
 
-按量付费只实现 HTTP 402、`Payment-Needed`、`Payment-Proof`、`alipay.aipay.agent.payment.verify` 和 `alipay.aipay.agent.fulfillment.confirm`。不得混入网站支付或 APP 支付的统一收单接口、异步通知或 `notify_url`。
+AI 按量付费只实现 HTTP 402、`Payment-Needed`、`Payment-Proof`、`alipay.aipay.agent.payment.verify` 和 `alipay.aipay.agent.fulfillment.confirm`。不得混入 AI 网页应用收款或 AI 移动应用收款的统一收单接口、异步通知或 `notify_url`。
 
 ## 402 与账单
 
@@ -43,11 +43,10 @@ sourceUrl:
 - 返回 `out_trade_no` 等于本地订单号。
 - 返回 `resource_id` 等于当前请求资源。
 - `trade_no` 未被重复履约。
-- 本地订单未过期、未取消、未完成。
+- 本地订单处于明确允许的支付/履约状态。首次进入履约前必须仍在 `pay_before` 内且未取消；已经原子进入待确认或已完成状态的同一订单，只能重试确认或返回已保存结果，不得因支付截止时间已过而重复生成资源。
 
 任一校验失败时返回 402，让智能体重新支付；不得返回资源。
 
 ## 履约确认
 
 资源生成后调用 `alipay.aipay.agent.fulfillment.confirm`，业务入参只有 `trade_no`。必须在履约确认成功后再把订单标记为最终完成。确认失败时允许同一 `Payment-Proof` 重试确认，避免资源已生成但平台未记录履约。
-

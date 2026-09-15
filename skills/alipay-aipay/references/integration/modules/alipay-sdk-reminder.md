@@ -48,6 +48,13 @@ SDK 的引入方式取决于对应语言的包管理方式和实际导出方式�
 - 包的导出方式可能随版本更新而改变，务必验证
 - `code-examples/nodejs/` 中的 `require` / `import` 行只用于展示 SDK 调用位置，不作为当前项目可复制依据；生成或修改真实 Node.js 项目前，必须以目标项目实际安装的 `alipay-sdk` 包和项目模块制式为准重新确定导入方式
 
+## 运行与配置边界
+
+1. 沙箱与生产共用支付校验控制流，只切换已确认配置；生产路径不得存在 Mock、固定成功或跳过验签旁路。
+2. `alipayPublicKey` 公钥模式只用当前 SDK 的普通执行 API；证书 API 要求项目明确采用证书模式且同时配置应用、支付宝和支付宝根证书。
+3. Unix/macOS/Linux 从 runner 确认的项目根定位 `.alipay-sandbox.json`，禁止依赖 `cwd`、`getcwd()`、`Directory.GetCurrentDirectory()`、`user.dir` 或 Agent 启动目录。
+4. 配置缺失、模式错配或校验失败时明确失败；不得回退示例值、占位密钥、生产网关、非固定沙箱 `serviceId` 或无验签请求。
+
 ---
 
 ## 页面跳转类 API 方法选择

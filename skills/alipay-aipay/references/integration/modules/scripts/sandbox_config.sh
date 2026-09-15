@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Sensitive sandbox fields are held in shell variables below; never inherit
+# caller tracing into the parsing and persistence path.
+set +x
 set -u
 
 MODE="${1:-}"
@@ -10,6 +13,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NORMAL_SCRIPTS="${SCRIPT_DIR}/../../../normal/scripts"
 RENDERER="${NORMAL_SCRIPTS}/render_customer_message.mjs"
 DETECTOR="${NORMAL_SCRIPTS}/detect_dev_tool.sh"
+COMMON_SCRIPT="${NORMAL_SCRIPTS}/common.sh"
+
+if [ -f "$COMMON_SCRIPT" ]; then
+  # shellcheck source=/dev/null
+  source "$COMMON_SCRIPT"
+else
+  echo "SANDBOX_ERROR:缺少公共脚本 $COMMON_SCRIPT" >&2
+  exit 1
+fi
 
 case "$MODE" in
   create|verify|ensure|reverify)
@@ -53,8 +65,18 @@ LANGUAGE="$(normalize_language "$LANGUAGE")" || {
 CONFIG_PATH="${PROJECT_PATH}/.alipay-sandbox.json"
 GITIGNORE_PATH="${PROJECT_PATH}/.gitignore"
 
+render_pending() {
+  printf '%s' '{}' | node "$RENDERER" sandbox.configuration.pending --variant "$PENDING_VARIANT" || {
+    echo "SANDBOX_ERROR:沙箱待配置消息渲染失败" >&2
+    return 1
+  }
+  emit_control "CUSTOMER_MESSAGE_DELIVERY_REQUIRED=sandbox.configuration.pending" || return 1
+  emit_control_field "SANDBOX_PENDING_PATH" "$CONFIG_PATH" || return 1
+  emit_control "$PENDING_MARKER"
+}
+
 if [ "$MODE" = "summary" ]; then
-  case "$PRODUCT_TYPE" in aipay) PRODUCT_NAME="按量付费" ;; webpay) PRODUCT_NAME="网站支付" ;; apppay) PRODUCT_NAME="APP 支付" ;; *) echo "SANDBOX_ERROR:产品非法，仅支持 aipay|webpay|apppay" >&2; exit 2 ;; esac
+  case "$PRODUCT_TYPE" in aipay) PRODUCT_NAME="AI 按量付费" ;; webpay) PRODUCT_NAME="AI 网页应用收款" ;; apppay) PRODUCT_NAME="AI 移动应用收款" ;; *) echo "SANDBOX_ERROR:产品非法，仅支持 aipay|webpay|apppay" >&2; exit 2 ;; esac
 fi
 case "$PROJECT_PATH" in /*) ;; *) echo "SANDBOX_ERROR:项目路径必须为绝对路径" >&2; exit 2 ;; esac
 [ -d "$PROJECT_PATH" ] && [ ! -L "$PROJECT_PATH" ] || { echo "SANDBOX_ERROR:项目目录不可访问或不安全" >&2; exit 2; }
@@ -87,13 +109,22 @@ if [ "$MODE" = "ensure" ] || [ "$MODE" = "reverify" ]; then
   while true; do
     ensure_output=$(bash "$0" "$ENSURE_MODE" "$PROJECT_PATH" "$LANGUAGE" 2>&1)
     ensure_rc=$?
+    if [ "$ensure_rc" -eq "$ALIPAY_CLI_LOCAL_STATE_PERMISSION_EXIT_CODE" ] &&
+       [ "$(printf '%s\n' "$ensure_output" | grep -Fxc 'ALIPAY_AIPAY_INTERNAL:SANDBOX_LOCAL_FS_PERMISSION_MODE=CREATE')" -eq 1 ] &&
+       [ "$(printf '%s\n' "$ensure_output" | grep -Fxc 'ALIPAY_AIPAY_INTERNAL:CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION')" -eq 1 ]; then
+      render_pending || exit 1
+      emit_control "SANDBOX_LOCAL_FS_PERMISSION_MODE=CREATE"
+      emit_control "CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION"
+      exit "$ALIPAY_CLI_LOCAL_STATE_PERMISSION_EXIT_CODE"
+    fi
     if [ "$ensure_rc" -eq 0 ] &&
-       [ "$(printf '%s\n' "$ensure_output" | grep -Fxc "SANDBOX_CONFIG_PATH=$CONFIG_PATH")" -eq 1 ] &&
-       [ "$(printf '%s\n' "$ensure_output" | grep -Fxc 'FLOW:SANDBOX_CONFIG_READY')" -eq 1 ] &&
+       [ "$(printf '%s\n' "$ensure_output" | grep -Fxc "ALIPAY_AIPAY_INTERNAL:SANDBOX_CONFIG_PATH=$CONFIG_PATH")" -eq 1 ] &&
+       [ "$(printf '%s\n' "$ensure_output" | grep -Fxc 'ALIPAY_AIPAY_INTERNAL:FLOW:SANDBOX_CONFIG_READY')" -eq 1 ] &&
        ! printf '%s\n' "$ensure_output" | grep -q '^SANDBOX_ERROR:'; then
-      echo "SANDBOX_ENSURE_ACTION=$ENSURE_ACTION"
-      echo "SANDBOX_CONFIG_PATH=$CONFIG_PATH"
-      echo "FLOW:SANDBOX_CONFIG_READY"
+      emit_control_field "SANDBOX_ENSURE_ACTION" "$ENSURE_ACTION" || exit 1
+      emit_control_field "SANDBOX_CONFIG_PATH" "$CONFIG_PATH" || exit 1
+      emit_control "FLOW:SANDBOX_CONFIG_READY"
+      emit_stage_metric "integration.create_sandbox"
       exit 0
     fi
 
@@ -106,12 +137,7 @@ if [ "$MODE" = "ensure" ] || [ "$MODE" = "reverify" ]; then
     break
   done
 
-  printf '%s' '{}' | node "$RENDERER" sandbox.configuration.pending --variant "$PENDING_VARIANT" || {
-    echo "SANDBOX_ERROR:沙箱待配置消息渲染失败" >&2
-    exit 1
-  }
-  echo "SANDBOX_PENDING_PATH=$CONFIG_PATH"
-  echo "$PENDING_MARKER"
+  render_pending || exit 1
   exit 0
 fi
 
@@ -183,17 +209,19 @@ ensure_config_permissions() {
 validate_data() {
   local data="$1"
   echo "$data" | jq -e --arg language "$LANGUAGE" '
-    (.appIds|type)=="array" and (.appIds|length)>0 and .appIds[0] as $app |
-    ($app.appId|type)=="string" and ($app.appId|length)>0 and
-    ($app.alipayPublicKey|type)=="string" and ($app.alipayPublicKey|length)>0 and
-    ($app.appPublicKey|type)=="string" and ($app.appPublicKey|length)>0 and
-    (if $language=="Java" then ($app.appPrivateKey|type)=="string" and ($app.appPrivateKey|length)>0
-     else ($app.appPrivatePkcsKey|type)=="string" and ($app.appPrivatePkcsKey|length)>0 end) and
-    (.sandboxAccounts.partner.userId|type)=="string" and (.sandboxAccounts.partner.userId|length)>0 and
-    (.sandboxAccounts.user.userId|type)=="string" and (.sandboxAccounts.user.userId|length)>0 and
-    (.sandboxAccounts.user.email|type)=="string" and (.sandboxAccounts.user.email|length)>0 and
-    (.sandboxAccounts.user.logonPassword|type)=="string" and (.sandboxAccounts.user.logonPassword|length)>0 and
-    (.sandboxAccounts.user.payPassword|type)=="string" and (.sandboxAccounts.user.payPassword|length)>0
+    (.appIds|type)=="array" and (.appIds|length)>0 and
+    (.appIds[0] as $app |
+      ($app.appId|type)=="string" and ($app.appId|length)>0 and
+      ($app.alipayPublicKey|type)=="string" and ($app.alipayPublicKey|length)>0 and
+      ($app.appPublicKey|type)=="string" and ($app.appPublicKey|length)>0 and
+      (if $language=="Java" then ($app.appPrivateKey|type)=="string" and ($app.appPrivateKey|length)>0
+       else ($app.appPrivatePkcsKey|type)=="string" and ($app.appPrivatePkcsKey|length)>0 end) and
+      (.sandboxAccounts.partner.userId|type)=="string" and (.sandboxAccounts.partner.userId|length)>0 and
+      (.sandboxAccounts.user.userId|type)=="string" and (.sandboxAccounts.user.userId|length)>0 and
+      (.sandboxAccounts.user.email|type)=="string" and (.sandboxAccounts.user.email|length)>0 and
+      (.sandboxAccounts.user.logonPassword|type)=="string" and (.sandboxAccounts.user.logonPassword|length)>0 and
+      (.sandboxAccounts.user.payPassword|type)=="string" and (.sandboxAccounts.user.payPassword|length)>0
+    )
   ' >/dev/null 2>&1
 }
 
@@ -212,16 +240,40 @@ render_summary() {
   printf '%s' '{}' | node "$RENDERER" sandbox.environment.reminder --variant DEFAULT || return 1
 }
 
+render_create_failure() {
+  local error_code trace_id
+  error_code=$(printf '%s' "$business" | jq -r '
+    if (.errorCode? | type) == "string" and (.errorCode | test("^[A-Za-z0-9_.:-]{1,80}$"))
+    then .errorCode else "UNKNOWN" end
+  ' 2>/dev/null) || error_code="UNKNOWN"
+  trace_id=$(printf '%s' "$business" | jq -r '
+    if (.traceId? | type) == "string" and (.traceId | test("^[A-Za-z0-9_.:-]{1,128}$"))
+    then .traceId else "未返回" end
+  ' 2>/dev/null) || trace_id="未返回"
+  printf 'SANDBOX_ERROR:%s traceId=%s\n' "$error_code" "$trace_id" >&2
+}
+
 if [ "$MODE" = "create" ]; then
   command -v alipay-cli >/dev/null 2>&1 || { echo "SANDBOX_ERROR:缺少 alipay-cli" >&2; exit 1; }
   { [ ! -e "$CONFIG_PATH" ] && [ ! -L "$CONFIG_PATH" ]; } || { echo "SANDBOX_ERROR:配置文件已存在或为不安全符号链接，禁止重复创建或覆盖" >&2; exit 1; }
   ensure_config_not_tracked || { echo "SANDBOX_ERROR:沙箱配置路径已被 Git 跟踪，必须先从版本控制中移除" >&2; exit 1; }
   ensure_gitignore_protection || { echo "SANDBOX_ERROR:无法为沙箱配置建立 Git 忽略保护" >&2; exit 1; }
   PLATFORM=$(bash "$DETECTOR") || PLATFORM="unknown"
+  init_platform_id
+  init_alipay_cli_biz_info || { echo "SANDBOX_ERROR:无法初始化 alipay-cli 业务上报信息" >&2; exit 1; }
+  if ! require_alipay_cli_local_state_access; then
+    emit_control "SANDBOX_LOCAL_FS_PERMISSION_MODE=CREATE"
+    emit_control "CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION"
+    exit "$ALIPAY_CLI_LOCAL_STATE_PERMISSION_EXIT_CODE"
+  fi
   attempt=1
   while true; do
-    raw=$(env -u PRODUCT PLATFORM="$PLATFORM" alipay-cli mcp call alipay-anonymous-sandbox.createAnonymousSandbox --data '{"request":{"appType":"PUBLICAPP"}}' --json 2>&1)
+    raw=$(env -u PRODUCT PLATFORM="$PLATFORM" PLATFORM_ID="${PLATFORM_ID:-}" ALIPAYCLI_BIZ_INFO="$ALIPAYCLI_BIZ_INFO" alipay-cli mcp call alipay-anonymous-sandbox.createAnonymousSandbox --data '{"request":{"appType":"PUBLICAPP"}}' --json 2>&1)
     rc=$?
+    if alipay_cli_has_local_state_permission_error "$raw"; then
+      echo "SANDBOX_ERROR:快速沙箱创建结果不明，禁止自动重复创建" >&2
+      exit 1
+    fi
     [ "$rc" -eq 0 ] && break
     if printf '%s' "$raw" | grep -qiE '版本过旧|version.*old'; then break; fi
     if [ "$attempt" -lt 3 ] && printf '%s' "$raw" | grep -qiE 'MCP_SERVICE_ERROR|SERVICE_UNSTABLE|timeout|timed out|connection|network|ECONN|socket|temporar'; then
@@ -241,15 +293,19 @@ if [ "$MODE" = "create" ]; then
   fi
   if [ "$(echo "$business" | jq -r '.success // false')" != "true" ] && echo "$business" | jq -r '.msg // .resultMsg // ""' | grep -q '证书密钥'; then
     sleep 2
-    raw=$(env -u PRODUCT PLATFORM="$PLATFORM" alipay-cli mcp call alipay-anonymous-sandbox.createAnonymousSandbox --data '{"request":{"appType":"PUBLICAPP"}}' --json 2>&1)
+    raw=$(env -u PRODUCT PLATFORM="$PLATFORM" PLATFORM_ID="${PLATFORM_ID:-}" ALIPAYCLI_BIZ_INFO="$ALIPAYCLI_BIZ_INFO" alipay-cli mcp call alipay-anonymous-sandbox.createAnonymousSandbox --data '{"request":{"appType":"PUBLICAPP"}}' --json 2>&1)
     rc=$?
+    if alipay_cli_has_local_state_permission_error "$raw"; then
+      echo "SANDBOX_ERROR:快速沙箱创建结果不明，禁止自动重复创建" >&2
+      exit 1
+    fi
     [ "$rc" -eq 0 ] || { echo "SANDBOX_ERROR:证书密钥临时错误重试后 CLI 调用失败" >&2; exit 1; }
     outer=$(extract_json_payload "$raw") || { echo "SANDBOX_ERROR:重试输出中未找到唯一合法 JSON 对象" >&2; exit 1; }
     text=$(echo "$outer" | jq -r '.result.content[0].text // .content[0].text // empty')
     if [ -n "$text" ]; then business=$(printf '%s' "$text" | jq -c . 2>/dev/null) || { echo "SANDBOX_ERROR:重试 content[0].text 非法" >&2; exit 1; }; else business="$outer"; fi
   fi
   [ "$(echo "$business" | jq -r '.success // false')" = "true" ] || {
-    echo "$business" | jq -r '"SANDBOX_ERROR:"+(.errorCode//"UNKNOWN"|tostring)+" "+(.msg//.resultMsg//"快速沙箱创建失败")+" traceId="+(.traceId//"未返回"|tostring)' >&2
+    render_create_failure
     exit 1
   }
   data=$(echo "$business" | jq -c '.data // null') || exit 1
@@ -280,10 +336,12 @@ fi
 
 if [ "$MODE" = "summary" ]; then
   render_summary "$data" || exit 1
-  echo "SANDBOX_CONFIG_PATH=$CONFIG_PATH"
-  echo "FLOW:SANDBOX_CONFIGURED"
+  emit_control "CUSTOMER_MESSAGE_DELIVERY_REQUIRED=sandbox.environment.summary" || exit 1
+  emit_control_field "SANDBOX_CONFIG_PATH" "$CONFIG_PATH" || exit 1
+  emit_control "FLOW:SANDBOX_CONFIGURED"
   exit 0
 fi
 
-echo "SANDBOX_CONFIG_PATH=$CONFIG_PATH"
-echo "FLOW:SANDBOX_CONFIG_READY"
+emit_control_field "SANDBOX_CONFIG_PATH" "$CONFIG_PATH" || exit 1
+emit_control "FLOW:SANDBOX_CONFIG_READY"
+emit_stage_metric "integration.create_sandbox"

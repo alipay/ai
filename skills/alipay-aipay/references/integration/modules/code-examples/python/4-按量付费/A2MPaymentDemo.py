@@ -3,10 +3,9 @@
 """
 A2M 智能收产品接入示例 - Python 版本
 
-本示例展示 A2M 核心协议与 SDK 调用流程。
-订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
-需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
-禁止将本文件原样用于生产或判定为生产就绪。
+本示例展示 A2M 核心协议、严格验付和幂等履约流程。
+必须通过 configure_order_repository 绑定项目真实持久化实现；
+端口未绑定时明确失败，不使用内存订单、固定资源或验付字段缺失兜底。
 
 本文件演示 A2M 核心协议调用流程：
 1. 返回 402 Payment-Needed Header
@@ -24,7 +23,10 @@ pip install flask alipay-sdk-python pycryptodome
 import base64
 import json
 import os
+import re
 import time
+import uuid
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote
 from Crypto.Signature import pkcs1_15
@@ -56,6 +58,36 @@ RESOURCE_CONFIG = {
     'path': '/demo/a2m/resource',
     'goodsName': 'AI 生成内容服务'
 }
+
+ORDER_REPOSITORY = None
+
+
+def configure_order_repository(repository):
+    """绑定项目的真实持久化端口。
+
+    实现必须使用数据库事务和唯一约束，并提供 create_pending、
+    find_by_out_trade_no、prepare_fulfillment 和 mark_fulfilled。
+    prepare_fulfillment 必须原子地校验订单、只生成一次资源，
+    并返回已持久化的 PENDING_CONFIRM 或 FULFILLED 结果。
+    订单快照将支付状态映射为 PENDING_PAYMENT/PAID，
+    将履约状态映射为 UNFULFILLED/PENDING_CONFIRM/FULFILLED。
+    """
+    required_methods = (
+        'create_pending',
+        'find_by_out_trade_no',
+        'prepare_fulfillment',
+        'mark_fulfilled'
+    )
+    if repository is None or any(not callable(getattr(repository, name, None)) for name in required_methods):
+        raise RuntimeError(f'order_repository 必须实现 {", ".join(required_methods)}')
+    global ORDER_REPOSITORY
+    ORDER_REPOSITORY = repository
+
+
+def require_order_repository():
+    if ORDER_REPOSITORY is None:
+        raise RuntimeError('尚未绑定项目真实 order_repository，禁止回退到内存订单')
+    return ORDER_REPOSITORY
 
 # 初始化支付宝客户端
 def init_alipay_client():
@@ -129,6 +161,33 @@ def base64url_decode(data):
     return base64.urlsafe_b64decode(data).decode('utf-8')
 
 
+def normalize_amount(value):
+    text = str(value or '').strip()
+    if not re.fullmatch(r'\d+(?:\.\d{1,2})?', text):
+        return None
+    return f'{Decimal(text):.2f}'
+
+
+def amounts_equal(left, right):
+    left_amount = normalize_amount(left)
+    right_amount = normalize_amount(right)
+    return left_amount is not None and right_amount is not None and left_amount == right_amount
+
+
+def is_future(value):
+    try:
+        return datetime.fromisoformat(value).timestamp() > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
+def is_exact_sandbox_mode():
+    return (
+        ALIPAY_CONFIG['gateway'] == 'https://openapi-sandbox.dl.alipaydev.com/gateway.do'
+        and ALIPAY_CONFIG['serviceId'] == 'api_mock_service_id'
+    )
+
+
 def json_response(data, status_code=200, headers=None):
     """发送 JSON 响应"""
     response = Response(
@@ -170,7 +229,7 @@ def create_payment_required_response():
     """创建 402 支付请求响应"""
     try:
         # 1. 构造订单信息
-        out_trade_no = f"ORDER_{int(time.time() * 1000)}"
+        out_trade_no = f"ORDER_{int(time.time() * 1000)}_{uuid.uuid4().hex[:12]}"
         amount = '0.01'  # 单位：元
         currency = 'CNY'
         resource_id = RESOURCE_CONFIG['path']
@@ -191,7 +250,18 @@ def create_payment_required_response():
             'service_id': ALIPAY_CONFIG['serviceId']
         }, ALIPAY_CONFIG['merchantPrivateKey'])
         
-        # 4. 构造 Payment-Needed Header 内容
+        require_order_repository().create_pending({
+            'out_trade_no': out_trade_no,
+            'amount': normalize_amount(amount),
+            'currency': currency,
+            'resource_id': resource_id,
+            'goods_name': goods_name,
+            'pay_before': pay_before,
+            'order_status': 'PENDING_PAYMENT',
+            'fulfill_status': 'UNFULFILLED'
+        })
+
+        # 4. 持久化成功后构造 Payment-Needed Header 内容
         payment_needed = {
             'protocol': {
                 'out_trade_no': out_trade_no,
@@ -261,23 +331,14 @@ def verify_payment_and_deliver_resource(payment_proof):
             
             # 校验必要字段
             if not payment_proof_value or not payment_proof_value.strip():
-                return json_response({
-                    'code': 'INVALID_PAYMENT_PROOF_FORMAT',
-                    'message': 'Payment-Proof 格式错误：缺少 payment_proof'
-                }, status_code=400)
+                return create_payment_required_response()
             
             if not trade_no or not trade_no.strip():
-                return json_response({
-                    'code': 'INVALID_PAYMENT_PROOF_FORMAT',
-                    'message': 'Payment-Proof 格式错误：缺少 trade_no'
-                }, status_code=400)
+                return create_payment_required_response()
                 
         except Exception as e:
             print(f'Payment-Proof 解析失败：{str(e)}')
-            return json_response({
-                'code': 'INVALID_PAYMENT_PROOF_FORMAT',
-                'message': f'Payment-Proof 格式错误：{str(e)}'
-            }, status_code=400)
+            return create_payment_required_response()
         
         # 2. 调用支付宝 API 验证支付凭证
         # 注意：必须使用 Model 类，不能使用 dict
@@ -289,15 +350,9 @@ def verify_payment_and_deliver_resource(payment_proof):
         model = AlipayAipayAgentPaymentVerifyModel()
         model.payment_proof = payment_proof_value
         model.trade_no = trade_no
-        model.client_session = client_session
+        if client_session:
+            model.client_session = client_session
         verify_request.biz_model = model
-        
-        # 如果 SDK 版本支持直接使用 dict，也可以用 biz_content（备选方案）
-        # verify_request.biz_content = json.dumps({
-        #     'payment_proof': payment_proof_value,
-        #     'trade_no': trade_no,
-        #     'client_session': client_session
-        # }, ensure_ascii=False)
         
         verify_response_content = alipay_client.execute(verify_request)
         verify_response = json.loads(verify_response_content)
@@ -308,70 +363,73 @@ def verify_payment_and_deliver_resource(payment_proof):
         response_data = verify_response.get('alipay_aipay_agent_payment_verify_response', verify_response)
         if response_data.get('code') != '10000':
             print(f'支付凭证验证失败：{response_data.get("sub_msg")}')
-            return json_response({
-                'code': response_data.get('sub_code', 'VERIFY_FAILED'),
-                'message': response_data.get('sub_msg', '支付凭证验证失败')
-            }, status_code=400)
+            return create_payment_required_response()
         
         # 4. 验证成功，获取订单信息
-        verify_trade_no = response_data.get('trade_no') or response_data.get('tradeNo') or ''
+        returned_trade_no = response_data.get('trade_no') or response_data.get('tradeNo') or ''
         verify_out_trade_no = response_data.get('out_trade_no') or response_data.get('outTradeNo') or ''
-        resource_id = response_data.get('resource_id') or response_data.get('resourceId') or ''
-        # 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
-        resource_id_verified = resource_id or RESOURCE_CONFIG['path']
+        returned_amount = response_data.get('amount')
+        returned_resource_id = response_data.get('resource_id') or response_data.get('resourceId') or ''
         active = response_data.get('active')
+
+        repository = require_order_repository()
+        order = repository.find_by_out_trade_no(verify_out_trade_no) if verify_out_trade_no else None
+        sandbox_mode = is_exact_sandbox_mode()
+        verify_trade_no = returned_trade_no or (trade_no if sandbox_mode else '')
+        verify_amount = returned_amount or (order.get('amount') if sandbox_mode and order else '')
+        resource_id_verified = returned_resource_id or (order.get('resource_id') if sandbox_mode and order else '')
         
         print(f"支付凭证验证成功：tradeNo={verify_trade_no}, outTradeNo={verify_out_trade_no}")
         
         # 5. 校验凭证有效性（active=true 表示凭证有效）
-        if active is not True:
+        if (
+            active is not True
+            or not verify_trade_no
+            or verify_trade_no != trade_no
+            or not verify_out_trade_no
+            or not resource_id_verified
+        ):
             print(f"支付凭证无效或已过期：outTradeNo={verify_out_trade_no}")
-            return json_response({
-                'code': 'INVALID_PAYMENT_PROOF',
-                'message': '支付凭证无效或已过期'
-            }, status_code=400)
-        
-        # 6. 【TODO】查询订单是否存在（以数据库为准）
-        # order = order_repository.find_by_out_trade_no(verify_out_trade_no)
-        # if not order:
-        #     return json_response({
-        #         'code': 'ORDER_NOT_FOUND',
-        #         'message': '订单不存在'
-        #     }, status_code=404)
-        
-        # 7. 【TODO】资源防串校验
-        # if resource_id != order.resource_id:
-        #     return json_response({
-        #         'code': 'RESOURCE_ID_MISMATCH',
-        #         'message': '资源 ID 不匹配，可能存在资源串改风险'
-        #     }, status_code=403)
-        
-        # 8. 【TODO】履约防重放校验（数据库幂等控制）
-        # if order.fulfill_status == 'FULFILLED':
-        #     return json_response({
-        #         'code': 'ALREADY_FULFILLED',
-        #         'message': '订单已履约，不重复提供',
-        #         'already_fulfilled': True
-        #     }, status_code=200)
-        
-        # 9. 生成资源内容
-        service_result = generate_service_resource(resource_id_verified)
-        
-        # 10. 【TODO】履约记录落库
-        # fulfillment_record_repository.save({...})
-        
-        # 11. 【TODO】保存待确认履约状态
-        # 实际生产中建议先保存 service_result 和 PENDING_CONFIRM 状态。
-        # fulfillment.confirm 成功后再标记 FULFILLED；如果确认失败，
-        # 允许同一笔 Payment-Proof 重试确认，避免误返回成功。
-        # order_repository.update(verify_out_trade_no, {
-        #     'order_status': 'PAID',
-        #     'fulfill_status': 'PENDING_CONFIRM',
-        #     'trade_no': verify_trade_no,
-        #     'service_result': service_result
-        # })
+            return create_payment_required_response()
 
-        fulfillment_trade_no = verify_trade_no or trade_no
+        amount_matches = order and amounts_equal(order.get('amount'), verify_amount)
+        resource_matches = (
+            order
+            and order.get('resource_id') == resource_id_verified
+            and resource_id_verified == RESOURCE_CONFIG['path']
+        )
+        fulfill_status = order.get('fulfill_status') if order else None
+        fulfillment_in_progress = fulfill_status in ('PENDING_CONFIRM', 'FULFILLED')
+        order_usable = (
+            order
+            and order.get('currency') == 'CNY'
+            and order.get('order_status') in ('PENDING_PAYMENT', 'PAID')
+            and fulfill_status in ('UNFULFILLED', 'PENDING_CONFIRM', 'FULFILLED')
+            and (fulfillment_in_progress or is_future(order.get('pay_before')))
+        )
+        if not amount_matches or not resource_matches or not order_usable:
+            return create_payment_required_response()
+
+        fulfillment = repository.prepare_fulfillment({
+            'out_trade_no': verify_out_trade_no,
+            'trade_no': verify_trade_no,
+            'expected_amount': normalize_amount(verify_amount),
+            'expected_resource_id': resource_id_verified,
+            'create_resource': lambda: generate_service_resource(resource_id_verified)
+        })
+        if (
+            not fulfillment
+            or fulfillment.get('state') not in ('PENDING_CONFIRM', 'FULFILLED')
+            or not fulfillment.get('service_result')
+        ):
+            raise RuntimeError('order_repository.prepare_fulfillment 未返回已持久化的履约结果')
+        service_result = fulfillment['service_result']
+        if fulfillment['state'] == 'FULFILLED':
+            return successful_resource_response(
+                verify_trade_no, verify_out_trade_no, resource_id_verified, service_result, True
+            )
+
+        fulfillment_trade_no = verify_trade_no
         print(f"资源已生成，准备发送履约确认：outTradeNo={verify_out_trade_no}, tradeNo={fulfillment_trade_no}")
 
         # 12. 发送履约确认到支付宝，确认成功后才返回成功交付
@@ -382,33 +440,13 @@ def verify_payment_and_deliver_resource(payment_proof):
                 'message': '资源已生成但履约确认失败，请稍后使用同一 Payment-Proof 重试'
             }, status_code=502)
 
-        # 12.1 【TODO】履约确认成功后，再标记订单已履约
-        # order_repository.update(verify_out_trade_no, {
-        #     'fulfill_status': 'FULFILLED',
-        #     'fulfilled_at': datetime.now(timezone.utc).astimezone().isoformat()
-        # })
+        repository.mark_fulfilled(verify_out_trade_no, fulfillment_trade_no)
 
         print(f"履约确认成功：outTradeNo={verify_out_trade_no}, tradeNo={fulfillment_trade_no}")
         
-        # 13. 构造 Payment-Validation Header
-        payment_validation = {
-            'trade_no': fulfillment_trade_no,
-            'out_trade_no': verify_out_trade_no,
-            'validated': True,
-            'resource_id': resource_id_verified
-        }
-        
-        payment_validation_encoded = base64url_encode(json.dumps(payment_validation, ensure_ascii=False))
-        
-        # 14. 返回资源内容
-        return json_response({
-            'resource_id': resource_id_verified,
-            'content': service_result,
-            'trade_no': fulfillment_trade_no,
-            'out_trade_no': verify_out_trade_no,
-            'already_fulfilled': False,
-            'fulfillment_confirmed': True
-        }, headers={'Payment-Validation': payment_validation_encoded})
+        return successful_resource_response(
+            fulfillment_trade_no, verify_out_trade_no, resource_id_verified, service_result, False
+        )
         
     except Exception as e:
         print(f'支付凭证验证异常：{str(e)}')
@@ -416,6 +454,23 @@ def verify_payment_and_deliver_resource(payment_proof):
             'code': 'VERIFY_FAILED',
             'message': f'支付凭证验证失败：{str(e)}'
         }, status_code=500)
+
+
+def successful_resource_response(trade_no, out_trade_no, resource_id, service_result, already_fulfilled):
+    payment_validation = base64url_encode(json.dumps({
+        'trade_no': trade_no,
+        'out_trade_no': out_trade_no,
+        'validated': True,
+        'resource_id': resource_id
+    }, ensure_ascii=False))
+    return json_response({
+        'resource_id': resource_id,
+        'content': service_result,
+        'trade_no': trade_no,
+        'out_trade_no': out_trade_no,
+        'already_fulfilled': already_fulfilled,
+        'fulfillment_confirmed': True
+    }, headers={'Payment-Validation': payment_validation})
 
 
 def generate_service_resource(resource_id):

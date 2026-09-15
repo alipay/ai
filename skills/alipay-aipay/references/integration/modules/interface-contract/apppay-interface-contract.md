@@ -1,6 +1,6 @@
-# APP 支付本地接口契约
+# AI 移动应用收款本地接口契约
 
-本文是 APP 支付服务端下单接口的默认本地依据。在线文档只在本地契约或示例缺失、字段不确定、排查官方错误码、用户明确要求或官方能力变化时作为 fallback 读取。
+本文是 AI 移动应用收款服务端下单接口的默认本地依据。在线文档只在本地契约或示例缺失、字段不确定、排查官方错误码、用户明确要求或官方能力变化时作为 fallback 读取。
 
 sourceUrl:
 
@@ -10,11 +10,11 @@ sourceUrl:
 
 ## 默认范围
 
-APP 支付必须覆盖：`alipay.trade.app.pay`、交易查询、退款、退款查询、关闭交易、异步通知和服务端订单查询链路。
+AI 移动应用收款必须覆盖：`alipay.trade.app.pay`、交易查询、退款、退款查询、关闭交易、异步通知和服务端订单查询链路。
 
 查询、退款、退款查询、关闭交易读取 `common-trade-contract.md`；异步通知读取 `notify-url-contract.md`。
 
-本 Skill 默认只改商家服务端，不替用户实现 APP 客户端 SDK。HarmonyOS APP 支付代码开发仍可覆盖服务端能力；平台侧移动应用创建边界以 onboarding 应用发布模块为准。
+本 Skill 默认只改商家服务端，不替用户实现 APP 客户端 SDK。HarmonyOS AI 移动应用收款代码开发仍可覆盖服务端能力；平台侧移动应用创建边界以 onboarding 应用发布模块为准。
 
 官方目录中的 `alipay.data.dataservice.bill.downloadurl.query` 不是当前 Skill 默认交付项。用户明确要求对账时再按在线文档 fallback 处理，不能加入默认 checklist。
 

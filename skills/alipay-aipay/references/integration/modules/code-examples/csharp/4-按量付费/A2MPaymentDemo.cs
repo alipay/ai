@@ -1,10 +1,9 @@
 /*
  * A2M 智能收产品接入示例 - C# 版本
  *
- * 本示例展示 A2M 核心协议与 SDK 调用流程。
- * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
- * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
- * 禁止将本文件原样用于生产或判定为生产就绪。
+ * 本示例展示 A2M 核心协议、严格验付和幂等履约流程。
+ * 必须通过 ConfigureOrderRepository 绑定项目真实持久化实现；端口未绑定时明确失败，
+ * 不使用内存订单、固定资源或验付字段缺失兜底。
  * 
  * 本文件演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
@@ -14,11 +13,11 @@
  * 
  * 依赖安装：
  * dotnet add package AlipaySDKNet.Standard
- * dotnet add package Microsoft.AspNetCore.App
  */
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -35,6 +34,42 @@ using Aop.Api.Domain;
 
 namespace A2MPaymentDemo
 {
+    public interface IOrderRepository
+    {
+        // OrderSnapshot 映射 PENDING_PAYMENT/PAID 与 UNFULFILLED/PENDING_CONFIRM/FULFILLED。
+        Task CreatePendingAsync(OrderSnapshot order);
+        Task<OrderSnapshot> FindByOutTradeNoAsync(string outTradeNo);
+        Task<FulfillmentPreparation> PrepareFulfillmentAsync(FulfillmentRequest request);
+        Task MarkFulfilledAsync(string outTradeNo, string tradeNo);
+    }
+
+    public sealed class OrderSnapshot
+    {
+        public string OutTradeNo { get; init; }
+        public string Amount { get; init; }
+        public string Currency { get; init; }
+        public string ResourceId { get; init; }
+        public string GoodsName { get; init; }
+        public string PayBefore { get; init; }
+        public string OrderStatus { get; init; }
+        public string FulfillStatus { get; init; }
+    }
+
+    public sealed class FulfillmentRequest
+    {
+        public string OutTradeNo { get; init; }
+        public string TradeNo { get; init; }
+        public string ExpectedAmount { get; init; }
+        public string ExpectedResourceId { get; init; }
+        public Func<string> CreateResource { get; init; }
+    }
+
+    public sealed class FulfillmentPreparation
+    {
+        public string State { get; init; }
+        public string ServiceResult { get; init; }
+    }
+
     class Program
     {
         // ==================== 配置信息（实际使用时请从配置中心读取）====================
@@ -52,14 +87,31 @@ namespace A2MPaymentDemo
         };
 
         private static readonly string SellerId = "<SELLER_ID_2088>"; // 商户 ID（2088 格式）
-        private static readonly string ServiceId = "api_mock_service_id"; // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
+        private static readonly string ServiceId = Environment.GetEnvironmentVariable("ALIPAY_SERVICE_ID")
+            ?? "api_mock_service_id"; // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
         private static readonly string MerchantPrivateKey = "<APP_PRIVATE_KEY>"; // 请填写您的应用私钥（用于商家签名）
         
         private const string ResourcePath = "/demo/a2m/resource";
         private const string GoodsName = "AI 生成内容服务";
+        private const string SandboxGateway = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
+        private static IOrderRepository OrderRepository;
 
         // 初始化支付宝客户端
         private static readonly IAopClient AlipayClient = new DefaultAopClient(AlipayConfig);
+
+        /// <summary>
+        /// 在项目组合根绑定真实数据库实现。实现必须使用事务和唯一约束。
+        /// </summary>
+        public static void ConfigureOrderRepository(IOrderRepository repository)
+        {
+            OrderRepository = repository ?? throw new ArgumentNullException(nameof(repository));
+        }
+
+        private static IOrderRepository RequireOrderRepository()
+        {
+            return OrderRepository
+                ?? throw new InvalidOperationException("尚未绑定项目真实 IOrderRepository，禁止回退到内存订单");
+        }
 
         static void Main(string[] args)
         {
@@ -172,7 +224,7 @@ namespace A2MPaymentDemo
             try
             {
                 // 1. 构造订单信息
-                var outTradeNo = $"ORDER_{DateTimeOffset.Now.ToUnixTimeMilliseconds()}";
+                var outTradeNo = $"ORDER_{DateTimeOffset.Now.ToUnixTimeMilliseconds()}_{Guid.NewGuid():N}"[..40];
                 var amount = "0.01";
                 var currency = "CNY";
                 var resourceId = ResourcePath;
@@ -196,7 +248,20 @@ namespace A2MPaymentDemo
 
                 var sellerSignature = GenerateSellerSignature(signParams, MerchantPrivateKey);
 
-                // 4. 构造 Payment-Needed Header 内容
+                // 4. 必须在返回 402 前持久化；项目实现负责事务与 outTradeNo 唯一约束。
+                await RequireOrderRepository().CreatePendingAsync(new OrderSnapshot
+                {
+                    OutTradeNo = outTradeNo,
+                    Amount = NormalizeAmount(amount),
+                    Currency = currency,
+                    ResourceId = resourceId,
+                    GoodsName = goodsName,
+                    PayBefore = payBefore,
+                    OrderStatus = "PENDING_PAYMENT",
+                    FulfillStatus = "UNFULFILLED"
+                });
+
+                // 5. 持久化成功后构造 Payment-Needed Header 内容
                 var paymentNeeded = new
                 {
                     protocol = new
@@ -285,117 +350,133 @@ namespace A2MPaymentDemo
                             tradeNo = protocol.GetProperty("trade_no").GetString();
                         }
 
-                        if (root.TryGetProperty("method", out var method))
+                        if (root.TryGetProperty("method", out var method)
+                            && method.TryGetProperty("client_session", out var clientSessionValue))
                         {
-                            clientSession = method.GetProperty("client_session").GetString();
+                            clientSession = clientSessionValue.GetString();
                         }
                     }
 
                     // 校验必要字段
                     if (string.IsNullOrWhiteSpace(paymentProofValue))
                     {
-                        response.StatusCode = 400;
-                        response.ContentType = "application/json; charset=utf-8";
-                        await response.WriteAsJsonAsync(new
-                        {
-                            code = "INVALID_PAYMENT_PROOF_FORMAT",
-                            message = "Payment-Proof 格式错误：缺少 payment_proof"
-                        });
+                        await CreatePaymentRequiredResponse(response);
                         return;
                     }
 
                     if (string.IsNullOrWhiteSpace(tradeNo))
                     {
-                        response.StatusCode = 400;
-                        response.ContentType = "application/json; charset=utf-8";
-                        await response.WriteAsJsonAsync(new
-                        {
-                            code = "INVALID_PAYMENT_PROOF_FORMAT",
-                            message = "Payment-Proof 格式错误：缺少 trade_no"
-                        });
+                        await CreatePaymentRequiredResponse(response);
                         return;
                     }
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Payment-Proof 解析失败：{ex.Message}");
-                    response.StatusCode = 400;
-                    response.ContentType = "application/json; charset=utf-8";
-                    await response.WriteAsJsonAsync(new
-                    {
-                        code = "INVALID_PAYMENT_PROOF_FORMAT",
-                        message = $"Payment-Proof 格式错误：{ex.Message}"
-                    });
+                    await CreatePaymentRequiredResponse(response);
                     return;
                 }
 
                 // 2. 调用支付宝 API 验证支付凭证
                 var request = new AlipayAipayAgentPaymentVerifyRequest();
-                request.BizContent = JsonSerializer.Serialize(new
+                var verifyBizContent = new Dictionary<string, string>
                 {
-                    payment_proof = paymentProofValue,
-                    trade_no = tradeNo,
-                    client_session = clientSession
-                }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+                    ["payment_proof"] = paymentProofValue,
+                    ["trade_no"] = tradeNo
+                };
+                if (!string.IsNullOrWhiteSpace(clientSession))
+                {
+                    verifyBizContent["client_session"] = clientSession;
+                }
+                request.BizContent = JsonSerializer.Serialize(verifyBizContent);
 
-                var verifyResponse = await AlipayClient.ExecuteAsync(request);
+                var verifyResponse = AlipayClient.Execute(request);
 
                 // 3. 验证失败，返回错误
                 if (verifyResponse.Code != "10000")
                 {
                     Console.WriteLine($"支付凭证验证失败：{verifyResponse.SubMsg}");
-                    response.StatusCode = 400;
-                    response.ContentType = "application/json; charset=utf-8";
-                    await response.WriteAsJsonAsync(new
-                    {
-                        code = verifyResponse.SubCode ?? "VERIFY_FAILED",
-                        message = verifyResponse.SubMsg ?? "支付凭证验证失败"
-                    });
+                    await CreatePaymentRequiredResponse(response);
                     return;
                 }
 
-                // 4. 验证成功，获取订单信息
-                var verifyTradeNo = verifyResponse.TradeNo;
+                // 4. 验证成功后，以支付宝响应和本地持久化订单共同完成严格校验。
+                var returnedTradeNo = verifyResponse.TradeNo ?? "";
                 var verifyOutTradeNo = verifyResponse.OutTradeNo;
-                var resourceId = verifyResponse.ResourceId;
-                // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
-                var resourceIdVerified = string.IsNullOrWhiteSpace(resourceId) ? ResourcePath : resourceId;
+                var returnedAmount = verifyResponse.Amount ?? "";
+                var returnedResourceId = verifyResponse.ResourceId ?? "";
                 var active = verifyResponse.Active;
+                var repository = RequireOrderRepository();
+                var order = string.IsNullOrWhiteSpace(verifyOutTradeNo)
+                    ? null
+                    : await repository.FindByOutTradeNoAsync(verifyOutTradeNo);
+                var sandboxMode = IsExactSandboxMode();
+                var verifyTradeNo = !string.IsNullOrWhiteSpace(returnedTradeNo)
+                    ? returnedTradeNo
+                    : sandboxMode ? tradeNo : "";
+                var verifyAmount = !string.IsNullOrWhiteSpace(returnedAmount)
+                    ? returnedAmount
+                    : sandboxMode && order != null ? order.Amount : "";
+                var resourceIdVerified = !string.IsNullOrWhiteSpace(returnedResourceId)
+                    ? returnedResourceId
+                    : sandboxMode && order != null ? order.ResourceId : "";
 
                 Console.WriteLine($"支付凭证验证成功：tradeNo={verifyTradeNo}, outTradeNo={verifyOutTradeNo}");
 
-                // 5. 校验凭证有效性（active=true 表示凭证有效）
-                if (active != true)
+                if (active != true
+                    || string.IsNullOrWhiteSpace(verifyTradeNo)
+                    || verifyTradeNo != tradeNo
+                    || string.IsNullOrWhiteSpace(verifyOutTradeNo)
+                    || string.IsNullOrWhiteSpace(resourceIdVerified))
                 {
-                    Console.WriteLine($"支付凭证无效或已过期：outTradeNo={verifyOutTradeNo}");
-                    response.StatusCode = 400;
-                    response.ContentType = "application/json; charset=utf-8";
-                    await response.WriteAsJsonAsync(new
-                    {
-                        code = "INVALID_PAYMENT_PROOF",
-                        message = "支付凭证无效或已过期"
-                    });
+                    await CreatePaymentRequiredResponse(response);
                     return;
                 }
 
-                // 6. 【TODO】查询订单是否存在（以数据库为准）
-                // 7. 【TODO】资源防串校验
-                // 8. 【TODO】履约防重放校验
+                var amountMatches = order != null && AmountsEqual(order.Amount, verifyAmount);
+                var resourceMatches = order != null
+                    && order.ResourceId == ResourcePath
+                    && order.ResourceId == resourceIdVerified;
+                var fulfillmentInProgress = order != null
+                    && new[] { "PENDING_CONFIRM", "FULFILLED" }.Contains(order.FulfillStatus);
+                var orderUsable = order != null
+                    && order.Currency == "CNY"
+                    && new[] { "PENDING_PAYMENT", "PAID" }.Contains(order.OrderStatus)
+                    && new[] { "UNFULFILLED", "PENDING_CONFIRM", "FULFILLED" }.Contains(order.FulfillStatus)
+                    && (fulfillmentInProgress || IsFuture(order.PayBefore));
+                if (!amountMatches || !resourceMatches || !orderUsable)
+                {
+                    await CreatePaymentRequiredResponse(response);
+                    return;
+                }
 
-                // 9. 生成资源内容
-                var serviceResult = GenerateServiceResource(resourceIdVerified);
+                var fulfillment = await repository.PrepareFulfillmentAsync(new FulfillmentRequest
+                {
+                    OutTradeNo = verifyOutTradeNo,
+                    TradeNo = verifyTradeNo,
+                    ExpectedAmount = NormalizeAmount(verifyAmount),
+                    ExpectedResourceId = resourceIdVerified,
+                    CreateResource = () => GenerateServiceResource(resourceIdVerified)
+                });
+                if (fulfillment == null
+                    || (fulfillment.State != "PENDING_CONFIRM" && fulfillment.State != "FULFILLED")
+                    || string.IsNullOrWhiteSpace(fulfillment.ServiceResult))
+                {
+                    throw new InvalidOperationException(
+                        "IOrderRepository.PrepareFulfillmentAsync 未返回已持久化的履约结果");
+                }
 
-                // 10. 【TODO】履约记录落库
-                // 11. 【TODO】保存待确认履约状态
-                // 实际生产中建议先保存 serviceResult 和 PENDING_CONFIRM 状态。
-                // fulfillment.confirm 成功后再标记 FULFILLED；如果确认失败，
-                // 允许同一笔 Payment-Proof 重试确认，避免误返回成功。
+                if (fulfillment.State == "FULFILLED")
+                {
+                    await SendSuccessfulResource(response, verifyTradeNo, verifyOutTradeNo,
+                        resourceIdVerified, fulfillment.ServiceResult, true);
+                    return;
+                }
 
-                var fulfillmentTradeNo = string.IsNullOrWhiteSpace(verifyTradeNo) ? tradeNo : verifyTradeNo;
-                Console.WriteLine($"资源已生成，准备发送履约确认：outTradeNo={verifyOutTradeNo}, tradeNo={fulfillmentTradeNo}");
+                Console.WriteLine($"资源已生成，准备发送履约确认：outTradeNo={verifyOutTradeNo}, tradeNo={verifyTradeNo}");
 
                 // 12. 发送履约确认到支付宝，确认成功后才返回成功交付
-                var fulfillmentConfirmed = await SendFulfillmentConfirm(fulfillmentTradeNo);
+                var fulfillmentConfirmed = SendFulfillmentConfirm(verifyTradeNo);
                 if (!fulfillmentConfirmed)
                 {
                     response.StatusCode = 502;
@@ -408,41 +489,9 @@ namespace A2MPaymentDemo
                     return;
                 }
 
-                // 12.1 【TODO】履约确认成功后，再标记订单已履约
-                // order.FulfillStatus = "FULFILLED";
-                // order.FulfilledAt = DateTime.Now;
-
-                Console.WriteLine($"履约确认成功：outTradeNo={verifyOutTradeNo}, tradeNo={fulfillmentTradeNo}");
-
-                // 13. 构造 Payment-Validation Header
-                var paymentValidation = new
-                {
-                    trade_no = fulfillmentTradeNo,
-                    out_trade_no = verifyOutTradeNo,
-                    validated = true,
-                    resource_id = resourceIdVerified
-                };
-
-                var paymentValidationJson = JsonSerializer.Serialize(paymentValidation, new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                });
-                var paymentValidationEncoded = Base64UrlEncode(paymentValidationJson);
-
-                // 14. 返回资源内容
-                var responseBody = new
-                {
-                    resource_id = resourceIdVerified,
-                    content = serviceResult,
-                    trade_no = fulfillmentTradeNo,
-                    out_trade_no = verifyOutTradeNo,
-                    already_fulfilled = false,
-                    fulfillment_confirmed = true
-                };
-
-                response.Headers["Payment-Validation"] = paymentValidationEncoded;
-                response.ContentType = "application/json; charset=utf-8";
-                await response.WriteAsJsonAsync(responseBody);
+                await repository.MarkFulfilledAsync(verifyOutTradeNo, verifyTradeNo);
+                await SendSuccessfulResource(response, verifyTradeNo, verifyOutTradeNo,
+                    resourceIdVerified, fulfillment.ServiceResult, false);
             }
             catch (Exception ex)
             {
@@ -457,25 +506,94 @@ namespace A2MPaymentDemo
             }
         }
 
+        private static async Task SendSuccessfulResource(
+            HttpResponse response,
+            string tradeNo,
+            string outTradeNo,
+            string resourceId,
+            string serviceResult,
+            bool alreadyFulfilled)
+        {
+            var paymentValidation = new
+            {
+                trade_no = tradeNo,
+                out_trade_no = outTradeNo,
+                validated = true,
+                resource_id = resourceId
+            };
+            response.Headers["Payment-Validation"] = Base64UrlEncode(
+                JsonSerializer.Serialize(paymentValidation));
+            response.ContentType = "application/json; charset=utf-8";
+            await response.WriteAsJsonAsync(new
+            {
+                resource_id = resourceId,
+                content = serviceResult,
+                trade_no = tradeNo,
+                out_trade_no = outTradeNo,
+                already_fulfilled = alreadyFulfilled,
+                fulfillment_confirmed = true
+            });
+        }
+
         /// <summary>
         /// 生成服务资源内容
         /// </summary>
-        private static object GenerateServiceResource(string resourceId)
+        private static string GenerateServiceResource(string resourceId)
         {
-            return new
+            return JsonSerializer.Serialize(new
             {
                 status = "success",
                 service_type = "AI_CONTENT_GENERATION",
                 resource_id = resourceId,
                 content = "这是 AI 生成的内容示例，可根据实际业务替换为任意数字服务内容",
                 generated_at = DateTime.Now.ToString("o")
-            };
+            });
+        }
+
+        private static string NormalizeAmount(string value)
+        {
+            if (!TryParseAmount(value, out var amount))
+            {
+                throw new ArgumentException("金额格式非法", nameof(value));
+            }
+            return amount.ToString("0.00", CultureInfo.InvariantCulture);
+        }
+
+        private static bool AmountsEqual(string left, string right)
+        {
+            return TryParseAmount(left, out var leftAmount)
+                && TryParseAmount(right, out var rightAmount)
+                && leftAmount == rightAmount;
+        }
+
+        private static bool TryParseAmount(string value, out decimal amount)
+        {
+            amount = 0;
+            if (string.IsNullOrWhiteSpace(value)
+                || !System.Text.RegularExpressions.Regex.IsMatch(value.Trim(), @"^\d+(?:\.\d{1,2})?$"))
+            {
+                return false;
+            }
+            return decimal.TryParse(value, NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture, out amount) && amount >= 0;
+        }
+
+        private static bool IsFuture(string value)
+        {
+            return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out var deadline)
+                && deadline > DateTimeOffset.Now;
+        }
+
+        private static bool IsExactSandboxMode()
+        {
+            return AlipayConfig.ServerUrl == SandboxGateway && ServiceId == "api_mock_service_id";
         }
 
         /// <summary>
         /// 发送履约确认
         /// </summary>
-        private static async Task<bool> SendFulfillmentConfirm(string tradeNo)
+        private static bool SendFulfillmentConfirm(string tradeNo)
         {
             if (string.IsNullOrWhiteSpace(tradeNo))
             {
@@ -493,7 +611,7 @@ namespace A2MPaymentDemo
                     trade_no = tradeNo
                 }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
-                var response = await AlipayClient.ExecuteAsync(request);
+                var response = AlipayClient.Execute(request);
 
                 if (response.Code == "10000")
                 {

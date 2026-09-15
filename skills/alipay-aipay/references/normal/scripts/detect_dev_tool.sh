@@ -4,7 +4,7 @@
 # 功能描述: 智能识别 AI 编程工具，返回工具名称
 # 调用位置: 集成流程和签约流程的环境检查
 # 调用前置: 无
-# 返回值: coze | meoo | claudeCode | codex | traeSolo | cursor | qoder | unknown
+# 返回值: coze | meoo | miaoda | claudeCode | codex | traeSolo | cursor | qoder | unknown
 #=============================================================================
 
 detect_dev_tool() {
@@ -14,6 +14,10 @@ detect_dev_tool() {
     fi
     if [ -n "$MEOO_PROJECT_ID" ]; then
         echo "meoo"
+        return
+    fi
+    if [ -n "$MIAODA" ]; then
+        echo "miaoda"
         return
     fi
     if [ -n "$CLAUDECODE" ] || [ -n "$CLAUDE_CODE_ENTRYPOINT" ]; then

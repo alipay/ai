@@ -1,10 +1,9 @@
 /**
  * A2M 智能收产品接入示例 - Node.js 版本
  *
- * 本示例展示 A2M 核心协议与 SDK 调用流程。
- * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
- * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
- * 禁止将本文件原样用于生产或判定为生产就绪。
+ * 本示例展示 A2M 核心协议、严格验付和幂等履约流程。
+ * 必须通过 configureOrderRepository 绑定项目真实持久化实现；
+ * 端口未绑定时明确失败，不使用内存订单、固定资源或验付字段缺失兜底。
  * 
  * 本文件演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
@@ -43,7 +42,24 @@ const CONFIG = {
   }
 };
 
-// 初始化支付宝 SDK
+let orderRepository = null;
+
+// 真实实现必须以数据库事务和唯一约束实现以下端口；未绑定时明确失败。
+function configureOrderRepository(repository) {
+  const requiredMethods = ['createPending', 'findByOutTradeNo', 'prepareFulfillment', 'markFulfilled'];
+  if (!repository || requiredMethods.some((name) => typeof repository[name] !== 'function')) {
+    throw new Error(`orderRepository 必须实现 ${requiredMethods.join(', ')}`);
+  }
+  orderRepository = repository;
+}
+
+function requireOrderRepository() {
+  if (!orderRepository) {
+    throw new Error('尚未绑定项目真实 orderRepository，禁止回退到内存订单');
+  }
+  return orderRepository;
+}
+
 const alipaySdk = new AlipaySdk({
   appId: CONFIG.alipay.appId,
   privateKey: CONFIG.alipay.privateKey,
@@ -139,7 +155,22 @@ function base64UrlDecode(str) {
   return Buffer.from(str, 'base64').toString('utf8');
 }
 
-// ==================== 智能收产品接入示例接口 ====================
+function normalizeAmount(value) {
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
+  if (!match) return null;
+  return `${BigInt(match[1]).toString()}.${(match[2] || '').padEnd(2, '0')}`;
+}
+
+function amountsEqual(left, right) {
+  const leftAmount = normalizeAmount(left);
+  const rightAmount = normalizeAmount(right);
+  return leftAmount !== null && rightAmount !== null && leftAmount === rightAmount;
+}
+
+function isExactSandboxMode() {
+  return CONFIG.alipay.gateway === 'https://openapi-sandbox.dl.alipaydev.com/gateway.do'
+    && CONFIG.alipay.serviceId === 'api_mock_service_id';
+}
 
 /**
  * 智能收产品统一接口
@@ -155,12 +186,10 @@ function base64UrlDecode(str) {
 app.get(CONFIG.resource.path, async (req, res) => {
   const paymentProof = req.headers['payment-proof'];
   
-  // 场景 1：用户未支付，返回 402 + Payment-Needed Header
   if (!paymentProof || paymentProof.trim() === '') {
     return createPaymentRequiredResponse(req, res);
   }
   
-  // 场景 2：用户已支付，验证 Payment-Proof 并返回资源
   return verifyPaymentAndDeliverResource(req, res, paymentProof);
 });
 
@@ -169,18 +198,15 @@ app.get(CONFIG.resource.path, async (req, res) => {
  */
 async function createPaymentRequiredResponse(req, res) {
   try {
-    // 1. 构造订单信息
-    const outTradeNo = `ORDER_${Date.now()}`;
+    const outTradeNo = `ORDER_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const amount = '0.01'; // 单位：元
     const currency = 'CNY';
     const resourceId = CONFIG.resource.path;
     const goodsName = CONFIG.resource.goodsName;
     
-    // 2. 计算支付截止时间（30 分钟后），使用带时区偏移量的 ISO 8601 格式
     const payBefore = new Date(Date.now() + 30 * 60 * 1000);
     const payBeforeStr = formatISO8601WithTimezone(payBefore);
     
-    // 3. 生成商家签名
     const sellerSignature = generateSellerSignature({
       amount,
       currency,
@@ -192,7 +218,18 @@ async function createPaymentRequiredResponse(req, res) {
       service_id: CONFIG.alipay.serviceId
     }, CONFIG.alipay.merchantPrivateKey);
     
-    // 4. 构造 Payment-Needed Header 内容
+    const order = {
+      outTradeNo,
+      amount: normalizeAmount(amount),
+      currency,
+      resourceId,
+      goodsName,
+      payBefore: payBeforeStr,
+      orderStatus: 'PENDING_PAYMENT',
+      fulfillStatus: 'UNFULFILLED'
+    };
+    await requireOrderRepository().createPending(order);
+
     const paymentNeeded = {
       protocol: {
         out_trade_no: outTradeNo,
@@ -214,10 +251,8 @@ async function createPaymentRequiredResponse(req, res) {
       }
     };
     
-    // 5. Base64URL 编码
     const paymentNeededEncoded = base64UrlEncode(JSON.stringify(paymentNeeded));
     
-    // 6. 构造 402 响应
     res.set('Payment-Needed', paymentNeededEncoded);
     res.status(402).json({
       code: 'Payment-Needed',
@@ -244,57 +279,45 @@ async function createPaymentRequiredResponse(req, res) {
  */
 async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
   try {
-    // 1. 从 Payment-Proof 中解析订单信息
     let paymentProofValue, tradeNo, clientSession;
     
     try {
       const decodedProof = base64UrlDecode(paymentProof);
       const proofJson = JSON.parse(decodedProof);
       
-      // 从 protocol 层获取 payment_proof 和 trade_no
       if (proofJson.protocol) {
         paymentProofValue = proofJson.protocol.payment_proof;
         tradeNo = proofJson.protocol.trade_no;
       }
       
-      // 从 method 层获取 client_session
       if (proofJson.method) {
         clientSession = proofJson.method.client_session;
       }
       
-      // 校验必要字段
       if (!paymentProofValue || paymentProofValue.trim() === '') {
-        return res.status(400).json({
-          code: 'INVALID_PAYMENT_PROOF_FORMAT',
-          message: 'Payment-Proof 格式错误：缺少 payment_proof'
-        });
+        return createPaymentRequiredResponse(req, res);
       }
       
       if (!tradeNo || tradeNo.trim() === '') {
-        return res.status(400).json({
-          code: 'INVALID_PAYMENT_PROOF_FORMAT',
-          message: 'Payment-Proof 格式错误：缺少 trade_no'
-        });
+        return createPaymentRequiredResponse(req, res);
       }
       
     } catch (error) {
       console.error('Payment-Proof 解析失败:', error.message);
-      return res.status(400).json({
-        code: 'INVALID_PAYMENT_PROOF_FORMAT',
-        message: 'Payment-Proof 格式错误：' + error.message
-      });
+      return createPaymentRequiredResponse(req, res);
     }
     
-    // 2. 调用支付宝 API 验证支付凭证
+    const verifyBizContent = {
+      payment_proof: paymentProofValue,
+      trade_no: tradeNo
+    };
+    if (clientSession) {
+      verifyBizContent.client_session = clientSession;
+    }
     const verifyResponse = await alipaySdk.exec('alipay.aipay.agent.payment.verify', {
-      bizContent: {
-        payment_proof: paymentProofValue,
-        trade_no: tradeNo,
-        client_session: clientSession
-      }
+      bizContent: verifyBizContent
     });
     
-    // 3. 验证失败，返回错误
     // SDK 可能返回嵌套响应，也可能直接返回业务字段。
     const nestedResponse = verifyResponse.alipay_aipay_agent_payment_verify_response;
     const responseData = nestedResponse || verifyResponse;
@@ -303,19 +326,22 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
       const errorCode = responseData.sub_code || responseData.errorCode;
       const errorMessage = responseData.sub_msg || responseData.msg || '支付凭证验证失败';
       console.error('支付凭证验证失败:', errorMessage);
-      return res.status(400).json({
-        code: errorCode,
-        message: errorMessage
-      });
+      return createPaymentRequiredResponse(req, res);
     }
     
-    // 4. 验证成功，获取订单信息
     // 同时兼容 SDK 的 snake_case 与 camelCase 业务字段。
-    const verifyTradeNo = responseData.trade_no || responseData.tradeNo || '';
+    const returnedTradeNo = responseData.trade_no || responseData.tradeNo || '';
     const verifyOutTradeNo = responseData.out_trade_no || responseData.outTradeNo || '';
-    // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
-    const resourceIdVerified = responseData.resource_id || responseData.resourceId || CONFIG.resource.path;
+    const returnedAmount = responseData.amount;
+    const returnedResourceId = responseData.resource_id || responseData.resourceId || '';
     const active = responseData.active;
+
+    const repository = requireOrderRepository();
+    const order = verifyOutTradeNo ? await repository.findByOutTradeNo(verifyOutTradeNo) : null;
+    const sandboxMode = isExactSandboxMode();
+    const verifyTradeNo = returnedTradeNo || (sandboxMode ? tradeNo : '');
+    const verifyAmount = returnedAmount || (sandboxMode && order ? order.amount : '');
+    const resourceIdVerified = returnedResourceId || (sandboxMode && order ? order.resourceId : '');
 
     if (process.env.A2M_DEBUG === 'true') {
       console.log('验付响应字段:', {
@@ -329,60 +355,40 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     
     console.log(`支付凭证验证成功：tradeNo=${verifyTradeNo}, outTradeNo=${verifyOutTradeNo}`);
     
-    // 5. 校验凭证有效性（active=true 表示凭证有效）
-    if (active !== true) {
+    if (active !== true || !verifyTradeNo || verifyTradeNo !== tradeNo || !verifyOutTradeNo || !resourceIdVerified) {
       console.error(`支付凭证无效或已过期：outTradeNo=${verifyOutTradeNo}`);
-      return res.status(400).json({
-        code: 'INVALID_PAYMENT_PROOF',
-        message: '支付凭证无效或已过期'
-      });
+      return createPaymentRequiredResponse(req, res);
+    }
+
+    const amountMatches = order && amountsEqual(order.amount, verifyAmount);
+    const resourceMatches = order && order.resourceId === resourceIdVerified && resourceIdVerified === CONFIG.resource.path;
+    const fulfillmentInProgress = order && ['PENDING_CONFIRM', 'FULFILLED'].includes(order.fulfillStatus);
+    const orderUsable = order
+      && order.currency === 'CNY'
+      && ['PENDING_PAYMENT', 'PAID'].includes(order.orderStatus)
+      && ['UNFULFILLED', 'PENDING_CONFIRM', 'FULFILLED'].includes(order.fulfillStatus)
+      && (fulfillmentInProgress || Date.parse(order.payBefore) > Date.now());
+    if (!amountMatches || !resourceMatches || !orderUsable) {
+      return createPaymentRequiredResponse(req, res);
+    }
+
+    const fulfillment = await repository.prepareFulfillment({
+      outTradeNo: verifyOutTradeNo,
+      tradeNo: verifyTradeNo,
+      expectedAmount: normalizeAmount(verifyAmount),
+      expectedResourceId: resourceIdVerified,
+      createResource: () => generateServiceResource(resourceIdVerified)
+    });
+    if (!fulfillment || !['PENDING_CONFIRM', 'FULFILLED'].includes(fulfillment.state) || !fulfillment.serviceResult) {
+      throw new Error('orderRepository.prepareFulfillment 未返回已持久化的履约结果');
+    }
+    const serviceResult = fulfillment.serviceResult;
+
+    if (fulfillment.state === 'FULFILLED') {
+      return sendSuccessfulResource(res, verifyTradeNo, verifyOutTradeNo, resourceIdVerified, serviceResult, true);
     }
     
-    // 6. 【TODO】查询订单是否存在（以数据库为准）
-    // const order = await orderRepository.findByOutTradeNo(verifyOutTradeNo);
-    // if (!order) {
-    //   return res.status(404).json({
-    //     code: 'ORDER_NOT_FOUND',
-    //     message: '订单不存在'
-    //   });
-    // }
-    
-    // 7. 【TODO】资源防串校验
-    // if (resourceIdVerified !== order.resourceId) {
-    //   return res.status(403).json({
-    //     code: 'RESOURCE_ID_MISMATCH',
-    //     message: '资源 ID 不匹配，可能存在资源串改风险'
-    //   });
-    // }
-    
-    // 8. 【TODO】履约防重放校验（数据库幂等控制）
-    // if (order.fulfillStatus === 'FULFILLED') {
-    //   return res.status(200).json({
-    //     code: 'ALREADY_FULFILLED',
-    //     message: '订单已履约，不重复提供',
-    //     already_fulfilled: true
-    //   });
-    // }
-    
-    // 9. 执行业务逻辑，生成资源内容
-    const serviceResult = generateServiceResource(resourceIdVerified);
-    
-    // 10. 【TODO】履约记录落库（用于审计/售后/对账）
-    // await fulfillmentRecordRepository.save({ ... });
-    
-    // 11. 【TODO】保存待确认履约状态
-    // 实际生产中建议先保存 serviceResult 和 PENDING_CONFIRM 状态。
-    // fulfillment.confirm 成功后再标记 FULFILLED；如果确认失败，
-    // 允许同一笔 Payment-Proof 重试确认，避免误返回成功。
-    // await orderRepository.update(verifyOutTradeNo, { 
-    //   orderStatus: 'PAID',
-    //   fulfillStatus: 'PENDING_CONFIRM',
-    //   tradeNo: verifyTradeNo,
-    //   serviceResult
-    // });
-    
-    // 12. 发送履约确认到支付宝，确认成功后才返回成功交付
-    const fulfillmentTradeNo = verifyTradeNo || tradeNo;
+    const fulfillmentTradeNo = verifyTradeNo;
     console.log(`资源已生成，准备发送履约确认：outTradeNo=${verifyOutTradeNo}, tradeNo=${fulfillmentTradeNo}`);
 
     const fulfillmentConfirmed = await sendFulfillmentConfirm(fulfillmentTradeNo);
@@ -393,34 +399,11 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
       });
     }
 
-    // 12.1 【TODO】履约确认成功后，再标记订单已履约
-    // await orderRepository.update(verifyOutTradeNo, {
-    //   fulfillStatus: 'FULFILLED',
-    //   fulfilledAt: new Date()
-    // });
+    await repository.markFulfilled(verifyOutTradeNo, fulfillmentTradeNo);
 
     console.log(`履约确认成功：outTradeNo=${verifyOutTradeNo}, tradeNo=${fulfillmentTradeNo}`);
     
-    // 13. 构造 Payment-Validation Header
-    const paymentValidation = {
-      trade_no: fulfillmentTradeNo,
-      out_trade_no: verifyOutTradeNo,
-      validated: true,
-      resource_id: resourceIdVerified
-    };
-    
-    const paymentValidationEncoded = base64UrlEncode(JSON.stringify(paymentValidation));
-    res.set('Payment-Validation', paymentValidationEncoded);
-    
-    // 14. 返回资源内容
-    res.json({
-      resource_id: resourceIdVerified,
-      content: serviceResult,
-      trade_no: fulfillmentTradeNo,
-      out_trade_no: verifyOutTradeNo,
-      already_fulfilled: false,
-      fulfillment_confirmed: true
-    });
+    return sendSuccessfulResource(res, fulfillmentTradeNo, verifyOutTradeNo, resourceIdVerified, serviceResult, false);
     
   } catch (error) {
     console.error('支付凭证验证异常:', error.message);
@@ -429,6 +412,23 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
       message: '支付凭证验证失败：' + error.message
     });
   }
+}
+
+function sendSuccessfulResource(res, tradeNo, outTradeNo, resourceId, serviceResult, alreadyFulfilled) {
+  res.set('Payment-Validation', base64UrlEncode(JSON.stringify({
+    trade_no: tradeNo,
+    out_trade_no: outTradeNo,
+    validated: true,
+    resource_id: resourceId
+  })));
+  return res.json({
+    resource_id: resourceId,
+    content: serviceResult,
+    trade_no: tradeNo,
+    out_trade_no: outTradeNo,
+    already_fulfilled: alreadyFulfilled,
+    fulfillment_confirmed: true
+  });
 }
 
 /**
@@ -480,8 +480,6 @@ async function sendFulfillmentConfirm(tradeNo) {
   }
 }
 
-// ==================== 启动服务 ====================
-
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`A2M 按量付费服务已启动：http://localhost:${PORT}${CONFIG.resource.path}`);
@@ -491,4 +489,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = app;
+module.exports = { app, configureOrderRepository };

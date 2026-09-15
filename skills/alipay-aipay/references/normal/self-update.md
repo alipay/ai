@@ -1,56 +1,5 @@
-# Skill 启动自更新检查
+# 自更新
 
-本文件定义 `alipay-aipay` Skill 启动时的自更新检查。该检查用于降低用户继续使用旧版 Skill 的概率，但不得阻断支付产品-代码开发或支付产品-产品开通主流程。
+首次使用 `alipay-aipay` 前检查一次版本，记录 `ALIPAY_AIPAY_SELF_UPDATE_CHECKED=true`：`node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" self-update check --skill-dir "<SKILL_DIR>"`。`<SKILL_DIR>` 是当前包含 updater 的 Skill 规范化绝对路径，不得换成启动目录、项目目录、Home、npm 源码根或其他副本；命令不得改成变量赋值、命令替换、相对路径或特定 shell 语法；不透传 npm/npx 原始输出。
 
-## 执行原则
-
-- 每次触发本 Skill 时，先执行本检查。
-- 如果本轮对话中刚成功执行过 `npx -y @alipay/alipay-aipay@latest install`，或等价的 `@latest install --target ...` 命令，则视为自更新检查已完成，直接继续当前业务流程，不再查询 npm latest，也不再重复执行安装。
-- 本检查不作为业务阻塞确认点，不单独询问用户是否更新。
-- 若当前 Agent 环境要求联网或写入用户 Skill 目录授权，则按环境权限机制处理；不得在 Skill 内另设业务确认点。
-- 读取版本或查询 npm latest 失败时静默继续当前业务流程；只有已经开始更新但更新失败、权限受限或需要用户处理时才输出一句可执行提示。
-- 更新命令必须使用 `--skip-tools`，只更新 Skill 文件，不重新检查或安装 GPG、alipay-cli、jq。
-
-## 版本读取
-
-1. 读取当前 `SKILL.md` 所在目录下的 `VERSION` 文件作为本地版本。
-2. 如果 `VERSION` 不存在，或内容不是合法 SemVer 版本号（例如 `latest` 或 `v1`），将当前安装视为“未知版本/旧版安装”，直接进入「未知版本更新规则」，不要再猜测其他安装记录文件。
-3. 如果成功读取本地版本，执行以下命令查询 npm latest：
-   ```bash
-   npm view @alipay/alipay-aipay version --json
-   ```
-4. 如果无法获取 npm latest，跳过更新并继续当前业务流程。
-
-## 更新规则
-
-如果本地版本低于 npm latest，自动执行 Skill 更新。
-
-更新命令必须覆盖当前正在使用的 Skill 目录。取当前 `SKILL.md` 所在目录的父目录作为 `<当前Skill父目录>`，执行：
-
-```bash
-ALIPAY_AIPAY_EXTRA_SKILL_DIRS="<当前Skill父目录>" npx -y @alipay/alipay-aipay@latest install --target all --skip-tools
-```
-
-说明：
-- `ALIPAY_AIPAY_EXTRA_SKILL_DIRS` 确保当前正在使用的 Skill 父目录会被纳入更新目标，避免只更新当前项目目录下的 `.agents/.codex/.claude`。
-- `--target all` 继续覆盖安装器解析到的全部目标目录。
-- `--skip-tools` 避免在启动检查中触发 GPG、alipay-cli、jq 的检查或安装。
-
-## 未知版本更新规则
-
-如果当前 Skill 目录没有 `VERSION`，或 `VERSION` 内容不是合法 SemVer 版本号，不做不可靠的版本推断，直接执行同一条更新命令：
-
-```bash
-ALIPAY_AIPAY_EXTRA_SKILL_DIRS="<当前Skill父目录>" npx -y @alipay/alipay-aipay@latest install --target all --skip-tools
-```
-
-说明：
-- 这是对旧版安装的确定性兼容路径；更新成功后，新安装器会写入 `VERSION`，后续启动即可走正常版本比较。
-- 如果该命令因网络、npm、权限或执行环境限制失败，输出简短提示并继续当前业务流程。
-
-## 输出要求
-
-- 已是最新、版本读取失败或 npm latest 查询失败：不发送独立对客消息，直接继续业务流程。
-- 发现新版本或未知版本并开始更新：不发送“开始更新”进度消息；由工具执行记录承载过程。
-- 更新成功：不发送独立对客消息，直接继续业务流程。
-- 更新失败、权限受限或需要用户处理：只输出一句实际问题和可执行恢复动作，然后继续使用当前已加载版本；不得输出长篇安装日志。
+唯一 stderr 终态：`SELF_UPDATE:CURRENT=<合法 SemVer>`、`SELF_UPDATE:UPDATED=<合法 SemVer>`、`SELF_UPDATE:RETRY_WITH_NETWORK`、`SELF_UPDATE:SKIPPED_NETWORK_RESTRICTED`、`SELF_UPDATE:CHECK_FAILED`、`SELF_UPDATE:INSTALL_FAILED`、`SELF_UPDATE:VERIFY_FAILED`。`UPDATED` 用原子替换后的新版，其余用当前可用版；marker 异常读当前入口，不得称最新或更新成功；停止读旧版，读取同一根目录的新版入口。仅 `RETRY_WITH_NETWORK` 可取权后原样重试一次，拒绝、不支持或再次返回时读当前入口；一次网络恢复外，不重查、取权、用 `sudo`、要求用户操作或写更新状态。每次只查一次 npm latest；`VERSION` 缺失、非法、落后或业务入口缺失时只安装精确版本一次。不调用公开 `install --target all`；超时终止同一次调用的进程树并清理。

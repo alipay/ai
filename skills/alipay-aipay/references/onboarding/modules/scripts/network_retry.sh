@@ -8,12 +8,26 @@ NETWORK_ATTEMPTS=0
 
 network_retry_is_local_transport_error() {
   printf '%s' "$1" | grep -Eqi \
-    'could not resolve host|name or service not known|nodename nor servname|connection refused|failed to connect|network access[^[:cntrl:]]*(denied|blocked)[^[:cntrl:]]*before connection'
+    'network[ _]error|网络连接失败|could not resolve host|name or service not known|nodename nor servname|connection refused|failed to connect|fetch failed|socket hang up|econn(refused|reset)|enotfound|eai_again|etimedout|(^|[^[:alpha:]])timeout([^[:alpha:]]|$)|timed out|tls[^[:cntrl:]]*(error|failed|failure)|network access[^[:cntrl:]]*(denied|blocked)[^[:cntrl:]]*before connection'
 }
 
 network_retry_is_not_sent() {
   printf '%s' "$1" | grep -Eqi \
     'could not resolve host|name or service not known|nodename nor servname|connection refused|network access[^[:cntrl:]]*(denied|blocked)[^[:cntrl:]]*before connection'
+}
+
+network_retry_is_explicit_network_restriction() {
+  printf '%s' "$1" | grep -Eqi \
+    'network access[^[:cntrl:]]*(denied|blocked)[^[:cntrl:]]*before connection'
+}
+
+network_retry_emit_exhausted() {
+  local action_name="$1" classification="$2" dispatch="$3" attempt="$4" evidence="$5"
+  local recovery="NONE"
+  if network_retry_is_local_transport_error "$evidence"; then
+    recovery="RETRY_WITH_NETWORK"
+  fi
+  echo "ALIPAY_AIPAY_INTERNAL:NETWORK_RETRY_EXHAUSTED=${action_name}:${classification}:${dispatch}:${attempt}:${recovery}" >&2
 }
 
 run_network_retry() {
@@ -26,7 +40,7 @@ run_network_retry() {
 
   local max_retries="${NETWORK_RETRY_MAX_RETRIES:-2}"
   local delay_seconds="${NETWORK_RETRY_DELAY_SECONDS:-3}"
-  local attempt=0 stdout_file stderr_file stdout stderr rc classification transient dispatch
+  local attempt=0 stdout_file stderr_file stdout stderr combined result_payload rc classification transient dispatch
   stdout_file=$(mktemp "${TMPDIR:-/tmp}/alipay-aipay-stdout.XXXXXX") || return 1
   stderr_file=$(mktemp "${TMPDIR:-/tmp}/alipay-aipay-stderr.XXXXXX") || { rm -f "$stdout_file"; return 1; }
   chmod 600 "$stdout_file" "$stderr_file" 2>/dev/null || true
@@ -40,9 +54,25 @@ run_network_retry() {
     rc=$?
     stdout=$(cat "$stdout_file")
     stderr=$(cat "$stderr_file")
+    combined=$(printf '%s\n%s' "$stdout" "$stderr")
     classification=""
     transient=false
     dispatch="MAYBE_SENT"
+
+    if type alipay_cli_has_local_state_permission_error >/dev/null 2>&1 &&
+       alipay_cli_has_local_state_permission_error "$combined"; then
+      NETWORK_RETRY_CLASS="CLI_LOCAL_FS_PERMISSION"
+      NETWORK_DISPATCH_STATE="MAYBE_SENT"
+      NETWORK_ATTEMPTS="$attempt"
+      printf -v "$result_var" '%s' "$stdout"
+      if [ "$operation" = "read" ]; then
+        if [ "${ALIPAY_AIPAY_SUPPRESS_LOCAL_FS_RETRY_MARKER:-0}" != "1" ]; then
+          emit_control "CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION"
+        fi
+        return "${ALIPAY_CLI_LOCAL_STATE_PERMISSION_EXIT_CODE:-77}"
+      fi
+      return 75
+    fi
 
     local stdout_is_business_json=false unwrapped_stdout=""
     if [ -n "$stdout" ]; then
@@ -77,7 +107,11 @@ run_network_retry() {
     NETWORK_RETRY_CLASS="$classification"
     NETWORK_DISPATCH_STATE="$dispatch"
     NETWORK_ATTEMPTS="$attempt"
-    printf -v "$result_var" '%s' "$stdout"
+    result_payload="$stdout"
+    if [ "$stdout_is_business_json" != true ] && [ "$rc" -ne 0 ] && [ -n "$stderr" ]; then
+      result_payload="$stderr"
+    fi
+    printf -v "$result_var" '%s' "$result_payload"
 
     if [ "$transient" != true ]; then
       return 0
@@ -87,8 +121,13 @@ run_network_retry() {
       return 75
     fi
 
+    if network_retry_is_explicit_network_restriction "$combined"; then
+      network_retry_emit_exhausted "$action_name" "$classification" "$dispatch" "$attempt" "$combined"
+      return 76
+    fi
+
     if [ "$attempt" -gt "$max_retries" ]; then
-      echo "NETWORK_RETRY_EXHAUSTED:${action_name}:${classification}:${dispatch}:${attempt}" >&2
+      network_retry_emit_exhausted "$action_name" "$classification" "$dispatch" "$attempt" "$combined"
       return 76
     fi
     sleep "$delay_seconds"

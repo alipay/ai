@@ -3,15 +3,32 @@
 set -u
 umask 077
 
-MANUAL_URL="https://opendocs.alipay.com/isv/02kipk"
 DEST_DIR="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RENDERER="${SCRIPT_DIR}/../../../normal/scripts/render_customer_message.mjs"
+POLICY="${SCRIPT_DIR}/../../../normal/json/policy-rules.json"
+MANUAL_URL=""
+
+if command -v node >/dev/null 2>&1 && [ -f "$POLICY" ]; then
+  MANUAL_URL=$(node -e '
+const fs = require("node:fs");
+const [file] = process.argv.slice(1);
+let policy;
+try { policy = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(1); }
+const value = policy?.officialUrls?.keyToolManual;
+let parsed;
+try { parsed = new URL(value); } catch { process.exit(1); }
+if (parsed.protocol !== "https:" || parsed.hostname !== "opendocs.alipay.com"
+    || parsed.pathname !== "/isv/02kipk" || parsed.search || parsed.hash
+    || parsed.username || parsed.password || parsed.port) process.exit(1);
+process.stdout.write(value);
+' "$POLICY" 2>/dev/null) || MANUAL_URL=""
+fi
 
 manual_fallback_message() {
   echo "未能完成自动下载，可能是当前环境不支持、无法访问下载源、本地目录不可写或安装包校验未通过。请访问支付宝开放平台手动下载支付宝开放平台密钥工具："
   echo
-  echo "$MANUAL_URL"
+  [ -n "$MANUAL_URL" ] && echo "$MANUAL_URL"
   echo
   echo "仅向 Agent 提供【应用公钥】，应用私钥请自行妥善保管。"
 }

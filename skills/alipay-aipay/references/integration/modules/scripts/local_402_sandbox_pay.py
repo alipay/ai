@@ -23,6 +23,22 @@ from urllib.parse import quote
 PAY_ENDPOINT = "http://aicashier.dl.alipaydev.com/openclawpay/agent/v1/pay"
 PAY_URL_PREFIX = "https://render.alipay.com/p/yuyan/180020010001290755/pay.html?schema="
 A2M_SANDBOX_SERVICE_ID = "api_mock_service_id"
+PAYMENT_NEEDED_REQUIRED_PATHS = (
+    ("protocol", "out_trade_no"),
+    ("protocol", "amount"),
+    ("protocol", "currency"),
+    ("protocol", "resource_id"),
+    ("protocol", "pay_before"),
+    ("protocol", "seller_signature"),
+    ("protocol", "seller_sign_type"),
+    ("protocol", "seller_unique_id"),
+    ("method", "seller_name"),
+    ("method", "seller_id"),
+    ("method", "seller_app_id"),
+    ("method", "goods_name"),
+    ("method", "seller_unique_id_key"),
+    ("method", "service_id"),
+)
 DEFAULT_PAY_RETRIES = 3
 DEFAULT_PAY_RETRY_DELAY_SECONDS = 2.0
 RETRYABLE_PAY_ERROR_CODES = {"PAY_SUBMIT_FAILED"}
@@ -79,7 +95,8 @@ def secure_write_text(path: Path, value: str) -> None:
         flags |= os.O_NOFOLLOW
     descriptor = os.open(path, flags, 0o600)
     try:
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
             stream.write(value)
             stream.flush()
@@ -92,7 +109,7 @@ def secure_read_text(path: Path) -> str:
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         raise RuntimeError(f"过程产物必须是普通文件且不能是符号链接：{path}")
-    if info.st_mode & 0o077:
+    if os.name != "nt" and info.st_mode & 0o077:
         raise RuntimeError(f"过程产物文件权限过宽，拒绝读取：{path}")
     return path.read_text(encoding="utf-8")
 
@@ -105,7 +122,7 @@ def validate_artifact_dir(artifact_dir: Path) -> None:
         raise RuntimeError(f"过程产物路径必须是普通目录且不能是符号链接：{artifact_dir}")
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise RuntimeError(f"过程产物目录不属于当前用户：{artifact_dir}")
-    if info.st_mode & 0o077:
+    if os.name != "nt" and info.st_mode & 0o077:
         raise RuntimeError(f"过程产物目录权限过宽，拒绝使用：{artifact_dir}")
 
 
@@ -208,14 +225,19 @@ def fetch_payment_needed(
     body: str | None,
     content_type: str,
     output_file: str | None,
+    require_status_402: bool = False,
 ) -> str:
     method = method.upper()
     if method == "GET":
-        headers = run_curl(["-s", "-I", url])
-        payment_needed = parse_payment_needed(headers)
-        if not payment_needed:
+        if require_status_402:
             headers = run_curl(["-s", "-D", "-", "-o", "/dev/null", "-X", "GET", url])
             payment_needed = parse_payment_needed(headers)
+        else:
+            headers = run_curl(["-s", "-I", url])
+            payment_needed = parse_payment_needed(headers)
+            if not payment_needed:
+                headers = run_curl(["-s", "-D", "-", "-o", "/dev/null", "-X", "GET", url])
+                payment_needed = parse_payment_needed(headers)
     else:
         curl_args = ["-s", "-D", "-", "-o", "/dev/null", "-X", method, url]
         if body is not None:
@@ -223,7 +245,19 @@ def fetch_payment_needed(
         headers = run_curl(curl_args)
         payment_needed = parse_payment_needed(headers)
 
+    if require_status_402:
+        statuses = [
+            parts[1]
+            for line in headers.splitlines()
+            if line.startswith("HTTP/") and len(parts := line.split()) > 1
+        ]
+        status = statuses[-1] if statuses else ""
+        if status != "402":
+            raise RuntimeError(f"HTTP 状态不是 402: {status or '未知'}")
+
     if not payment_needed:
+        if require_status_402:
+            raise RuntimeError("未找到 Payment-Needed 响应头")
         raise RuntimeError(f"未找到 Payment-Needed 响应头。原始响应头：\n{headers}")
 
     if output_file:
@@ -243,6 +277,22 @@ def b64decode_json(value: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("解码后的 Payment-Needed JSON 必须是对象")
     return data
+
+
+def validate_payment_needed_fields(data: dict[str, Any]) -> None:
+    missing = []
+    for parent, child in PAYMENT_NEEDED_REQUIRED_PATHS:
+        nested = data.get(parent)
+        if not isinstance(nested, dict) or nested.get(child) in (None, ""):
+            missing.append(f"{parent}.{child}")
+    if missing:
+        raise RuntimeError("Payment-Needed 缺少字段: " + ", ".join(missing))
+    method = data["method"]
+    if method.get("service_id") != A2M_SANDBOX_SERVICE_ID:
+        raise RuntimeError(
+            f"沙箱联调 method.service_id 必须为 {A2M_SANDBOX_SERVICE_ID}，"
+            "请修正用户服务的沙箱运行配置后重试"
+        )
 
 
 def snake_to_camel(key: str) -> str:
@@ -592,6 +642,23 @@ def write_json(path: Path, value: Any) -> None:
     secure_write_text(path, pretty_json(value) + "\n")
 
 
+def command_precheck(args: argparse.Namespace) -> int:
+    url = prompt_missing(args.url, "本地服务请求地址")
+    method = (args.method or "GET").upper()
+    if method not in {"GET", "POST"}:
+        raise SystemExit("当前技能只支持 GET 和 POST")
+    content_type = args.content_type or "application/json"
+    body = load_body(args, method, None)
+    decoded_bill = b64decode_json(
+        fetch_payment_needed(url, method, body, content_type, None, require_status_402=True)
+    )
+    validate_payment_needed_fields(decoded_bill)
+    fields = ", ".join(f"{parent}.{child}" for parent, child in PAYMENT_NEEDED_REQUIRED_PATHS)
+    print("Payment-Needed 预检通过，已确认 HTTP 402 和关键字段存在。")
+    print("已校验字段: " + fields)
+    return 0
+
+
 def command_run(args: argparse.Namespace) -> int:
     if not args.auto_complete:
         raise RuntimeError("当前流程只支持一次连续执行 run --auto-complete；不保存跨轮付款或恢复状态")
@@ -691,7 +758,7 @@ def command_run(args: argparse.Namespace) -> int:
         )
         result = command_complete(complete_args)
         if result == 0:
-            print("\n按量付费沙箱服务端联调通过。")
+            print("\nAI 按量付费沙箱服务端联调通过。")
             print("\n沙箱付款体验链接（可选）：")
             print(pay_url)
         return result
@@ -774,6 +841,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command")
 
+    precheck_parser = subparsers.add_parser("precheck", help="只读检查 Payment-Needed 的 HTTP 402 和关键字段")
+    precheck_parser.add_argument("--url", help="本地服务请求地址，GET 参数需要直接拼在 URL 中")
+    precheck_parser.add_argument("--method", help="HTTP 方法：GET 或 POST")
+    precheck_parser.add_argument("--body", help="POST 请求体，或用 @file 从文件读取请求体")
+    precheck_parser.add_argument("--body-file", help="保存 POST 请求体的文件")
+    precheck_parser.add_argument("--content-type", help="POST 请求的 Content-Type")
+    precheck_parser.set_defaults(func=command_precheck)
+
     run_parser = subparsers.add_parser("run", help="一笔完成 Payment-Needed、沙箱收银和资源交付联调")
     run_parser.add_argument("--url", help="本地服务请求地址，GET 参数需要直接拼在 URL 中")
     run_parser.add_argument("--method", help="HTTP 方法：GET 或 POST")
@@ -805,7 +880,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] not in {"run", "-h", "--help"}:
+    if argv and argv[0] not in {"precheck", "run", "-h", "--help"}:
         argv = ["run", *argv]
     parser = build_parser()
     args = parser.parse_args(argv)

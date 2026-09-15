@@ -9,14 +9,25 @@
 
 ERROR_HANDLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SCRIPT="${ERROR_HANDLER_DIR}/../../../normal/scripts/common.sh"
+ERROR_RENDERER="${ERROR_HANDLER_DIR}/../../../normal/scripts/render_customer_message.mjs"
 if [ -f "$COMMON_SCRIPT" ]; then
   # shellcheck source=/dev/null
   source "$COMMON_SCRIPT"
-  init_dev_tool_name
+  init_alipay_cli_context
 else
   echo "❌ 缺少公共脚本: $COMMON_SCRIPT"
   return 1 2>/dev/null || exit 1
 fi
+
+render_error_message() {
+  local MESSAGE_ID="$1" VARIANT="$2" INPUT_JSON="$3"
+  if printf '%s' "$INPUT_JSON" \
+    | ALIPAY_AIPAY_RENDERER_MANAGED_CALLER=error_handler.sh node "$ERROR_RENDERER" "$MESSAGE_ID" --variant "$VARIANT"; then
+    [ "${ALIPAY_AIPAY_CAPTURE_CHILD_OUTPUT:-0}" != "1" ] || emit_control "CHILD_CUSTOMER_MESSAGE_RENDERED"
+    return 0
+  fi
+  return 1
+}
 
 # ─── MCP 信封解包 ──────────────────────────────────────────────────────────
 # alipay-cli mcp call 返回 MCP 协议信封：
@@ -108,13 +119,17 @@ extract_unique_json() {
 # 但任何疑似凭据、临时 URL 或密钥内容都不能进入普通终端输出。
 sanitize_customer_error_text() {
   local VALUE="${1:-}" NORMALIZED
-  NORMALIZED=$(printf '%s' "$VALUE" | tr '\r\n\t' '   ' | awk '{$1=$1; print}')
+  NORMALIZED=$(printf '%s' "$VALUE" | tr '\000-\037\177' ' ' | awk '{$1=$1; print}')
   if [ -z "$NORMALIZED" ]; then
     echo "未知错误"
     return
   fi
+  if printf '%s' "$NORMALIZED" | grep -qiE '\{\{|\}\}|<INTERNAL_'; then
+    echo "错误详情包含内部标记或模板占位符，已隐藏"
+    return
+  fi
   if printf '%s' "$NORMALIZED" | grep -qiE \
-    'https?://|verification_url|device[_-]?code|authorization:[[:space:]]*bearer|payment-proof|-----BEGIN|private[_ -]?key|public[_ -]?key|access[_-]?token|(^|[^[:alnum:]_])token[=:]'; then
+    'https?://|verification_url|device[_-]?code|authorization:[[:space:]]*bearer|payment-proof|-----BEGIN|private[_ -]?key|public[_ -]?key|["'\'']?(password|passwd|secret|api[_-]?key|access[_-]?token)["'\'']?[[:space:]]*[:=]|(^|[^[:alnum:]_])token[=:]'; then
     echo "错误详情包含临时链接或敏感字段，已隐藏"
     return
   fi
@@ -146,7 +161,26 @@ unwrap_mcp() {
   esac
 
   local TEXT
-  TEXT=$(echo "$JSON" | jq -r 'if (.content | type == "array") and (.content[0].text != null) then .content[0].text else empty end' 2>/dev/null)
+  TEXT=$(echo "$JSON" | jq -r '
+    if (.content | type) == "array" then
+      [ .content[]? | .text? | select(type == "string") ] as $texts |
+      ([
+        $texts[] |
+        fromjson? |
+        select(type == "object" or type == "array") |
+        tojson
+      ] | unique) as $jsonTexts |
+      if ($jsonTexts | length) == 1 then
+        $jsonTexts[0]
+      elif ($jsonTexts | length) == 0 and ($texts | length) > 0 then
+        $texts[0]
+      else
+        "CLI 输出包含多个 JSON 候选，无法唯一解析"
+      end
+    else
+      empty
+    end
+  ' 2>/dev/null)
   if [ -n "$TEXT" ]; then
     echo "$TEXT"
   else
@@ -168,10 +202,20 @@ extract_first_named_field() {
 extract_error_object() {
   echo "$1" | jq -c '
     [
-      .. | objects |
+      .,
+      (.error? | objects),
+      (.data? | objects),
+      (.data.error? | objects),
+      (.response? | objects),
+      (.data.response? | objects),
+      (.errorContext.errorStack[]? | objects)
+      |
       select(
         ((.errorCode? | type) == "string" and .errorCode != "") or
-        ((.errorCode? | type) == "object" and ((.errorCode.code? // "") != ""))
+        ((.errorCode? | type) == "number") or
+        ((.errorCode? | type) == "object" and
+          (((.errorCode.code? // "") | tostring) != "" or
+           (((.errorCode.status? // "") | tostring) != "")))
       )
     ][0] // empty
   ' 2>/dev/null
@@ -287,8 +331,15 @@ extract_error_object_field() {
 extract_success_state() {
   local JSON="$1"
   echo "$JSON" | jq -r '
-    if any(.. | objects; .success? == false) then "false"
-    elif any(.. | objects; .success? == true) then "true"
+    if .success? == false or
+       ((.data? | type) == "object" and .data.success? == false) or
+       ((.response? | type) == "object" and .response.success? == false) or
+       ((.data.response? | type) == "object" and .data.response.success? == false) then "false"
+    elif .success? == true or
+         ((.data? | type) == "object" and .data.success? == true) or
+         ((.response? | type) == "object" and .response.success? == true) or
+         ((.data.response? | type) == "object" and .data.response.success? == true) or
+         (((.code? // "") | tostring) == "10000") then "true"
     else "null"
     end
   ' 2>/dev/null
@@ -311,9 +362,11 @@ extract_checked_errors() {
 
 # ─── 统一错误检测 ──────────────────────────────────────────────────────────
 # 参数: $1 - CLI 执行结果文本（原始输出，含信封或不含）
-# 返回: MCP_AUTH_ERROR | MCP_SERVICE_ERROR | AUTH_MISMATCH | SERVICE_UNSTABLE | ERROR:xxx | CLI_ERROR:xxx | SUCCESS
+#       $2 - 可选调用上下文；MCP_AUTHENTICATED_CALL 允许识别资源响应中的明确未登录状态
+# 返回: MCP_AUTH_ERROR | MCP_SERVICE_ERROR | AUTH_MISMATCH | SERVICE_UNSTABLE | CLI_LOCAL_FS_PERMISSION | ERROR:xxx | CLI_ERROR:xxx | SUCCESS
 detect_error() {
   local CLI_RESULT="$1"
+  local ERROR_CONTEXT="${2:-}"
 
   # 空输入视为异常，不应被当作 SUCCESS
   if [ -z "$CLI_RESULT" ]; then
@@ -321,29 +374,116 @@ detect_error() {
     return
   fi
 
+  if alipay_cli_has_local_state_permission_error "$CLI_RESULT"; then
+    echo "CLI_LOCAL_FS_PERMISSION"
+    return
+  fi
+
   # 先解包 MCP 信封，再进行错误检测
   local UNWRAPPED=$(unwrap_mcp "$CLI_RESULT")
 
-  # 1. 优先检测 MCP 认证错误（HTTP 401）
-  if echo "$UNWRAPPED" | grep -qiE "HTTP 401|Authorization is empty|非法的认证信息"; then
+  # 1. 优先检测 MCP 认证错误。非 JSON 只接受传输层强证据；JSON 只检查
+  # 顶层响应和登记的 error/response 层，不递归扫描成功候选或示例数据。
+  if ! echo "$UNWRAPPED" | jq -e . >/dev/null 2>&1; then
+    if echo "$UNWRAPPED" | grep -qiE \
+      "HTTP[[:space:]]*401|Authorization is empty|非法的?认证信息|用户未登录|not[ _-]+logged[ _-]+in|(authorization|authentication|login)[-[:space:]_:=]+(is[-[:space:]_:=]+)?required|(access|auth|authentication|authorization)[ _-]+token[-[:space:]_:=]+(is[-[:space:]_:=]+)?(missing|expired)|(^|[^[:alnum:]_])(missing|expired)[-[:space:]_:=]+(access|auth|authentication|authorization)[ _-]+token([^[:alnum:]_]|$)|(^|[^[:alnum:]_])token[-[:space:]_:=]+(is[-[:space:]_:=]+)?(missing|expired)([^[:alnum:]_]|$)"; then
+      echo "MCP_AUTH_ERROR"
+      return
+    fi
+  elif echo "$UNWRAPPED" | jq -e --arg context "$ERROR_CONTEXT" '
+    def failure_shaped:
+      type == "object" and (
+        .success? == false or
+        (.error? != null) or
+        (.errorCode? != null) or
+        ((.errorMessage? | type) == "string" and .errorMessage != "") or
+        ((.errorMsg? | type) == "string" and .errorMsg != "") or
+        (((.code? // "") | tostring) as $code |
+          $code != "" and $code != "0" and $code != "10000")
+      );
+    def auth_code:
+      if type != "string" and type != "number" then false
+      else
+        (tostring | ascii_downcase | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $code |
+        ([
+          "401",
+          "unauthorized",
+          "not_logged_in",
+          "login_required",
+          "unauthenticated",
+          "authorization_required",
+          "auth_required",
+          "access_token_missing",
+          "access_token_expired",
+          "auth_token_missing",
+          "auth_token_expired"
+        ] | index($code) != null)
+      end;
+    def auth_message:
+      type == "string" and test(
+        "HTTP[[:space:]]*401|Authorization is empty|非法的?认证信息|用户未登录|not[ _-]+logged[ _-]+in|(authorization|authentication|login)[-[:space:]_:=]+(is[-[:space:]_:=]+)?required|(access|auth|authentication|authorization)[ _-]+token[-[:space:]_:=]+(is[-[:space:]_:=]+)?(missing|expired)|(^|[^[:alnum:]_])(missing|expired)[-[:space:]_:=]+(access|auth|authentication|authorization)[ _-]+token([^[:alnum:]_]|$)|(^|[^[:alnum:]_])token[-[:space:]_:=]+(is[-[:space:]_:=]+)?(missing|expired)([^[:alnum:]_]|$)";
+        "i"
+      );
+    . as $root |
+    ([
+      $root,
+      ($root.data? | objects | select(failure_shaped)),
+      ($root.response? | objects | select(failure_shaped)),
+      ($root.data.response? | objects | select(failure_shaped))
+    ]) as $response_nodes |
+    ([
+      ($root.error? | objects),
+      ($root.errorCode? | objects),
+      ($root.data.error? | objects),
+      ($root.data.errorCode? | objects),
+      ($root.response.error? | objects),
+      ($root.data.response.error? | objects),
+      ($root.errorContext.errorStack[]? | objects)
+    ]) as $error_nodes |
+    (($response_nodes + $error_nodes) | any(.[];
+      [
+        .code?, .errorCode?, .status?, .reason?,
+        (.errorCode? | objects | (.code?, .status?, .reason?))
+      ] | any(.[]; auth_code)
+    )) or
+    ($response_nodes | any(.[];
+      failure_shaped and
+      ([.message?, .errorMessage?, .errorMsg?, .msg?, .subMsg?] | any(.[]; auth_message))
+    )) or
+    ($error_nodes | any(.[];
+      [.message?, .errorMessage?, .errorMsg?, .msg?, .subMsg?] | any(.[]; auth_message)
+    )) or
+    ($context == "MCP_AUTHENTICATED_CALL" and (
+      (($root.logged_in? | type) == "boolean" and $root.logged_in == false) or
+      (($root.data? | type) == "object" and
+        ($root.data.logged_in? | type) == "boolean" and $root.data.logged_in == false) or
+      (($root.data? | type) == "object" and
+        ([$root.data.code?, $root.data.errorCode?, $root.data.status?, $root.data.reason?] |
+          any(.[]; auth_code)))
+    ))
+  ' >/dev/null 2>&1; then
     echo "MCP_AUTH_ERROR"
     return
   fi
 
-  # 2. MCP 服务不稳定（后端返回的服务异常）
-  if echo "$UNWRAPPED" | grep -qiE "MCP.*服务.*不稳定|服务暂时不可用"; then
+  local SUCCESS_STATE
+  SUCCESS_STATE=$(extract_success_state "$UNWRAPPED")
+
+  # 2. MCP 服务不稳定（后端返回的服务异常）。已登记成功响应中的
+  # 候选描述和示例不参与错误关键词分类。
+  if [ "$SUCCESS_STATE" != "true" ] && echo "$UNWRAPPED" | grep -qiE "MCP.*服务.*不稳定|服务暂时不可用"; then
     echo "SERVICE_UNSTABLE"
     return
   fi
 
   # 3. MCP 调用失败（网络/连接错误）
-  if echo "$UNWRAPPED" | grep -qiE "MCP 调用失败|connection refused|timeout|network error"; then
+  if [ "$SUCCESS_STATE" != "true" ] && echo "$UNWRAPPED" | grep -qiE "MCP 调用失败|connection refused|timeout|network[ _]error|网络连接失败"; then
     echo "MCP_SERVICE_ERROR"
     return
   fi
 
   # 4. 授权信息不匹配（MCC/产品/scope 未授权）
-  if echo "$UNWRAPPED" | grep -qiE "mccCode.*is not auth|salesProductCodes.*is not auth|scope.*is not auth"; then
+  if [ "$SUCCESS_STATE" != "true" ] && echo "$UNWRAPPED" | grep -qiE "mccCode.*is not auth|salesProductCodes.*is not auth|scope.*is not auth"; then
     echo "AUTH_MISMATCH"
     return
   fi
@@ -361,9 +501,8 @@ detect_error() {
   fi
 
   # 6. CLI 命令本身的错误（success: false，从解包后的 JSON 提取）
-  # 注意: MCP 业务响应可能嵌套在 data/response 下，因此递归检测 success=false。
-  local SUCCESS=$(extract_success_state "$UNWRAPPED")
-  if [ "$SUCCESS" = "false" ]; then
+  # 注意: MCP 业务响应可能嵌套在登记的 data/response 层。
+  if [ "$SUCCESS_STATE" = "false" ]; then
     local ERROR_MSG=$(extract_error_message "$UNWRAPPED")
     echo "CLI_ERROR:$ERROR_MSG"
     return
@@ -372,54 +511,179 @@ detect_error() {
   echo "SUCCESS"
 }
 
-# ─── MCP 认证错误处理 ──────────────────────────────────────────────────────
-handle_mcp_auth_error() {
-  local LOGOUT_RESULT LOGOUT_EXIT_CODE LOGOUT_ERROR_TYPE LOGOUT_ERROR_MSG
-  local LOGOUT_ANALYSIS LOGOUT_PARSE_STATUS
+extract_captured_json() {
+  local RAW="$1"
+  local ANALYSIS STATUS
+  ANALYSIS=$(extract_unique_json "$RAW" 2>/dev/null || echo '{"status":"none"}')
+  STATUS=$(echo "$ANALYSIS" | jq -r '.status // "none"' 2>/dev/null)
+  [ "$STATUS" = "ok" ] || return 1
+  echo "$ANALYSIS" | jq -ce '.value | select(type == "object")' 2>/dev/null
+}
 
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "🔐 未登录或授权已过期"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  echo "❌ 当前登录状态已失效，无法继续操作"
-  echo ""
-  echo "📋 原因：MCP 调用返回认证错误（HTTP 401）"
-  echo "📋 说明：Authorization is empty（认证信息为空）"
-  echo ""
-  echo "🔄 正在退出当前登录..."
-  LOGOUT_RESULT=$(PLATFORM=${DEV_TOOL_NAME:-unknown} alipay-cli logout --json 2>&1)
-  LOGOUT_EXIT_CODE=$?
-  LOGOUT_ERROR_TYPE=$(detect_error "$LOGOUT_RESULT")
-  LOGOUT_ANALYSIS=$(extract_unique_json "$LOGOUT_RESULT" 2>/dev/null || echo '{"status":"none"}')
-  LOGOUT_PARSE_STATUS=$(echo "$LOGOUT_ANALYSIS" | jq -r '.status // "none"' 2>/dev/null)
+run_alipay_cli_json_capture() {
+  local stderr_file stdout stderr_output combined_output
 
-  if [ "$LOGOUT_EXIT_CODE" -ne 0 ] || [ "$LOGOUT_ERROR_TYPE" != "SUCCESS" ]; then
-    echo ""
-    if [ "$LOGOUT_PARSE_STATUS" != "ok" ] || [ "$LOGOUT_ERROR_TYPE" = "MCP_SERVICE_ERROR" ] || [ "$LOGOUT_ERROR_TYPE" = "SERVICE_UNSTABLE" ]; then
-      echo "❌ 无法确认退出当前登录结果，已停止重新授权"
-      echo "📋 这通常表示当前 Agent 执行环境缺少联网权限、CLI wrapper 混入输出，或 stdout/stderr 无法唯一解析。"
-      echo "📋 这不代表用户本机 logout 失败，也不能据此判断支付宝业务失败。"
-      echo "📋 Agent 应申请可联网权限后重试同一动作；不要要求用户手动 logout 代替本轮事实。"
-      echo "📋 请授权 Agent 联网重试当前动作；确认脚本实际退出成功后再重新授权。"
-    else
-      echo "❌ 退出当前登录失败，已停止重新授权"
-      LOGOUT_ERROR_MSG=$(sanitize_customer_error_text "$(extract_error_message "$LOGOUT_RESULT")")
-      echo "📋 错误信息：$LOGOUT_ERROR_MSG"
-      echo "📋 请先重试退出登录；确认退出成功后再重新授权。"
-    fi
-    return 1
+  ALIPAY_CLI_JSON_CAPTURE=""
+  ALIPAY_CLI_JSON_EXIT_CODE=0
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/alipay_cli_capture_stderr.XXXXXX")" || return 1
+  stdout=$(PLATFORM="${DEV_TOOL_NAME:-unknown}" PLATFORM_ID="${PLATFORM_ID:-}" PRODUCT="${PRODUCT:-}" "$@" 2>"$stderr_file")
+  ALIPAY_CLI_JSON_EXIT_CODE=$?
+  stderr_output=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+
+  combined_output=$(printf '%s\n%s' "$stdout" "$stderr_output")
+  if type auth_has_local_state_permission_error >/dev/null 2>&1 &&
+     auth_has_local_state_permission_error "$combined_output"; then
+    ALIPAY_CLI_JSON_CAPTURE=""
+    return "${AUTH_LOCAL_STATE_PERMISSION_EXIT_CODE:-77}"
+  fi
+  if ALIPAY_CLI_JSON_CAPTURE=$(extract_captured_json "$combined_output"); then
+    return 0
   fi
 
-  echo ""
-  echo "✅ 已退出登录状态"
-  echo ""
-  echo "📌 请重新执行登录授权流程："
-  echo "   1. 我会生成授权链接"
-  echo "   2. 您使用支付宝扫码授权"
-  echo "   3. 授权成功后继续当前操作"
-  echo ""
-  echo "📌 产品、MCC 和授权范围未变化时，沿用已有确认立即重新生成授权链接；发生变化时先重新确认受影响内容。"
+  ALIPAY_CLI_JSON_CAPTURE=""
+  return 1
+}
+
+confirm_logout_postcondition() {
+  local logout_error_type whoami_error_type whoami_state
+  local logout_result_state logout_capture_rc whoami_capture_rc attempt=1
+  local max_attempts=3
+  local interval_seconds=3
+
+  ALIPAY_LOGOUT_POSTCONDITION=""
+  ALIPAY_LOGOUT_ERROR_MESSAGE=""
+
+  if [ "${ALIPAY_AIPAY_TEST_MODE:-0}" = "1" ]; then
+    interval_seconds=0
+  fi
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    logout_result_state="UNCONFIRMED"
+    run_alipay_cli_json_capture alipay-cli logout --json
+    logout_capture_rc=$?
+    if [ "$logout_capture_rc" -eq 0 ]; then
+      logout_error_type=$(detect_error "$ALIPAY_CLI_JSON_CAPTURE")
+      if [ "$ALIPAY_CLI_JSON_EXIT_CODE" -eq 0 ] && [ "$logout_error_type" = "SUCCESS" ]; then
+        ALIPAY_LOGOUT_POSTCONDITION="COMMAND_CONFIRMED_SUCCESS"
+        return 0
+      fi
+      ALIPAY_LOGOUT_ERROR_MESSAGE=$(sanitize_customer_error_text "$(extract_error_message "$ALIPAY_CLI_JSON_CAPTURE")")
+      case "$logout_error_type" in
+        MCP_SERVICE_ERROR|SERVICE_UNSTABLE)
+          logout_result_state="RETRYABLE"
+          ;;
+        SUCCESS)
+          # A success payload paired with a non-zero exit code cannot prove the command result.
+          logout_result_state="UNCONFIRMED"
+          ;;
+        *)
+          logout_result_state="EXPLICIT_FAILURE"
+          ;;
+      esac
+    elif [ "$logout_capture_rc" -eq "${AUTH_LOCAL_STATE_PERMISSION_EXIT_CODE:-77}" ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="LOCAL_FS_PERMISSION"
+      return 1
+    else
+      ALIPAY_LOGOUT_ERROR_MESSAGE="退出命令未返回可唯一解析结果"
+    fi
+
+    run_alipay_cli_json_capture alipay-cli whoami --json
+    whoami_capture_rc=$?
+    if [ "$whoami_capture_rc" -eq "${AUTH_LOCAL_STATE_PERMISSION_EXIT_CODE:-77}" ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="LOCAL_FS_PERMISSION"
+      return 1
+    fi
+    if [ "$whoami_capture_rc" -ne 0 ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="UNCONFIRMED"
+      return 1
+    fi
+
+    whoami_error_type=$(detect_error "$ALIPAY_CLI_JSON_CAPTURE")
+    if [ "$ALIPAY_CLI_JSON_EXIT_CODE" -ne 0 ] || [ "$whoami_error_type" != "SUCCESS" ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="UNCONFIRMED"
+      return 1
+    fi
+
+    whoami_state=$(echo "$ALIPAY_CLI_JSON_CAPTURE" | jq -r '
+      if (.data | type) != "object" then "UNCONFIRMED"
+      elif (.data.logged_in? | type) == "boolean" and .data.logged_in == false then "LOGGED_OUT"
+      elif (.data.is_expired? | type) == "boolean" and .data.is_expired == true then "LOGGED_OUT"
+      elif (.data.logged_in? | type) == "boolean" and .data.logged_in == true and
+           ((.data | has("is_expired") | not) or ((.data.is_expired? | type) == "boolean" and .data.is_expired == false)) then "STILL_LOGGED_IN"
+      else "UNCONFIRMED"
+      end
+    ' 2>/dev/null)
+    if [ "$whoami_state" = "LOGGED_OUT" ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="POSTCONDITION_LOGGED_OUT"
+      return 0
+    fi
+    if [ "$whoami_state" != "STILL_LOGGED_IN" ] || [ "$logout_result_state" != "EXPLICIT_FAILURE" ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="UNCONFIRMED"
+      return 1
+    fi
+
+    if [ "$attempt" -eq "$max_attempts" ]; then
+      ALIPAY_LOGOUT_POSTCONDITION="STILL_LOGGED_IN"
+      return 1
+    fi
+    sleep "$interval_seconds"
+    attempt=$((attempt + 1))
+  done
+}
+
+render_logout_unconfirmed() {
+  render_error_message error.mcp.auth LOGOUT_UNCONFIRMED '{}'
+}
+
+render_logout_still_logged_in() {
+  local message input
+  message="${ALIPAY_LOGOUT_ERROR_MESSAGE:-退出命令未能使当前登录态失效}"
+  input=$(jq -cn --arg errorMessage "$message" '{errorMessage:$errorMessage}')
+  render_error_message error.mcp.auth LOGOUT_FAILED "$input"
+}
+
+# ─── MCP 认证错误处理 ──────────────────────────────────────────────────────
+handle_mcp_auth_error() {
+  if [ "${ALIPAY_AIPAY_SUPPRESS_AUTH_LOGOUT:-}" = "1" ]; then
+    emit_control "AUTH_FLOW:AUTH_REQUIRED"
+    return 1
+  fi
+  render_error_message error.mcp.auth START '{}' || {
+    emit_control "AUTH_FLOW:FAILED"
+    return 1
+  }
+  confirm_logout_postcondition
+  case "$ALIPAY_LOGOUT_POSTCONDITION" in
+    COMMAND_CONFIRMED_SUCCESS|POSTCONDITION_LOGGED_OUT)
+      render_error_message error.mcp.auth LOGOUT_SUCCESS '{}' || {
+        emit_control "AUTH_FLOW:FAILED"
+        return 1
+      }
+      emit_control "AUTH_FLOW:AUTH_REQUIRED"
+      ;;
+    STILL_LOGGED_IN)
+      render_logout_still_logged_in || {
+        emit_control "AUTH_FLOW:FAILED"
+        return 1
+      }
+      emit_control "AUTH_FLOW:LOGOUT_STILL_LOGGED_IN"
+      ;;
+    LOCAL_FS_PERMISSION)
+      if type auth_local_state_permission_failure >/dev/null 2>&1; then
+        auth_local_state_permission_failure
+      else
+        emit_control "AUTH_FLOW:RETRY_WITH_NETWORK"
+      fi
+      ;;
+    *)
+      render_logout_unconfirmed || {
+        emit_control "AUTH_FLOW:FAILED"
+        return 1
+      }
+      emit_control "AUTH_FLOW:RETRY_WITH_NETWORK"
+      ;;
+  esac
 }
 
 # ─── MCP 服务不可用处理 ────────────────────────────────────────────────────
@@ -427,36 +691,27 @@ handle_mcp_service_error() {
   local CLI_RESULT="$1"
   local UNWRAPPED=$(unwrap_mcp "$CLI_RESULT")
 
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "⚠️  MCP 服务暂时不可用"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
   if [ "${DEV_TOOL_NAME:-unknown}" != "unknown" ]; then
-    echo "❌ 当前命令需要访问支付宝服务，但当前 Agent 执行环境可能没有外网权限"
-    echo ""
-    echo "📋 处理方式："
-    echo "  - Agent 应申请可联网权限后重试同一条命令"
-    echo "  - 不要要求用户排查本机网络，也不要更换业务参数"
-    echo ""
-    echo "请授权 Agent 联网重试，或稍后重新执行当前命令。"
+    render_error_message error.mcp.service AGENT_NETWORK '{}'
     return
   fi
 
-  echo "❌ 无法连接到支付宝服务，请稍后重试"
-  echo ""
-  echo "📋 错误详情："
   local SERVICE_ERROR_MSG
   SERVICE_ERROR_MSG=$(echo "$UNWRAPPED" | jq -r '.error.message // .errorMessage // .message // "未知错误"' 2>/dev/null) || SERVICE_ERROR_MSG="服务调用失败，原始输出已隐藏"
-  sanitize_customer_error_text "$SERVICE_ERROR_MSG"
-  echo ""
-  echo "📋 当前动作已停止重试；由主流程记录受影响分支，并在不受其依赖的情况下继续其他分支。"
-  echo "📋 本轮收口时将一次说明未恢复的动作、受影响分支和后续恢复方式。"
+  SERVICE_ERROR_MSG=$(sanitize_customer_error_text "$SERVICE_ERROR_MSG")
+  MESSAGE_INPUT=$(jq -cn --arg errorDetail "$SERVICE_ERROR_MSG" '{errorDetail:$errorDetail}')
+  render_error_message error.mcp.service GENERIC "$MESSAGE_INPUT"
 }
 
 # ─── 授权信息不匹配处理 ────────────────────────────────────────────────────
 handle_auth_mismatch() {
-  echo "📋 当前授权范围或经营类目不匹配，需要退出当前登录并重新生成授权页面。"
+  local UNWRAPPED
+  UNWRAPPED=$(unwrap_mcp "${1:-}")
+  if echo "$UNWRAPPED" | grep -qiE "mccCode.*is not auth"; then
+    emit_control "AUTH_FLOW:MCC_MISMATCH"
+  else
+    emit_control "AUTH_FLOW:SCOPE_MISMATCH"
+  fi
 }
 
 # ─── 后端业务错误处理（完整透出错误信息） ──────────────────────────────────
@@ -465,13 +720,6 @@ handle_backend_error() {
   local ERROR_CODE="$2"
   local UNWRAPPED=$(unwrap_mcp "$CLI_RESULT")
 
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "❌ 业务处理失败"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  echo "📋 错误码：$ERROR_CODE"
-
   # 提取错误信息
   local ERROR_MSG=$(extract_error_message "$UNWRAPPED")
   local BIZ_TIPS=$(extract_biz_tips "$UNWRAPPED")
@@ -479,56 +727,55 @@ handle_backend_error() {
   local ERROR_SPECIFIC=$(extract_error_object_field "$UNWRAPPED" "errorSpecific")
 
   ERROR_MSG=$(sanitize_customer_error_text "$ERROR_MSG")
-  echo "📋 错误信息：$ERROR_MSG"
-
-  if [ -n "$ERROR_SCENE" ] || [ -n "$ERROR_SPECIFIC" ]; then
-    ERROR_SCENE=$(sanitize_customer_error_text "${ERROR_SCENE:-未知}")
-    ERROR_SPECIFIC=$(sanitize_customer_error_text "${ERROR_SPECIFIC:-未知}")
-    echo "📋 错误场景：$ERROR_SCENE / $ERROR_SPECIFIC"
-  fi
+  if [ -n "$ERROR_SCENE" ]; then ERROR_SCENE=$(sanitize_customer_error_text "$ERROR_SCENE"); fi
+  if [ -n "$ERROR_SPECIFIC" ]; then ERROR_SPECIFIC=$(sanitize_customer_error_text "$ERROR_SPECIFIC"); fi
 
   # 透出 checkedError 中的详细错误描述（如 ar-sign.apply 返回的字段级校验错误）
   local CHECKED_ERRORS=$(extract_checked_errors "$UNWRAPPED")
+  local CHECKED_ERRORS_JSON='[]'
   if [ -n "$CHECKED_ERRORS" ] && [ "$CHECKED_ERRORS" != "null" ] && [ "$CHECKED_ERRORS" != "[]" ]; then
-    echo ""
-    echo "📋 详细校验错误："
-    echo "$CHECKED_ERRORS" | jq -r '.[]? | .errorDesc // .message // . // empty' 2>/dev/null | while IFS= read -r line; do
-      [ -n "$line" ] && echo "  - $(sanitize_customer_error_text "$line")"
-    done
+    while IFS= read -r line; do
+      if [ -n "$line" ]; then
+        line=$(sanitize_customer_error_text "$line")
+        CHECKED_ERRORS_JSON=$(jq -cn --argjson items "$CHECKED_ERRORS_JSON" --arg item "$line" '$items + [$item]')
+      fi
+    done < <(echo "$CHECKED_ERRORS" | jq -r '.[]? | .errorDesc // .message // . // empty' 2>/dev/null)
   fi
 
-  if [ -n "$BIZ_TIPS" ] && [ "$BIZ_TIPS" != "null" ] && [ "$BIZ_TIPS" != "" ]; then
-    echo ""
-    echo "💡 提示：$(sanitize_customer_error_text "$BIZ_TIPS")"
+  if [ -n "$BIZ_TIPS" ] && [ "$BIZ_TIPS" != "null" ]; then
+    BIZ_TIPS=$(sanitize_customer_error_text "$BIZ_TIPS")
+  else
+    BIZ_TIPS=""
   fi
-
+  local APP_MAX="NO"
   if [ "$ERROR_CODE" = "APP_MAX_ERROR" ]; then
-    echo ""
-    echo "📌 处理建议：当前主体下应用数量已达到上限，无法继续新建应用。请优先复用已有上线应用；如必须新建，请前往支付宝开放平台处理应用配额或联系支付宝技术支持。"
+    APP_MAX="YES"
   fi
-
-  echo ""
-  echo "📋 当前业务错误不会自动重试；请先按以上错误信息修正受影响分支的业务条件。"
-  echo "如需帮助，请联系技术支持并提供以上脱敏错误信息。"
+  MESSAGE_INPUT=$(jq -cn \
+    --arg errorCode "$(sanitize_customer_error_text "$ERROR_CODE")" \
+    --arg errorMessage "$ERROR_MSG" \
+    --arg errorScene "$ERROR_SCENE" \
+    --arg errorSpecific "$ERROR_SPECIFIC" \
+    --argjson checkedErrors "$CHECKED_ERRORS_JSON" \
+    --arg bizTips "$BIZ_TIPS" \
+    --arg appMax "$APP_MAX" \
+    '{errorCode:$errorCode,errorMessage:$errorMessage,errorScene:$errorScene,errorSpecific:$errorSpecific,checkedErrors:$checkedErrors,bizTips:$bizTips,appMax:$appMax}')
+  render_error_message error.backend DEFAULT "$MESSAGE_INPUT"
 }
 
 # ─── MCP 服务不稳定处理 ────────────────────────────────────────────────────
 handle_service_unstable() {
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "⚠️  MCP 服务暂时不稳定"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  echo "当前动作已停止重试；由主流程记录受影响分支，并在不受其依赖的情况下继续其他分支。"
-  echo "本轮收口时将一次说明未恢复的动作、受影响分支和后续恢复方式。"
+  render_error_message error.service.unstable DEFAULT '{}'
 }
 
 # ─── 统一错误处理入口 ──────────────────────────────────────────────────────
 # 参数: $1 - CLI 执行结果文本（原始输出，含信封或不含）
+#       $2 - 可选调用上下文，透传给 detect_error
 # 返回: 0=成功, 1=当前动作失败（由主流程判断恢复、阻断或继续独立分支）
 handle_error() {
   local CLI_RESULT="$1"
-  local ERROR_TYPE=$(detect_error "$CLI_RESULT")
+  local ERROR_CONTEXT="${2:-}"
+  local ERROR_TYPE=$(detect_error "$CLI_RESULT" "$ERROR_CONTEXT")
   # 解包一次供 CLI_ERROR 分支使用（其他分支由各自的 handler 自己解包）
   local _UNWRAPPED=$(unwrap_mcp "$CLI_RESULT")
 
@@ -545,25 +792,45 @@ handle_error() {
     "SERVICE_UNSTABLE")
       handle_service_unstable
       ;;
+    "CLI_LOCAL_FS_PERMISSION")
+      if type auth_local_state_permission_failure >/dev/null 2>&1; then
+        auth_local_state_permission_failure
+      else
+        MESSAGE_INPUT=$(jq -cn \
+          --arg errorMessage "alipay-cli 本地状态目录权限不足" \
+          '{errorMessage:$errorMessage,bizTips:"",checkedErrors:[]}')
+        render_error_message error.cli DEFAULT "$MESSAGE_INPUT"
+      fi
+      ;;
     "ERROR:"*)
       local CODE="${ERROR_TYPE#ERROR:}"
       handle_backend_error "$CLI_RESULT" "$CODE"
       ;;
     "CLI_ERROR:"*)
       local MSG="${ERROR_TYPE#CLI_ERROR:}"
-      echo "❌ 命令执行失败：$(sanitize_customer_error_text "$MSG")"
       # CLI_ERROR 也透出 bizTips 和 checkedError（如果有的话）
       local CLI_BIZ_TIPS=$(extract_biz_tips "$_UNWRAPPED")
-      if [ -n "$CLI_BIZ_TIPS" ] && [ "$CLI_BIZ_TIPS" != "null" ] && [ "$CLI_BIZ_TIPS" != "" ]; then
-        echo "💡 $(sanitize_customer_error_text "$CLI_BIZ_TIPS")"
+      if [ -n "$CLI_BIZ_TIPS" ] && [ "$CLI_BIZ_TIPS" != "null" ]; then
+        CLI_BIZ_TIPS=$(sanitize_customer_error_text "$CLI_BIZ_TIPS")
+      else
+        CLI_BIZ_TIPS=""
       fi
       local CLI_CHECKED=$(extract_checked_errors "$_UNWRAPPED")
+      local CLI_CHECKED_JSON='[]'
       if [ -n "$CLI_CHECKED" ] && [ "$CLI_CHECKED" != "null" ] && [ "$CLI_CHECKED" != "[]" ]; then
-        echo "📋 详细校验错误："
-        echo "$CLI_CHECKED" | jq -r '.[]? | .errorDesc // .message // . // empty' 2>/dev/null | while IFS= read -r line; do
-          [ -n "$line" ] && echo "  - $(sanitize_customer_error_text "$line")"
-        done
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            line=$(sanitize_customer_error_text "$line")
+            CLI_CHECKED_JSON=$(jq -cn --argjson items "$CLI_CHECKED_JSON" --arg item "$line" '$items + [$item]')
+          fi
+        done < <(echo "$CLI_CHECKED" | jq -r '.[]? | .errorDesc // .message // . // empty' 2>/dev/null)
       fi
+      MESSAGE_INPUT=$(jq -cn \
+        --arg errorMessage "$(sanitize_customer_error_text "$MSG")" \
+        --arg bizTips "$CLI_BIZ_TIPS" \
+        --argjson checkedErrors "$CLI_CHECKED_JSON" \
+        '{errorMessage:$errorMessage,bizTips:$bizTips,checkedErrors:$checkedErrors}')
+      render_error_message error.cli DEFAULT "$MESSAGE_INPUT"
       ;;
     "SUCCESS")
       return 0

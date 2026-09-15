@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 /*
- * 本示例展示 A2M 核心协议与 SDK 调用流程。
- * 订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和失败重试
- * 需要结合商户实际数据库与订单模型实现。在上述控制完成实现并通过 checklist 前，
- * 禁止将本文件原样用于生产或判定为生产就绪。
+ * 本示例展示 A2M 核心协议、严格验付和幂等履约流程。
+ * 必须通过 OrderRepository 绑定项目真实持久化实现；端口未绑定时明确失败，
+ * 不使用内存订单、固定资源或验付字段缺失兜底。
  */
 package com.alipay.aipayweb.demo;
 
@@ -27,7 +26,6 @@ import com.alipay.api.AlipayClient;
 import com.alipay.api.AlipayConfig;
 import com.alipay.api.DefaultAlipayClient;
 import com.alipay.api.domain.AlipayAipayAgentFulfillmentConfirmModel;
-import com.alipay.api.domain.AlipayAipayAgentPaymentVerifyModel;
 import com.alipay.api.internal.util.AlipaySignature;
 import com.alipay.api.request.AlipayAipayAgentFulfillmentConfirmRequest;
 import com.alipay.api.request.AlipayAipayAgentPaymentVerifyRequest;
@@ -42,10 +40,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * A2M智能收产品接入示例 Controller
@@ -69,14 +69,7 @@ import java.util.*;
  *       ├─ 发送履约确认
  *       ├─ 返回资源内容
  *
- * 注意：本文档为示例代码，仅用于演示接入流程，开发者需根据实际业务场景进行调整。
- *
- * 按量付费生产实现提醒：
- * - 返回 Payment-Needed 前必须把 outTradeNo、resourceId、amount、订单状态和过期时间持久化到商户数据库。
- * - 本地内存订单在服务重启后会丢失，旧付款链接对应的 Payment-Proof 将无法再匹配本地订单。
- * - 沙箱验付响应中的 outTradeNo/resourceId 可能为空字符串，联调排查时先判空；生产环境不得因字段为空而跳过核心校验。
- * - 履约结果应先保存为可重试状态，fulfillment.confirm 成功后再标记订单 FULFILLED 并返回成功交付。
- * 
+     * OrderRepository 的项目实现必须依赖数据库事务和唯一约束，禁止替换为进程内 Map。
  */
 @RestController
 @RequestMapping("/demo/a2m")
@@ -90,8 +83,13 @@ public class A2MPaymentDemoController {
      */
     private final AlipayClient alipayClient;
     private static final String RESOURCE_PATH = "/demo/a2m/resource";
+    private static final String SANDBOX_GATEWAY = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
+    private static final String GATEWAY = System.getenv().getOrDefault("ALIPAY_GATEWAY", SANDBOX_GATEWAY);
+    private static final String SERVICE_ID = System.getenv().getOrDefault("ALIPAY_SERVICE_ID", "api_mock_service_id");
+    private final OrderRepository orderRepository;
 
-    public A2MPaymentDemoController() {
+    public A2MPaymentDemoController(OrderRepository orderRepository) {
+        this.orderRepository = Objects.requireNonNull(orderRepository, "必须绑定项目真实 OrderRepository");
         // 使用AlipayConfig初始化支付宝客户端（推荐方式）
         try {
             this.alipayClient = new DefaultAlipayClient(getAlipayConfig());
@@ -108,8 +106,7 @@ public class A2MPaymentDemoController {
     private static AlipayConfig getAlipayConfig() {
         AlipayConfig alipayConfig = new AlipayConfig();
         // 默认用于本 Skill 的快速沙箱联调；生产部署时显式设置 ALIPAY_GATEWAY=https://openapi.alipay.com/gateway.do
-        alipayConfig.setServerUrl(System.getenv().getOrDefault(
-            "ALIPAY_GATEWAY", "https://openapi-sandbox.dl.alipaydev.com/gateway.do"));
+        alipayConfig.setServerUrl(GATEWAY);
         alipayConfig.setAppId("<APP_ID>");
         alipayConfig.setPrivateKey("<APP_PRIVATE_KEY>"); // 请填写您的应用私钥
         alipayConfig.setFormat("json");
@@ -117,6 +114,69 @@ public class A2MPaymentDemoController {
         alipayConfig.setCharset("UTF-8");
         alipayConfig.setSignType("RSA2");
         return alipayConfig;
+    }
+
+    /**
+     * 项目持久化端口。prepareFulfillment 必须在同一事务内校验订单并且只生成一次资源，
+     * 返回已持久化的 PENDING_CONFIRM 或 FULFILLED 结果。
+     * OrderSnapshot 将支付状态映射为 PENDING_PAYMENT/PAID，
+     * 将履约状态映射为 UNFULFILLED/PENDING_CONFIRM/FULFILLED。
+     */
+    public interface OrderRepository {
+        void createPending(OrderSnapshot order);
+        OrderSnapshot findByOutTradeNo(String outTradeNo);
+        FulfillmentPreparation prepareFulfillment(FulfillmentRequest request);
+        void markFulfilled(String outTradeNo, String tradeNo);
+    }
+
+    public static final class OrderSnapshot {
+        public final String outTradeNo;
+        public final String amount;
+        public final String currency;
+        public final String resourceId;
+        public final String goodsName;
+        public final String payBefore;
+        public final String orderStatus;
+        public final String fulfillStatus;
+
+        public OrderSnapshot(String outTradeNo, String amount, String currency, String resourceId,
+                             String goodsName, String payBefore, String orderStatus, String fulfillStatus) {
+            this.outTradeNo = outTradeNo;
+            this.amount = amount;
+            this.currency = currency;
+            this.resourceId = resourceId;
+            this.goodsName = goodsName;
+            this.payBefore = payBefore;
+            this.orderStatus = orderStatus;
+            this.fulfillStatus = fulfillStatus;
+        }
+    }
+
+    public static final class FulfillmentRequest {
+        public final String outTradeNo;
+        public final String tradeNo;
+        public final String expectedAmount;
+        public final String expectedResourceId;
+        public final Supplier<String> createResource;
+
+        public FulfillmentRequest(String outTradeNo, String tradeNo, String expectedAmount,
+                                  String expectedResourceId, Supplier<String> createResource) {
+            this.outTradeNo = outTradeNo;
+            this.tradeNo = tradeNo;
+            this.expectedAmount = expectedAmount;
+            this.expectedResourceId = expectedResourceId;
+            this.createResource = createResource;
+        }
+    }
+
+    public static final class FulfillmentPreparation {
+        public final String state;
+        public final String serviceResult;
+
+        public FulfillmentPreparation(String state, String serviceResult) {
+            this.state = state;
+            this.serviceResult = serviceResult;
+        }
     }
 
     // ==================== 智能收产品接入示例接口 ====================
@@ -152,7 +212,8 @@ public class A2MPaymentDemoController {
     private ResponseEntity<?> createPaymentRequiredResponse() {
         try {
             // 1. 构造订单信息
-            String outTradeNo = "ORDER_" + System.currentTimeMillis(); //用户可自定义外部订单号的生成逻辑
+            String outTradeNo = "ORDER_" + System.currentTimeMillis() + "_"
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
             String amount = "0.01"; // 单位：元
             String currency = "CNY"; //固定用CNY
             String resourceId = RESOURCE_PATH; //用户可自定义资源id的生成逻辑，用于资源防串
@@ -162,27 +223,10 @@ public class A2MPaymentDemoController {
             ZonedDateTime payBefore = ZonedDateTime.now(ZoneId.of("Asia/Shanghai")).plusMinutes(30);
             String payBeforeStr = payBefore.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
             
-            // 示例逻辑：
-            // 必须在返回 402 前落库。否则用户付款后携带 Payment-Proof 回来时，
-            // 商户服务无法把支付宝验付结果映射回自己的本地订单，会出现 ORDER_NOT_FOUND。
-            // OrderEntity order = new OrderEntity();
-            // order.setOutTradeNo(outTradeNo);
-            // order.setAmount(new BigDecimal(amount)));
-            // order.setCurrency(currency);
-            // order.setResourceId(resourceId);
-            // order.setGoodsName(goodsName);
-            // order.setPayBefore(payBeforeStr);
-            // order.setOrderStatus("INIT");
-            // order.setFulfillStatus("UNFULFILLED");
-            // order.setCreatedAt(LocalDateTime.now());
-            // order.setUpdatedAt(LocalDateTime.now());
-            // order.setClientIp(getClientIp()); // 从request获取客户端IP
-            // orderRepository.save(order);
-            
-            // 4. 生成商家签名（需要使用商户私钥）
+            // 3. 生成商家签名（需要使用商户私钥）
             // 注意：实际使用时请从配置中读取商户ID和服务ID
             String sellerId = "<SELLER_ID_2088>"; // 商户ID（2088格式）
-            String serviceId = "api_mock_service_id"; // 仅用于沙箱联调；上线前替换为服务市场真实 serviceId
+            String serviceId = SERVICE_ID;
             
             Map<String, String> signParams = new HashMap<>();
             signParams.put("amount", amount);
@@ -197,8 +241,13 @@ public class A2MPaymentDemoController {
             // 注意：实际使用时需要从配置中读取商户私钥进行签名
             String privateKey = "<APP_PRIVATE_KEY>"; // 请填写您的应用私钥
             String sellerSignature = generateSellerSignature(signParams, privateKey);
+
+            // 4. 必须在返回 402 前持久化；项目实现负责事务与 outTradeNo 唯一约束。
+            orderRepository.createPending(new OrderSnapshot(
+                outTradeNo, normalizeAmount(amount), currency, resourceId, goodsName, payBeforeStr,
+                "PENDING_PAYMENT", "UNFULFILLED"));
             
-            // 5. 构造 Payment-Needed Header 内容（分层结构）
+            // 5. 持久化成功后构造 Payment-Needed Header 内容（分层结构）
             JSONObject paymentNeeded = new JSONObject();
             
             // protocol 层
@@ -270,205 +319,106 @@ public class A2MPaymentDemoController {
      */
     private ResponseEntity<?> verifyPaymentAndDeliverResource(String paymentProof) {
         try {
-// 1. 从 Payment-Proof 中解析订单信息
-            // Payment-Proof 是 Base64URL 编码的 JSON，需要先解码
-            // Payment-Proof 结构：{"protocol":{"payment_proof":"xxx","trade_no":"xxx"},"method":{"client_session":"xxx"}}
+            // 1. Payment-Proof 是 Base64URL 编码的 JSON。
             String paymentProofValue = null;
             String tradeNo = null;
-            String clientSession = null; // 新增：买家客户端会话标识
+            String clientSession = null;
             try {
                 String decodedProof = new String(Base64.getUrlDecoder().decode(paymentProof), StandardCharsets.UTF_8);
                 JSONObject proofJson = JSONObject.parseObject(decodedProof);
-                
-                // 从 protocol 层获取 payment_proof 和 trade_no
                 JSONObject protocol = proofJson.getJSONObject("protocol");
                 if (protocol != null) {
                     paymentProofValue = protocol.getString("payment_proof");
                     tradeNo = protocol.getString("trade_no");
                 }
-                
-                // 从 method 层获取 client_session（本次新增）
                 JSONObject method = proofJson.getJSONObject("method");
                 if (method != null) {
                     clientSession = method.getString("client_session");
                 }
-                
-                // 校验必要字段
-                if (paymentProofValue == null || paymentProofValue.trim().isEmpty()) {
-                    System.err.println("Payment-Proof 中缺少 payment_proof 字段");
-                    JSONObject errorResponse = new JSONObject();
-                    errorResponse.put("code", "INVALID_PAYMENT_PROOF_FORMAT");
-                    errorResponse.put("message", "Payment-Proof 格式错误：缺少 payment_proof");
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
-                }
-                
-                if (tradeNo == null || tradeNo.trim().isEmpty()) {
-                    System.err.println("Payment-Proof 中缺少 trade_no 字段");
-                    JSONObject errorResponse = new JSONObject();
-                    errorResponse.put("code", "INVALID_PAYMENT_PROOF_FORMAT");
-                    errorResponse.put("message", "Payment-Proof 格式错误：缺少 trade_no");
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+                if (!hasText(paymentProofValue) || !hasText(tradeNo)) {
+                    return createPaymentRequiredResponse();
                 }
             } catch (Exception e) {
                 System.err.println("Payment-Proof 解析失败：" + e.getMessage());
-                JSONObject errorResponse = new JSONObject();
-                errorResponse.put("code", "INVALID_PAYMENT_PROOF_FORMAT");
-                errorResponse.put("message", "Payment-Proof 格式错误：" + e.getMessage());
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+                return createPaymentRequiredResponse();
             }
-            
+
             // 2. 调用支付宝 API 验证支付凭证
-            // 参考：alipay.aipay.agent.payment.verify（A2A 商户支付凭证验证接口）
             AlipayAipayAgentPaymentVerifyRequest verifyRequest = new AlipayAipayAgentPaymentVerifyRequest();
-            AlipayAipayAgentPaymentVerifyModel model = new AlipayAipayAgentPaymentVerifyModel();
-            
-            // 设置支付凭证和支付宝订单号（均来自用户的 Payment-Proof）
-            model.setPaymentProof(paymentProofValue);
-            model.setTradeNo(tradeNo);
-            model.setClientSession(clientSession);
-            
-            verifyRequest.setBizModel(model);
-            
+            // 当前已验证 Java SDK 的 Model 未暴露可选 client_session setter，
+            // 使用请求自身的结构化 bizContent 能力，避免调用不存在的方法。
+            JSONObject verifyBizContent = new JSONObject();
+            verifyBizContent.put("payment_proof", paymentProofValue);
+            verifyBizContent.put("trade_no", tradeNo);
+            if (hasText(clientSession)) {
+                verifyBizContent.put("client_session", clientSession);
+            }
+            verifyRequest.setBizContent(verifyBizContent.toJSONString());
             AlipayAipayAgentPaymentVerifyResponse verifyResponse = alipayClient.execute(verifyRequest);
-            
-            // 3. 验证失败，返回错误
+
             if (!verifyResponse.isSuccess()) {
                 System.err.println("支付凭证验证失败: " + verifyResponse.getSubMsg());
-                JSONObject errorResponse = new JSONObject();
-                errorResponse.put("code", verifyResponse.getSubCode());
-                errorResponse.put("message", verifyResponse.getSubMsg());
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+                return createPaymentRequiredResponse();
             }
-            
-            // 4. 验证成功，获取订单信息
-            // 注意：验证响应中的订单信息可能与凭证中的信息一致，但仍需从响应中获取以确保安全性
-            String verifyTradeNo = verifyResponse.getTradeNo();          // 支付宝订单号
-            String verifyOutTradeNo = verifyResponse.getOutTradeNo();   // 商户订单号
-            String resourceId = verifyResponse.getResourceId();   // 资源ID
-            // 当前 demo 在沙箱字段为空时回退到固定资源；生产实现必须从本地订单读取并校验资源 ID。
-            String resourceIdVerified = resourceId == null || resourceId.trim().isEmpty()
-                ? RESOURCE_PATH
-                : resourceId;
-            Boolean active = verifyResponse.getActive();          // 凭证有效标识
-            
-            System.out.println("支付凭证验证成功: tradeNo=" + verifyTradeNo + ", outTradeNo=" + verifyOutTradeNo);
-            
-            // 5. 校验凭证有效性（active=true表示凭证有效）
-            if (active == null || !active) {
-                System.err.println("支付凭证无效或已过期: outTradeNo=" + verifyOutTradeNo);
-                JSONObject errorResponse = new JSONObject();
-                errorResponse.put("code", "INVALID_PAYMENT_PROOF");
-                errorResponse.put("message", "支付凭证无效或已过期");
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+
+            String returnedTradeNo = emptyIfNull(verifyResponse.getTradeNo());
+            String verifyOutTradeNo = emptyIfNull(verifyResponse.getOutTradeNo());
+            String returnedAmount = emptyIfNull(verifyResponse.getAmount());
+            String returnedResourceId = emptyIfNull(verifyResponse.getResourceId());
+            Boolean active = verifyResponse.getActive();
+            OrderSnapshot order = hasText(verifyOutTradeNo)
+                ? orderRepository.findByOutTradeNo(verifyOutTradeNo)
+                : null;
+            boolean sandboxMode = isExactSandboxMode();
+            String verifyTradeNo = hasText(returnedTradeNo) ? returnedTradeNo : (sandboxMode ? tradeNo : "");
+            String verifyAmount = hasText(returnedAmount) ? returnedAmount : (sandboxMode && order != null ? order.amount : "");
+            String resourceIdVerified = hasText(returnedResourceId)
+                ? returnedResourceId
+                : (sandboxMode && order != null ? order.resourceId : "");
+
+            if (!Boolean.TRUE.equals(active)
+                    || !hasText(verifyTradeNo)
+                    || !verifyTradeNo.equals(tradeNo)
+                    || !hasText(verifyOutTradeNo)
+                    || !hasText(resourceIdVerified)) {
+                return createPaymentRequiredResponse();
             }
-            
-            // 6. 查询订单是否存在（以数据库为准）
-            // 注意：alipay.aipay.agent.payment.verify 成功只代表支付宝凭证有效，
-            // 仍然需要映射回商户本地订单后才能交付资源。
-            // 沙箱环境下 verifyResponse.getOutTradeNo() 可能为空字符串，联调时使用前先判空；
-            // 生产环境应把关键字段为空作为异常处理，不应跳过本地订单校验。
-            // 如果本地调试使用内存仓储，服务重启会丢失订单；此时旧付款链接不能继续验证。
-            // 示例逻辑：
-            // if (!hasText(verifyOutTradeNo)) {
-            //     JSONObject errorResponse = new JSONObject();
-            //     errorResponse.put("code", "MISSING_OUT_TRADE_NO");
-            //     errorResponse.put("message", "验付响应缺少商户订单号");
-            //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
-            // }
-            // OrderEntity order = hasText(verifyOutTradeNo)
-            //     ? orderRepository.findByOutTradeNo(verifyOutTradeNo).orElse(null)
-            //     : null;
-            // if (order == null) {
-            //     System.err.println("订单不存在: outTradeNo=" + verifyOutTradeNo);
-            //     JSONObject errorResponse = new JSONObject();
-            //     errorResponse.put("code", "ORDER_NOT_FOUND");
-            //     errorResponse.put("message", "订单不存在");
-            //     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorResponse);
-            // }
-            
-            // 7. 资源防串校验
-            // 商户需要验证resourceId是否与商户系统中该outTradeNo对应的资源一致
-            // 防止恶意用户通过篡改resourceId获取其他资源
-            // 沙箱字段为空时不要把空字符串当作有效资源字段参与强校验；
-            // 生产环境应把关键资源字段缺失作为异常处理。
-            // 示例逻辑：
-            // if (!hasText(resourceId)) {
-            //     JSONObject errorResponse = new JSONObject();
-            //     errorResponse.put("code", "MISSING_RESOURCE_ID");
-            //     errorResponse.put("message", "验付响应缺少资源标识");
-            //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
-            // }
-            // if (!resourceId.equals(order.getResourceId())) {
-            //     System.err.println("资源ID不匹配，可能存在资源串改风险: orderResourceId=" + order.getResourceId() + 
-            //         ", requestResourceId=" + resourceId);
-            //     JSONObject errorResponse = new JSONObject();
-            //     errorResponse.put("code", "RESOURCE_ID_MISMATCH");
-            //     errorResponse.put("message", "资源ID不匹配，可能存在资源串改风险");
-            //     return ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorResponse);
-            // }
-            
-            // 8. 履约防重放校验（数据库幂等控制）
-            // 商户需要根据outTradeNo查询自己的业务订单，检查是否已经履约
-            // 防止重复履约和重复交付资源
-            // 示例逻辑：
-            // if ("FULFILLED".equals(order.getFulfillStatus())) {
-            //     System.out.println("订单已履约，返回历史履约结果: outTradeNo=" + verifyOutTradeNo);
-            //     
-            //     // 查询历史履约记录
-            //     FulfillmentRecordEntity record = fulfillmentRecordRepository
-            //         .findTopByOrderNoOrderByCreatedAtDesc(verifyOutTradeNo).orElse(null);
-            //     
-            //     JSONObject response = new JSONObject();
-            //     response.put("code", "ALREADY_FULFILLED");
-            //     response.put("message", "订单已履约，不重复提供");
-            //     response.put("already_fulfilled", true);
-            //     if (record != null) {
-            //         response.put("resource_content", record.getServiceResult());
-            //         response.put("fulfilled_at", record.getCreatedAt().toString());
-            //     }
-            //     return ResponseEntity.ok(response);
-            // }
-            
-            // 9. 更新订单状态为已支付
-            // 示例逻辑：
-            // order.setOrderStatus("PAID");
-            // order.setTradeNo(verifyTradeNo); // 保存支付宝订单号
-            // order.setPaidAt(LocalDateTime.now());
-            // order.setUpdatedAt(LocalDateTime.now());
-            // orderRepository.save(order);
-            
-            // 10. 执行业务逻辑，生成资源内容
-            String serviceResult = generateServiceResource(resourceIdVerified);
-            
-            // 11. 履约记录落库（用于审计/售后/对账）
-            // 示例逻辑：
-            // FulfillmentRecordEntity record = new FulfillmentRecordEntity();
-            // record.setOutTradeNo(verifyOutTradeNo);
-            // record.setTradeNo(verifyTradeNo);
-            // record.setServiceResult(serviceResult);
-            // record.setServiceType("AI_CONTENT_GENERATION");
-            // record.setCreatedAt(LocalDateTime.now());
-            // fulfillmentRecordRepository.save(record);
-            
-            // 12. 保存待确认履约状态
-            // 实际生产中建议先保存 serviceResult 和 PENDING_CONFIRM 状态。
-            // fulfillment.confirm 成功后再标记 FULFILLED；如果确认失败，
-            // 可允许同一笔 Payment-Proof 重试确认，避免误返回成功。
-            // 示例逻辑：
-            // order.setFulfillStatus("PENDING_CONFIRM");
-            // order.setServiceResult(serviceResult);
-            // order.setUpdatedAt(LocalDateTime.now());
-            // orderRepository.save(order);
-            // 注意：如果生成资源会产生扣减额度、调用第三方、写业务数据等副作用，
-            // 必须把 serviceResult 和幂等键落库后再允许重试，否则重试可能重复生成或重复扣减。
-            
-            String fulfillmentTradeNo = verifyTradeNo == null || verifyTradeNo.trim().isEmpty()
-                ? tradeNo
-                : verifyTradeNo;
-            System.out.println("资源已生成，准备发送履约确认: outTradeNo=" + verifyOutTradeNo + ", tradeNo=" + fulfillmentTradeNo);
-            
-            // 13. 发送履约确认到支付宝
-            boolean fulfillmentConfirmed = sendFulfillmentConfirm(fulfillmentTradeNo);
+
+            boolean amountMatches = order != null && amountsEqual(order.amount, verifyAmount);
+            boolean resourceMatches = order != null
+                && RESOURCE_PATH.equals(order.resourceId)
+                && order.resourceId.equals(resourceIdVerified);
+            boolean fulfillmentInProgress = order != null
+                && Arrays.asList("PENDING_CONFIRM", "FULFILLED").contains(order.fulfillStatus);
+            boolean orderUsable = order != null
+                && "CNY".equals(order.currency)
+                && Arrays.asList("PENDING_PAYMENT", "PAID").contains(order.orderStatus)
+                && Arrays.asList("UNFULFILLED", "PENDING_CONFIRM", "FULFILLED").contains(order.fulfillStatus)
+                && (fulfillmentInProgress || isFuture(order.payBefore));
+            if (!amountMatches || !resourceMatches || !orderUsable) {
+                return createPaymentRequiredResponse();
+            }
+
+            FulfillmentPreparation fulfillment = orderRepository.prepareFulfillment(new FulfillmentRequest(
+                verifyOutTradeNo,
+                verifyTradeNo,
+                normalizeAmount(verifyAmount),
+                resourceIdVerified,
+                () -> generateServiceResource(resourceIdVerified)));
+            if (fulfillment == null
+                    || !("PENDING_CONFIRM".equals(fulfillment.state) || "FULFILLED".equals(fulfillment.state))
+                    || !hasText(fulfillment.serviceResult)) {
+                throw new IllegalStateException("OrderRepository.prepareFulfillment 未返回已持久化的履约结果");
+            }
+
+            if ("FULFILLED".equals(fulfillment.state)) {
+                return sendSuccessfulResource(
+                    verifyTradeNo, verifyOutTradeNo, resourceIdVerified, fulfillment.serviceResult, true);
+            }
+
+            System.out.println("资源已生成，准备发送履约确认: outTradeNo=" + verifyOutTradeNo
+                + ", tradeNo=" + verifyTradeNo);
+            boolean fulfillmentConfirmed = sendFulfillmentConfirm(verifyTradeNo);
             if (!fulfillmentConfirmed) {
                 JSONObject errorResponse = new JSONObject();
                 errorResponse.put("code", "FULFILLMENT_CONFIRM_FAILED");
@@ -476,44 +426,9 @@ public class A2MPaymentDemoController {
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(errorResponse);
             }
 
-            // 13.1 履约确认成功后，再标记订单已履约
-            // 示例逻辑：
-            // order.setFulfillStatus("FULFILLED");
-            // order.setFulfilledAt(LocalDateTime.now());
-            // order.setUpdatedAt(LocalDateTime.now());
-            // orderRepository.save(order);
-
-            System.out.println("履约确认成功: outTradeNo=" + verifyOutTradeNo + ", tradeNo=" + fulfillmentTradeNo);
-            
-            // payload 只包含最核心的验证信息
-            JSONObject payload = new JSONObject();
-            payload.put("trade_no", fulfillmentTradeNo);         // 支付宝订单号
-            payload.put("out_trade_no", verifyOutTradeNo);       // 商户订单号
-            payload.put("validated", true);                // 验证通过标识
-            payload.put("resource_id", resourceIdVerified); // 资源ID（校验用）
-
-            // Base64URL编码
-            String paymentValidationEncoded = Base64.getUrlEncoder()
-                .withoutPadding()
-                .encodeToString(payload.toJSONString().getBytes(StandardCharsets.UTF_8));
-
-            // 14. 返回资源内容
-            JSONObject resourceContent = new JSONObject();
-            resourceContent.put("resource_id", resourceIdVerified);
-            resourceContent.put("content", serviceResult);
-            resourceContent.put("trade_no", fulfillmentTradeNo);
-            resourceContent.put("out_trade_no", verifyOutTradeNo);
-            resourceContent.put("already_fulfilled", false);
-            resourceContent.put("fulfillment_confirmed", true);
-            
-            // 设置 Payment-Validation Header
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("Payment-Validation", paymentValidationEncoded);
-            
-            return ResponseEntity.ok()
-                .headers(headers)
-                .body(resourceContent);
-            
+            orderRepository.markFulfilled(verifyOutTradeNo, verifyTradeNo);
+            return sendSuccessfulResource(
+                verifyTradeNo, verifyOutTradeNo, resourceIdVerified, fulfillment.serviceResult, false);
         } catch (AlipayApiException e) {
             System.err.println("支付凭证验证异常: " + e.getErrMsg());
             JSONObject errorResponse = new JSONObject();
@@ -527,6 +442,31 @@ public class A2MPaymentDemoController {
             errorResponse.put("message", "履约处理失败: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
         }
+    }
+
+    private ResponseEntity<?> sendSuccessfulResource(String tradeNo, String outTradeNo,
+                                                       String resourceId, String serviceResult,
+                                                       boolean alreadyFulfilled) {
+        JSONObject payload = new JSONObject();
+        payload.put("trade_no", tradeNo);
+        payload.put("out_trade_no", outTradeNo);
+        payload.put("validated", true);
+        payload.put("resource_id", resourceId);
+        String paymentValidationEncoded = Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(payload.toJSONString().getBytes(StandardCharsets.UTF_8));
+
+        JSONObject resourceContent = new JSONObject();
+        resourceContent.put("resource_id", resourceId);
+        resourceContent.put("content", serviceResult);
+        resourceContent.put("trade_no", tradeNo);
+        resourceContent.put("out_trade_no", outTradeNo);
+        resourceContent.put("already_fulfilled", alreadyFulfilled);
+        resourceContent.put("fulfillment_confirmed", true);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Payment-Validation", paymentValidationEncoded);
+        return ResponseEntity.ok().headers(headers).body(resourceContent);
     }
     
     /**
@@ -596,6 +536,52 @@ public class A2MPaymentDemoController {
     }
 
     // ==================== 工具方法 ====================
+
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
+    private static String emptyIfNull(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static String normalizeAmount(String value) {
+        BigDecimal amount = parseAmount(value);
+        if (amount == null) {
+            throw new IllegalArgumentException("金额格式非法");
+        }
+        return amount.setScale(2).toPlainString();
+    }
+
+    private static boolean amountsEqual(String left, String right) {
+        BigDecimal leftAmount = parseAmount(left);
+        BigDecimal rightAmount = parseAmount(right);
+        return leftAmount != null && rightAmount != null && leftAmount.compareTo(rightAmount) == 0;
+    }
+
+    private static BigDecimal parseAmount(String value) {
+        if (!hasText(value) || !value.trim().matches("\\d+(?:\\.\\d{1,2})?")) {
+            return null;
+        }
+        try {
+            BigDecimal amount = new BigDecimal(value.trim());
+            return amount.signum() >= 0 ? amount : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static boolean isFuture(String value) {
+        try {
+            return hasText(value) && ZonedDateTime.parse(value).isAfter(ZonedDateTime.now());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isExactSandboxMode() {
+        return SANDBOX_GATEWAY.equals(GATEWAY) && "api_mock_service_id".equals(SERVICE_ID);
+    }
     
     /**
      * 生成商家签名（seller_signature）

@@ -22,46 +22,34 @@
 
 ## 测试前预检
 
-执行沙箱测试脚本前，先解码服务返回的 `Payment-Needed`，确认关键字段存在。`SERVICE_URL` 使用用户实际服务地址。
+执行沙箱测试脚本前，先用固定 `precheck` 解码服务返回的 `Payment-Needed` 并确认关键字段存在。`SERVICE_URL` 使用用户实际服务地址。所有平台统一执行当前 Skill 的受控入口；禁止临时编写 Python、curl 管道或近似解析器：
 
 ```bash
-curl -s -D - -o /dev/null "$SERVICE_URL" \
-  | python3 -c 'import sys, base64, json
-headers = sys.stdin.read().splitlines()
-statuses = [line.split() for line in headers if line.startswith("HTTP/")]
-status = statuses[-1][1] if statuses and len(statuses[-1]) > 1 else ""
-if status != "402":
-    raise SystemExit(f"HTTP 状态不是 402: {status or '未知'}")
-value = next((line.split(":", 1)[1].strip().strip("\"") for line in headers if line.lower().startswith("payment-needed:")), "")
-if not value:
-    raise SystemExit("未找到 Payment-Needed 响应头")
-value += "=" * ((4 - len(value) % 4) % 4)
-data = json.loads(base64.urlsafe_b64decode(value).decode())
-required = [
-    ("protocol", "out_trade_no"), ("protocol", "amount"), ("protocol", "currency"),
-    ("protocol", "resource_id"), ("protocol", "pay_before"), ("protocol", "seller_signature"),
-    ("protocol", "seller_sign_type"), ("protocol", "seller_unique_id"),
-    ("method", "seller_name"), ("method", "seller_id"), ("method", "seller_app_id"),
-    ("method", "goods_name"), ("method", "seller_unique_id_key"), ("method", "service_id"),
-]
-missing = [f"{path[0]}.{path[1]}" for path in required if not data.get(path[0], {}).get(path[1])]
-if missing:
-    raise SystemExit("缺少字段: " + ", ".join(missing))
-if data.get("method", {}).get("service_id") != "api_mock_service_id":
-    raise SystemExit("沙箱联调 method.service_id 必须为 api_mock_service_id")
-print("Payment-Needed 预检通过，已确认 HTTP 402 和关键字段存在。")
-print("已校验字段: " + ", ".join(f"{path[0]}.{path[1]}" for path in required))'
+# GET
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET
+
+# POST
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE"
 ```
 
-POST 服务将首行 curl 替换为 `curl -s -D - -o /dev/null -X POST -H "Content-Type: ${CONTENT_TYPE:-application/json}" -d "$BODY" "$SERVICE_URL"`。`seller_signature` 由代码示例中的 `generateSellerSignature` / `generate_seller_signature` 生成，签名入参中的 `service_id` 与 `method.service_id` 都必须使用 `api_mock_service_id`；禁止使用空值、其他占位符或要求用户提供正式 `serviceId`。预检输出只打印校验结论和字段名，不打印字段值。
+POST body 必须来自已确认目标项目中的实际文件。`seller_signature` 由代码示例中的 `generateSellerSignature` / `generate_seller_signature` 生成，签名入参中的 `service_id` 与 `method.service_id` 都必须使用 `api_mock_service_id`；禁止使用空值、其他占位符或要求用户提供正式 `serviceId`。预检输出只打印校验结论和字段名，不打印字段值。
+
+`precheck` 只请求本地服务并校验 HTTP 402/字段，不调用沙箱收银。Windows 也使用相同的 Node 单行入口，由启动器选择可用的 Python 3：
+
+```powershell
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE"
+```
 
 ---
 
 ## 测试脚本路径
 
 ```bash
-python3 ../scripts/local_402_sandbox_pay.py
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m
 ```
+
+Windows 使用 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m`；启动器只允许该内置脚本，并按系统选择可用的 Python 3 命令。
 
 脚本只提供 `run` 子命令，并要求使用 `--auto-complete` 在同一次命令内获取 Payment-Needed、调用沙箱收银和携带 Payment-Proof 重试原始服务。不存在跨轮 `complete` 或恢复命令。
 
@@ -97,12 +85,10 @@ python3 ../scripts/local_402_sandbox_pay.py
 
 **⚠️ 脚本的收银接口地址和付款链接前缀已硬编码在脚本中（`PAY_ENDPOINT`、`PAY_URL_PREFIX`），执行时无需额外指定。**
 
-使用 `../../../normal/customer-messages.json` 的 `a2m.test.start` 渲染固定联调说明，然后立即运行脚本，不等待用户确认。服务地址和 HTTP 方法只用于实际联调命令，不在本消息中展示。必须执行：
+先按统一 runtime 的 `integration-message a2m-execution-guard` 当前会话 receipt 契约校验项目快照、服务 URL、HTTP 方法和可选 POST body。项目快照按代码和配置的实际内容计算，仅文件时间戳变化或同内容重写不产生新的执行机会；实际内容变化时才允许生成新的 `RUN` receipt。只有 `decision=RUN` 才使用 `../../../normal/json/customer-messages.json` 的 `a2m.test.start` 渲染固定联调说明并立即运行脚本；`REUSE_PASSED|BLOCK_UNCHANGED|UNKNOWN_PREVIOUS_EXECUTION` 均不得重复发起完整联调。服务地址和 HTTP 方法只用于实际命令，不在开始消息中展示。
 
 ```bash
-MESSAGE_INPUT_JSON='{}'
-printf '%s' "$MESSAGE_INPUT_JSON" \
-  | node ../../../normal/scripts/render_customer_message.mjs a2m.test.start --variant DEFAULT
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-test-start
 ```
 
 不得在模块或 Agent 回复中维护第二份近似开始话术。
@@ -110,24 +96,20 @@ printf '%s' "$MESSAGE_INPUT_JSON" \
 GET 请求：
 
 ```bash
-python3 ../scripts/local_402_sandbox_pay.py run \
-  --url "$SERVICE_URL" \
-  --method GET \
-  --buyer-id "$BUYER_2088" \
-  --auto-complete \
-  --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
 ```
 
 POST 请求：
 
 ```bash
-python3 ../scripts/local_402_sandbox_pay.py run \
-  --url "$SERVICE_URL" \
-  --method POST \
-  --body "$BODY" \
-  --buyer-id "$BUYER_2088" \
-  --auto-complete \
-  --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "$BODY" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+```
+
+Windows 从本文件所在目录按实际 HTTP 方法执行对应单行命令：
+
+```powershell
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
 ```
 
 **脚本执行步骤**：
@@ -156,8 +138,7 @@ python3 ../scripts/local_402_sandbox_pay.py run \
 - 如果未找到 `Payment-Needed` 响应头，确认服务端是否实现了 402 协议
 - 如果收银接口返回 `PARAM_INVALID: protocol.sellerSignature不能为空`，回到预检步骤检查 `protocol.seller_signature` 是否为空、缺失或仍是占位符
 - 如果 `pay_before` 相关参数报错，检查是否使用 ISO 8601 带时区格式
-- 如果收银接口返回 `PAY_SUBMIT_FAILED`、`系统繁忙` 等已识别临时错误，脚本在同一次命令内按现有预算自动重试；仍失败时清理本轮敏感产物并停止。修复服务或稍后重试时重新执行完整 `run --auto-complete`，不复用上轮 Payment-Needed。
-- `run` 命令支持 `--pay-retries` 和 `--pay-retry-delay`，用于调大沙箱收银接口临时失败时的重试次数与间隔。
+- 如果收银接口返回 `PAY_SUBMIT_FAILED`、`系统繁忙` 等已识别临时错误，脚本只在同一次命令内按既有预算自动重试；仍失败时清理本轮敏感产物并停止。Agent 不得通过重复执行 `run --auto-complete`、追加 `--pay-retries`/`--pay-retry-delay` 或手工复用上轮 Payment-Needed 扩大远程写动作；只有联网权限恢复后重试同一未发出命令，或代码、配置、URL、方法、POST body 实际变化并由 guard 产生新 `RUN` receipt 时才能重新发起完整联调。
 
 ### 第三步：连续验证 Payment-Proof 重试
 
@@ -173,7 +154,7 @@ python3 ../scripts/local_402_sandbox_pay.py run \
 **Payment-Proof 处理约束**：
 - `trade_no` 必须使用前面沙箱收银接口返回并写入 `state.json` 的交易号；不得改用商户侧 `out_trade_no` 或重新生成。
 - `payment_proof`、`client_session` 和最终请求头由脚本按沙箱联调约定自动处理；Agent 不得手工拼接、改写或向用户展开其原始值和内部处理规则。
-- 进程中断后重新执行完整 `run --auto-complete` 联调，不复用旧过程产物；禁止脱离脚本另行构造凭证。
+- 进程中断后只能在确认上次命令未取得可用过程产物时重新执行完整 `run --auto-complete` 联调，不复用旧过程产物；明确业务失败、服务实现失败或脚本已输出失败结论时，禁止立即重复执行同一联调命令刷远程动作，必须先处理失败原因。
 
 Payment-Proof 参考结构：
 
@@ -205,7 +186,7 @@ Payment-Proof 参考结构：
 
 测试结束后使用 `a2m.test.result`：只有脚本退出码和本模块要求的组合证据都成立时选择 `PASSED`；其他情况选择 `FAILED` 并传入实际证据与确定恢复动作。不得把用户付款体验、沙箱配置落盘或任意 2xx 响应替代通过证据。
 
-输出测试结论后，使用 `a2m.payment.experience/FULL` 展示付款链接和已经通过快速沙箱字段校验的实际买家账号。缺少任一账号字段时，当前沙箱配置必须已经在前置校验进入待配置状态，不得执行本联调或输出付款体验，也不得编造缺失凭据。随后使用 `sandbox.android.client` 统一输出 Android-only 官方下载与失败兜底。两条消息都不增加阻塞点，也不反向改变服务端联调结论。
+输出测试结论后，使用 `a2m.payment.experience/FULL` 展示付款链接和已经通过快速沙箱字段校验的实际买家账号。缺少任一账号字段时，当前沙箱配置必须已经在前置校验进入待配置状态，不得执行本联调或输出付款体验，也不得编造缺失凭据。随后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message sandbox-android-client` 统一输出 Android-only 官方下载与失败兜底。两条消息都不增加阻塞点，也不反向改变服务端联调结论。
 
 最后必须提醒用户：
 
