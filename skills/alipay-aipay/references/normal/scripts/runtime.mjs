@@ -5,7 +5,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { currentRunContext, startTelemetryRun } from './telemetry.mjs';
+import { applyTelemetrySession, currentRunContext, startTelemetryRun } from './telemetry.mjs';
+import { applyAgentPlatform } from './agent_platform.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const referencesDir = path.resolve(scriptDir, '../..');
@@ -257,7 +258,7 @@ async function dispatch(domain, args) {
 export async function runRuntimeCli(argv = process.argv) {
   const domain = argv[2] || '';
   try {
-    await dispatch(domain, applyTelemetryContext(domain, argv.slice(3)));
+    await dispatch(domain, applyTelemetryContext(domain, applyTelemetrySession(applyAgentPlatform(argv.slice(3)))));
   } catch (error) {
     runtimeError(domain, error);
     process.exitCode = domain === 'self-update' ? 0 : 1;

@@ -10,7 +10,7 @@
 当用户提及以下不支持的产品时，使用 `json/customer-messages.json` 的 `product.unsupported`，传入用户实际产品名。必须执行：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message product-unsupported --product-name "$PRODUCT_NAME"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message product-unsupported --product-name "$PRODUCT_NAME" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 支持范围、开放平台文档、传统支付集成 Skill 和商家平台链接只在消息目录维护；本文件不复制标准正文。

@@ -35,7 +35,7 @@
 - HarmonyOS 代码开发受支持，但 HarmonyOS 移动应用不通过 Skill 创建，也不得向脚本或 MCP 传 `HARMONY`。固定输出：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message application-harmony-manual-create
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message application-harmony-manual-create --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 HarmonyOS 用户完成平台操作后只重查下方列表，不跑全量 discovery；仅实际 `ON_LINE` 可复用，用户表达不证明创建、配置或上线。
@@ -43,7 +43,7 @@ HarmonyOS 用户完成平台操作后只重查下方列表，不跑全量 discov
 `ON_LINE` 才可复用。空候选收材料；非空接受当前 appId 或 `新建+材料`；仅未上线时可 `暂不新建`；无效选择不写。材料齐后由固定组合入口轻量查询并比较快照：`UNCHANGED` 创建并生成公钥页；`CHANGED_EMPTY` 零写入送达空事实后，以新快照和原材料同回合重跑，不等待回复；`CHANGED_NONEMPTY` 零写入送达新候选后重选：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapshot --product-type "$PRODUCT_TYPE" --sales-code "$SALES_CODE" --previous-candidates-json "$APP_CANDIDATES_JSON" [移动平台参数] --defer-open "<用户明确提供的完整publicKey>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapshot --product-type "$PRODUCT_TYPE" --sales-code "$SALES_CODE" --previous-candidates-json "$APP_CANDIDATES_JSON" [移动平台参数] --defer-open "<用户明确提供的完整publicKey>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 组合入口只编排既有 `list -> comparator -> create -> key`。写入前 `CONTRACT_ERROR|PREWRITE_FAILED` 自动恢复一次，`SNAPSHOT_REFRESH_REQUIRED` 刷新候选；耗尽按 flow 收口并继续其他分支。子步骤只转发登记终态，技术正文和 marker 禁止对客。权限/授权按 flow 恢复；写入前恢复后可继续，写入后禁止重放。创建 `UNKNOWN` 只重查列表，公钥页 `FAILED|UNKNOWN` 只查公钥状态；核验后仍不明则输出业务待办并收口，禁止重建应用/页面。独立 `app key` 只用于复用缺钥应用，或新建成功后公钥页调用前权限阻断；`app create` 仅由组合入口调用。HarmonyOS 仍独立 `app list`。
@@ -51,8 +51,8 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapsho
 材料齐或非空明确新建即确认创建；`新建/我要新建` 只是示例，不要求逐字回复，等价明确意图均接受；之后只补缺项。`WEBAPP` 需公钥；`MOBILEAPP` 需平台资料和公钥。Agent 按明确语义归一化：仅 iOS→`IOS`，仅 Android→`ANDROID`，两类→`ALL`；原枚举兼容，含糊/矛盾时不猜。脚本只传这三个枚举。`APP_WEB_INITIAL` 仅限 `aipay|webpay`，`APP_MOBILE_INITIAL` 仅限 `apppay`：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message material-collect --category application --state APP_WEB_INITIAL --product-type "$PRODUCT_TYPE" --input-id "$USER_INPUT_ID"
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message material-collect --category application --state APP_MOBILE_INITIAL --product-type "$PRODUCT_TYPE" --input-id "$USER_INPUT_ID"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message material-collect --category application --state APP_WEB_INITIAL --product-type "$PRODUCT_TYPE" --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message material-collect --category application --state APP_MOBILE_INITIAL --product-type "$PRODUCT_TYPE" --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 Skill 新建 `WEBAPP` 或 `MOBILEAPP IOS|ANDROID|ALL` 时，首次等待或创建写操作前必须展示 `https://opendocs.alipay.com/isv/02kipk`。空候选由事实消息展示，缺公钥再执行 `runtime.mjs key-tool`；应用资料首次收集消息也保留同一入口以覆盖恢复场景。非空由选择消息展示，用户要求才下载。只下载，不安装/启动/生成密钥。材料齐且重查允许才创建、设钥和提审。HarmonyOS 保持人工引导，不适用本门禁。
@@ -77,12 +77,12 @@ RSA2 状态只看应用公钥字段，支付宝公钥不能反证。`verify-key|
 
 `APPLICATION_CREATE_RESULT=SUCCESS|FAILED|UNKNOWN` 区分创建；未知只刷新列表事实，不归因候选差异。`KEY_PAGE_RESULT=FAILED|UNKNOWN` 在调用后都只用同一公钥执行一次 `reconcile-key`，不生成第二页；`CONFIRMED` 才提审。权限/授权恢复后只做阶段允许的最新只读动作。`APPLICATION_AUDIT_RESULT=SUBMITTED|FAILED|UNKNOWN` 区分提审，未知不重提；`FLOW:AUDIT_SUBMITTED` 仅来自成功或只读核验。config 探针失败输出 `APP_FLOW:RETRY_WITH_LOCAL_CONFIG_PERMISSION` 和 `ALIPAY_PUBLIC_KEY_EXPORT_STATUS=RETRY_WITH_LOCAL_CONFIG_PERMISSION`，取权重试一次且不重开页面；仍失败输出 `ALIPAY_PUBLIC_KEY_EXPORT_STATUS=MANUAL_CONFIGURATION_REQUIRED`，由 `customer-messages.json` 的应用人工配置目录文案引导。
 
-应用分支对客结果只使用：
+三个产品在 `onboarding_only` 和 `full_process` 中，应用分支取得本轮可收口结果后均先独立交付应用结果，再进入总收口；紧邻总收口也不合并，同一结果已交付则不重复。总收口仅保留应用发布状态和待办，不重复应用详情。仍在等待材料、公钥或恢复时沿用原分支；未取得实际 appId 的失败/未知不得编造 appId，保留错误和待办收口。应用分支对客结果只使用：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message application-result --app-id "$APP_ID" --actual-status "$ACTUAL_STATUS" [--next-action "$NEXT_ACTION"] [--app-key-save-path "$APP_KEY_SAVE_PATH"]
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message application-result --app-id "$APP_ID" --actual-status "$ACTUAL_STATUS" [--next-action "$NEXT_ACTION"] [--app-key-save-path "$APP_KEY_SAVE_PATH"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-单独执行该命令时，只要 stdout 非空，必须同时取得唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=application.operation.result`，并在下一步先将 stdout 原文作为独立用户可见消息送达；送达前禁止执行 closeout 或把应用结果并入总收口。该交付屏障不增加用户确认点。`需人工配置` 分支同样必须交付，但禁止传公钥保存路径。
+执行该命令时，只要 stdout 非空，必须同时取得唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=application.operation.result`，并在下一步先将 stdout 原文作为独立用户可见消息送达；送达前禁止执行 closeout 或把应用结果并入总收口。送达后同一工作回合继续，不等待用户确认，不以最终答复结束当前回合。`需人工配置` 分支同样必须交付，但禁止传公钥保存路径。
 
 输出实际 appId、状态和下一步；若本轮 `ALIPAY_PUBLIC_KEY_EXPORT_STATUS=EXPORTED`，必须把该路径原样作为 `APP_KEY_SAVE_PATH` 传入，runner 会对客展示“当前 appId: xxx 对应的支付宝公钥保存在:xxx”。只展示路径，禁止复述支付宝公钥内容。待审核、待设钥、需人工配置、失败或未知不得称发布完成。`APP_FLOW:RETRY_WITH_LOCAL_CONFIG_PERMISSION` 不渲染结果；`MANUAL_CONFIGURATION_REQUIRED` 固定传“需人工配置”且省略 `--next-action` 和 `--app-key-save-path`，由目录派生。写操作仅 `NOT_SENT` 自动重试；`MAYBE_SENT` 查询核验，无法确认进入 `UNKNOWN`，禁止同名猜测或重复创建/提审。

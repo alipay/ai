@@ -162,22 +162,23 @@ emit_control_field() {
 }
 
 init_dev_tool_name() {
-  if [ -n "${DEV_TOOL_NAME:-}" ] && [ "$DEV_TOOL_NAME" != "unknown" ]; then
-    export DEV_TOOL_NAME
-    return
-  fi
-
   local COMMON_DIR
   COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   local DETECT_SCRIPT="${COMMON_DIR}/detect_dev_tool.sh"
+  local DETECTED_DEV_TOOL_NAME="unknown"
 
   if [ -f "$DETECT_SCRIPT" ]; then
     # shellcheck source=/dev/null
     source "$DETECT_SCRIPT"
-    DEV_TOOL_NAME="$(detect_dev_tool 2>/dev/null || echo unknown)"
+    DETECTED_DEV_TOOL_NAME="$(detect_dev_tool 2>/dev/null || echo unknown)"
   fi
 
-  export DEV_TOOL_NAME="${DEV_TOOL_NAME:-unknown}"
+  if [ -n "$DETECTED_DEV_TOOL_NAME" ] && [ "$DETECTED_DEV_TOOL_NAME" != "unknown" ]; then
+    DEV_TOOL_NAME="$DETECTED_DEV_TOOL_NAME"
+  else
+    DEV_TOOL_NAME="unknown"
+  fi
+  export DEV_TOOL_NAME
 }
 
 init_root_intent_context() {

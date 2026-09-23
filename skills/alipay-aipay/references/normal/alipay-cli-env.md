@@ -58,7 +58,7 @@ which alipay-cli 2>/dev/null && alipay-cli version
 
 **减少重复授权：**
 - 优先使用 runtime 的 `auth|app|service` 动作，避免展开 `alipay-cli mcp call`。持久授权范围使用当前 Skill 绝对路径的稳定命令前缀，不得换副本。
-- 不用 `DEV_TOOL_NAME=<tool>`、`PLATFORM=<tool>` 等环境变量前缀；公共初始化会设置。产品上下文用 `--sales-code`、`--mcc-code`、`--product-type` 等脚本参数。
+- 不用 `DEV_TOOL_NAME=<tool>`、`PLATFORM=<tool>` 等环境变量前缀；公共初始化会设置。从业务入口的首条 bootstrap/start-run 起，Agent 依照入口协议随每条 runtime 命令追加 `--agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`，作为当前命令的首选宿主名称；该值无效或为 `unknown` 时才回退自动识别。产品上下文用 `--sales-code`、`--mcc-code`、`--product-type` 等脚本参数。
 - 只有脚本未覆盖的临时排查命令，才直接调用 `alipay-cli`；这类命令需要按具体前缀单独授权。
 
 ---
@@ -76,7 +76,7 @@ jq --version
 自动检测与恢复顺序固定如下：
 
 1. `env check|integration-check` 先使用 PATH 中已有且能通过实际 filter 的 jq；受控 Shell 发现可执行的 `~/.local/bin/jq` 或 `~/.local/bin/alipay-cli` 时把该目录追加到 PATH，因此有效系统 jq 仍优先。若 PATH 前方 jq 能启动但无法执行实际 filter，而用户级 jq 验证通过，则当前受控 Shell 改用用户级 jq，避免恢复后仍被损坏的 PATH 项遮蔽。
-2. 缺 jq 时，当前 flow 只执行一次 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env prepare-jq`。该动作需要访问 GitHub，并需要对 `~/.local/bin` 创建、写入和 rename；宿主支持权限申请时，只为同一条受控命令取得这些权限，不新增业务确认。
+2. 缺 jq 时，当前 flow 只执行一次 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env prepare-jq --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。该动作需要访问 GitHub，并需要对 `~/.local/bin` 创建、写入和 rename；宿主支持权限申请时，只为同一条受控命令取得这些权限，不新增业务确认。
 3. macOS/Linux `x64|arm64` 只从固定官方 GitHub 资产下载 jq 1.7.1，在 60 秒总预算内校验固定 SHA-256，并于私有临时文件验证精确版本和实际 JSON filter 后，以 `0755` 原子写入 `~/.local/bin/jq`。成功后原样重跑环境检查。
 4. `JQ_PREPARE=FAILED|UNSUPPORTED`，或返回 `READY` 后重跑环境检查仍缺 jq，表示 GitHub 下载、校验、执行或落盘链路未使 jq 可用。此时由 Agent 执行一个当前系统首选包管理器兜底：macOS 优先清华 Homebrew bottle 镜像，Debian/Ubuntu 使用 apt，CentOS/RHEL 使用 yum；执行后必须同时通过 `jq --version` 和环境检查的实际 filter 验证。macOS 首选镜像明确失败后，才按阿里云、中科大、直连顺序选择下一条，不并发、不回到 `prepare-jq` 循环。Linux 包管理器可能需要宿主系统权限，该权限只属于兜底安装，不改变 Skill 用户目录写入边界，也不构成业务确认。
 

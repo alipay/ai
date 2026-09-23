@@ -1262,10 +1262,17 @@ function runSafetyCloseout(args) {
 }
 
 function runWindowsSandboxSummary(args) {
+  const environmentRows = required(args, 'environment-rows');
+  const passwordSaveHint = '已写入本地配置文件，默认不在对话中展开';
+  const lines = environmentRows.split('\n');
+  if (lines[2] !== `| 沙箱买家登录密码 | ${passwordSaveHint} |`
+      || lines[3] !== `| 沙箱买家支付密码 | ${passwordSaveHint} |`) {
+    throw new Error('Windows 沙箱摘要的两个密码行必须只使用固定本地保存提示');
+  }
   const summary = renderMessage('sandbox.environment.summary', 'DEFAULT', {
     productName: required(args, 'product-name'),
     configPath: required(args, 'config-path'),
-    environmentRows: required(args, 'environment-rows')
+    environmentRows
   });
   const reminder = renderMessage('sandbox.environment.reminder', 'WINDOWS', {});
   emitStageMetric('integration.create_sandbox');

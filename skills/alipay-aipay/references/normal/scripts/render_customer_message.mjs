@@ -764,6 +764,23 @@ function validateIntegrationStart(variantName, variables) {
   }
 }
 
+function validateSandboxEnvironmentRows(variables) {
+  const expectedLabels = [
+    '沙箱支付宝应用ID（appID）',
+    '沙箱买家测试账号',
+    '沙箱买家登录密码',
+    '沙箱买家支付密码'
+  ];
+  const rows = variables.environmentRows.split('\n').map((line) => {
+    const match = /^\| ([^|]+) \| ([^|]+) \|$/u.exec(line);
+    return match ? { label: match[1], value: match[2] } : null;
+  });
+  if (rows.length !== expectedLabels.length
+      || rows.some((row, index) => !row || row.label !== expectedLabels[index] || !row.value.trim())) {
+    throw new Error('sandbox.environment.summary 必须按固定顺序传入四项已校验沙箱字段');
+  }
+}
+
 function validateWriteConfirmation(variantName, variables, normalized) {
   const common = ['sessionSummary', 'subjectSummary', 'productName', 'actionTypes'];
   const service = ['serviceId', 'serviceName', 'serviceDescription', 'serviceUrl', 'servicePricing', 'serviceSchema'];
@@ -790,28 +807,29 @@ function validateWriteConfirmation(variantName, variables, normalized) {
 function productionSpecificLines(productName) {
   if (productName === 'AI 按量付费') {
     return [
-      '3. AI 按量付费 `serviceId`：把沙箱 `api_mock_service_id` 替换为真实 `serviceId`，`serviceId` 获取方式是：登录支付宝 AI 付站点（https://aipay.alipay.com/?from=alipay-aipay-skill） → 控制台 → 服务管理 → 复制审核已通过的目标服务 ID。',
-      '4. AI 按量付费商户标识：`seller_id`/`seller_unique_id` 填收款商户 PID/2088，PID 获取方式是：登录支付宝商家平台（https://b.alipay.com/page/portal/home） → 点击头像 → 复制账户名下方 2088 开头的商家 ID；`seller_app_id` 填生产 `appId`。',
-      '5. AI 按量付费验收：A2M 不使用 `notify_url`；上线前用生产应用私钥重新签名 402 账单，并验证 `Payment-Proof`、金额/订单/资源一致、`trade_no` 防重复履约和 `alipay.aipay.agent.fulfillment.confirm` 异步回执。'
+      '4. AI 按量付费 `serviceId`：把沙箱 `api_mock_service_id` 替换为真实 `serviceId`，`serviceId` 获取方式是：登录支付宝 AI 付站点（https://aipay.alipay.com/?from=alipay-aipay-skill） → 控制台 → 服务管理 → 复制审核已通过的目标服务 ID。',
+      '5. AI 按量付费商户标识：`seller_id`/`seller_unique_id` 填收款商户 PID/2088，PID 获取方式是：登录支付宝商家平台（https://b.alipay.com/page/portal/home） → 点击头像 → 复制账户名下方 2088 开头的商家 ID；`seller_app_id` 填生产 `appId`。',
+      '6. AI 按量付费验收：A2M 不使用 `notify_url`；上线前用生产应用私钥重新签名 402 账单，并验证 `Payment-Proof`、金额/订单/资源一致、`trade_no` 防重复履约和 `alipay.aipay.agent.fulfillment.confirm` 异步回执。'
     ];
   }
   if (productName === 'AI 移动应用收款') {
     return [
-      '3. AI 移动应用收款 `notify_url`：生成生产 `orderStr` 时传入商家已部署的公网 HTTPS `notify_url`；未传不会触发异步通知。',
-      '4. AI 移动应用收款验收：`notify_url` 完成验签，校验 `app_id`/`out_trade_no`/`total_amount`/`trade_status`，幂等处理并返回 `success`；支付结果以异步通知或 `alipay.trade.query` 补偿查询为准。客户端 SDK 使用服务端 `orderStr` 调起支付，客户端结果只做展示，不能作为付款成功依据。'
+      '4. AI 移动应用收款 `notify_url`：生成生产 `orderStr` 时传入商家已部署的公网 HTTPS `notify_url`；未传不会触发异步通知。',
+      '5. AI 移动应用收款验收：`notify_url` 完成验签，校验 `app_id`/`out_trade_no`/`total_amount`/`trade_status`，幂等处理并返回 `success`；支付结果以异步通知或 `alipay.trade.query` 补偿查询为准。客户端 SDK 使用服务端 `orderStr` 调起支付，客户端结果只做展示，不能作为付款成功依据。'
     ];
   }
   return [
-    '3. AI 网页应用收款 `notify_url`：生产下单时传入商家已部署的公网 HTTPS `notify_url`；该地址是商家后端通知地址，不是支付宝生成的 URL。',
-    '4. AI 网页应用收款验收：`notify_url` 完成验签，校验 `app_id`/`out_trade_no`/`total_amount`/`trade_status`，幂等处理并返回 `success`；支付结果以异步通知或 `alipay.trade.query` 补偿查询为准，同步回跳或前台页面不能作为付款成功依据。',
-    '5. AI 网页应用收款限制：如需解除 AI 网页应用收款的收款限制，请前往 支付宝商家平台 - 签约管理 补全收款信息：https://b.alipay.com/page/ar-center/ar-manage'
+    '4. AI 网页应用收款 `notify_url`：生产下单时传入商家已部署的公网 HTTPS `notify_url`；该地址是商家后端通知地址，不是支付宝生成的 URL。',
+    '5. AI 网页应用收款验收：`notify_url` 完成验签，校验 `app_id`/`out_trade_no`/`total_amount`/`trade_status`，幂等处理并返回 `success`；支付结果以异步通知或 `alipay.trade.query` 补偿查询为准，同步回跳或前台页面不能作为付款成功依据。',
+    '6. AI 网页应用收款限制：如需解除 AI 网页应用收款的收款限制，请前往 支付宝商家平台 - 签约管理 补全收款信息：https://b.alipay.com/page/ar-center/ar-manage'
   ];
 }
 
 function productionConfigSourceLines() {
   return [
-    '1. 确认上线条件：前往支付宝 AI 付站点（https://aipay.alipay.com/?from=alipay-aipay-skill）查看产品开通情况。如本次流程新建应用，进入一站式接入 → 选择产品 → 密钥配置，确认应用“已上线”。',
-    '2. 替换到项目：把生产环境的应用配置写入业务系统生产环境变量、受保护配置文件或密钥管理系统，确保 `appId`、应用公钥、应用私钥、支付宝公钥同属一套生产应用并修改生产网关为 `https://openapi.alipay.com/gateway.do`。'
+    '1. 产品开通确认：前往支付宝 AI 付站点查看产品开通情况（https://aipay.alipay.com/?from=alipay-aipay-skill）。',
+    '2. 应用上线确认：前往支付宝 AI 付站点“一站式接入 → 选择产品 → 密钥配置”，确认目标支付宝应用“已上线”。',
+    '3. 替换项目中支付宝应用配置为生产：把生产环境的支付宝应用配置写入业务系统环境变量、受保护配置文件或密钥管理系统。确保 appId、应用私钥、支付宝公钥同属一套生产环境支付宝应用，同时修改项目中的支付宝网关为生产网关：https://openapi.alipay.com/gateway.do。'
   ];
 }
 
@@ -837,10 +855,7 @@ function productionReadinessBlock(productName, context) {
       ...productionSpecificLines(productName),
       '',
       '【提示】',
-      '- 如找不到配置替换位置，可以试试对 Agent 说：“我要上线了，帮我找一下项目里支付宝生产配置应该改哪些地方”。让 Agent 定位文件/变量名，但不要把生产应用私钥、账号密码、支付凭证或未脱敏通知内容直接发给 Agent。',
-      '',
-      '【其他】',
-      '- 生产首单、退款或对账验收由商家在生产环境自行安排。'
+      '- 如找不到配置替换位置，可以试试对 Agent 说：“我要上线了，帮我找一下项目里支付宝生产配置应该改哪些地方”。让 Agent 定位文件/变量名，但不要把生产应用私钥、账号密码、支付凭证或未脱敏通知内容直接发给 Agent。'
     ].join('\n');
   }
   return [
@@ -852,10 +867,7 @@ function productionReadinessBlock(productName, context) {
     ...productionSpecificLines(productName),
     '',
     '【提示】',
-    '- 如找不到配置替换位置，可以试试对 Agent 说：“我要上线了，帮我找一下项目里支付宝生产配置应该改哪些地方”。让 Agent 定位文件/变量名，但不要把生产应用私钥、账号密码、支付凭证或未脱敏通知内容直接发给 Agent。',
-    '',
-    '【其他】',
-    '- 生产首单、退款或对账验收由商家在生产环境自行安排。'
+    '- 如找不到配置替换位置，可以试试对 Agent 说：“我要上线了，帮我找一下项目里支付宝生产配置应该改哪些地方”。让 Agent 定位文件/变量名，但不要把生产应用私钥、账号密码、支付凭证或未脱敏通知内容直接发给 Agent。'
   ].join('\n');
 }
 
@@ -992,7 +1004,7 @@ const managedEntrypoints = {
     reason: 'runner 绑定服务候选。'
   },
   'process.partial_result': {
-    command: 'node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message closeout --product-type <aipay|webpay|apppay> --root-intent <onboarding_only|full_process> --signing-result <result> --application-result <result> --remaining-actions <actions> [--integration-result <result>] [--service-result <result>] [--application-operation-app-key-save-path <path>]',
+    command: 'node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message closeout --product-type <aipay|webpay|apppay> --root-intent <onboarding_only|full_process> --signing-result <result> --application-result <result> --remaining-actions <actions> [--integration-result <result>] [--service-result <result>]',
     reason: 'runner 合并最终收口，禁手写。'
   },
   'sandbox.android.client': {
@@ -1378,6 +1390,7 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
     }
     normalized.appKeySaveLine = appKeySaveLine(normalized.appId, variables.appKeySavePath);
   }
+  if (messageId === 'sandbox.environment.summary') validateSandboxEnvironmentRows(variables);
   if (messageId === 'error.backend') {
     normalized.errorSceneLine = variables.errorScene || variables.errorSpecific
       ? `📋 错误场景：${variables.errorScene ? normalized.errorScene : '未知'} / ${variables.errorSpecific ? normalized.errorSpecific : '未知'}`
@@ -1577,77 +1590,6 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
       typeof variables.manualVerificationItems === 'string' &&
       variables.manualVerificationItems !== '' &&
       variables.manualVerificationItems !== '无';
-    const applicationOperationFields = [
-      'applicationOperationAppId',
-      'applicationOperationActualStatus',
-      'applicationOperationNextAction',
-      'applicationOperationAppKeySavePath'
-    ];
-    const providedApplicationOperationFields = applicationOperationFields.filter((name) =>
-      typeof variables[name] === 'string' && variables[name] !== ''
-    );
-    const hasApplicationOperationAppId = providedApplicationOperationFields.includes('applicationOperationAppId');
-    const hasApplicationOperationActualStatus = providedApplicationOperationFields.includes('applicationOperationActualStatus');
-    const hasApplicationOperationNextAction = providedApplicationOperationFields.includes('applicationOperationNextAction');
-    const hasApplicationOperationAppKeySavePath = providedApplicationOperationFields.includes('applicationOperationAppKeySavePath');
-    if (providedApplicationOperationFields.length !== 0 && (!hasApplicationOperationAppId || !hasApplicationOperationActualStatus)) {
-      throw new Error('应用分支操作结果必须至少同时传入 appId 和实际状态');
-    }
-    if (hasApplicationOperationAppId && hasApplicationOperationActualStatus) {
-      if (onboardingOnly) {
-        throw new Error('onboarding_only 不合并应用操作结果；请按应用模块原规则输出');
-      }
-      if (variables.applicationOperationActualStatus !== variables.applicationResult) {
-        throw new Error('应用分支操作实际状态与应用发布结果不一致');
-      }
-      if (variables.applicationResult === '需人工配置' && hasApplicationOperationAppKeySavePath) {
-        throw new Error('需人工配置表示支付宝公钥未本地保存，禁止传入应用操作保存路径');
-      }
-      if (variables.applicationResult === '已上线且配置完整' && !hasApplicationOperationAppKeySavePath) {
-        throw new Error('process.partial_result 在应用已上线且配置完整时必须传入应用操作保存路径');
-      }
-      const operationAppKeySaveLine = appKeySaveLine(
-        normalized.applicationOperationAppId,
-        variables.applicationOperationAppKeySavePath
-      );
-      if (variables.applicationResult === '已上线且配置完整') {
-        normalized.applicationOperationBlock = hasApplicationOperationAppKeySavePath
-          ? [
-              '应用分支结果：',
-              `- 应用 \`${normalized.applicationOperationAppId}\` 的实际状态：${normalized.applicationOperationActualStatus}。`,
-              `- ${operationAppKeySaveLine}`
-            ].join('\n')
-          : '';
-      } else if ([
-        '已创建，待设置公钥',
-        '公钥待确认',
-        '已提交审核，等待上线',
-        '需人工配置',
-        '失败',
-        '结果未知'
-      ].includes(variables.applicationResult)) {
-        if (variables.applicationResult === '需人工配置') {
-          if (hasApplicationOperationNextAction) {
-            throw new Error('支付宝公钥人工配置下一步由消息目录固定，禁止传入应用操作 nextAction');
-          }
-          normalized.applicationOperationNextAction = definitions.get('applicationManualConfigurationNextAction')?.values?.[0] || '';
-          if (!normalized.applicationOperationNextAction) throw new Error('process.partial_result 缺少支付宝公钥人工配置下一步');
-        } else if (!hasApplicationOperationNextAction) {
-          throw new Error('非人工配置应用分支操作结果必须传入下一步');
-        }
-        normalized.applicationOperationBlock = [
-          '应用分支结果：',
-          `- 应用 \`${normalized.applicationOperationAppId}\` 的实际状态：${normalized.applicationOperationActualStatus}。`,
-          operationAppKeySaveLine ? `- ${operationAppKeySaveLine}` : '',
-          `- 应用分支下一步：${normalized.applicationOperationNextAction}`,
-          '- 待审核、待设置公钥或待人工配置时不会表述为应用发布完成。'
-        ].filter((line) => line !== '').join('\n');
-      } else {
-        throw new Error('当前应用分支结果不允许合并应用操作结果');
-      }
-    } else {
-      normalized.applicationOperationBlock = '';
-    }
     if (onboardingOnly) {
       if (variables.sandboxConfigState !== undefined) throw new Error('onboarding_only 禁止传入代码开发沙箱状态');
       if (hasManualVerificationItems) throw new Error('onboarding_only 禁止传入代码开发人工待验证项');

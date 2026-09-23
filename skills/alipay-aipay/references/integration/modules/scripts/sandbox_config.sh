@@ -230,10 +230,10 @@ render_summary() {
   rows=$(echo "$data" | jq -r '
     def safe: tostring|gsub("[|\\r\\n]";" ");
     .appIds[0] as $app |
-    ["| 应用 | appId="+($app.appId|safe)+", pid="+(($app.pid//"未返回")|safe)+" |",
-     "| 商家账号 | userId="+(.sandboxAccounts.partner.userId|safe)+" |",
-     "| 买家账号 | userId="+(.sandboxAccounts.user.userId|safe)+", 登录账号="+(.sandboxAccounts.user.email|safe)+", 登录密码="+(.sandboxAccounts.user.logonPassword|safe)+", 支付密码="+(.sandboxAccounts.user.payPassword|safe)+" |",
-     "| 沙箱 | sandboxId="+((.sandboxId//"未返回")|safe)+" |"] | join("\n")
+    ["| 沙箱支付宝应用ID（appID） | "+($app.appId|safe)+" |",
+     "| 沙箱买家测试账号 | "+(.sandboxAccounts.user.email|safe)+" |",
+     "| 沙箱买家登录密码 | "+(.sandboxAccounts.user.logonPassword|safe)+" |",
+     "| 沙箱买家支付密码 | "+(.sandboxAccounts.user.payPassword|safe)+" |"] | join("\n")
   ') || return 1
   input=$(jq -cn --arg productName "$PRODUCT_NAME" --arg configPath "$CONFIG_PATH" --arg environmentRows "$rows" '{productName:$productName,configPath:$configPath,environmentRows:$environmentRows}') || return 1
   printf '%s' "$input" | node "$RENDERER" sandbox.environment.summary --variant DEFAULT || return 1

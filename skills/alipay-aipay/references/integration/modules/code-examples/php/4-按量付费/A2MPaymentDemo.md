@@ -1,3 +1,8 @@
+# AI 按量付费完整接入示例 - PHP
+
+以下代码展示严格验付和幂等履约的完整控制流。生成项目代码时，请按当前项目结构拆分并绑定真实持久化实现。
+
+```php
 <?php
 /**
  * A2M 智能收产品接入示例 - PHP 版本
@@ -798,3 +803,4 @@ if ($requestUri === RESOURCE_CONFIG['path'] && $_SERVER['REQUEST_METHOD'] === 'G
     http_response_code(404);
     echo json_encode(['code' => 'NOT_FOUND', 'message' => '接口不存在'], JSON_UNESCAPED_UNICODE);
 }
+```

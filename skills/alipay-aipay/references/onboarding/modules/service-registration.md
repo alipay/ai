@@ -17,8 +17,8 @@
 资料由下列入口校验；缺失由材料 runner 收集，`INITIAL` 展示五项示例且不要求重发 `新建`：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message material-collect --category service --state "$MATERIALS_STATE" --product-type "$PRODUCT_TYPE" --missing-fields "$MISSING_FIELDS"
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" service validate --name "<name>" --desc "<desc>" --url "<url>" --pricing "<pricing>" --schema "<json>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message material-collect --category service --state "$MATERIALS_STATE" --product-type "$PRODUCT_TYPE" --missing-fields "$MISSING_FIELDS" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" service validate --name "<name>" --desc "<desc>" --url "<url>" --pricing "<pricing>" --schema "<json>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 用户可输入纯数字、`0.08元`、`0.08 元`、`0.08元/次` 或 `0.08 元/次`。后续 renderer 和 save 只复用脚本内部事实 `SERVICE_PRICING=0.08` 的纯数字值，模板负责展示单位；不得再次追加“元/次”。
@@ -34,7 +34,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" service validate --name
 成功结果只用登记 renderer：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message service-result --service-id "$SERVICE_ID" --actual-result "$ACTUAL_RESULT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message service-result --service-id "$SERVICE_ID" --actual-result "$ACTUAL_RESULT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 脚本成功返回的服务状态如果未取得，只能写“状态未取得”；不得推定审核通过、可用或生产就绪。真实生产 `serviceId` 只能来自实际创建或复用结果，AI 按量付费沙箱固定 `api_mock_service_id` 不得用于生产。

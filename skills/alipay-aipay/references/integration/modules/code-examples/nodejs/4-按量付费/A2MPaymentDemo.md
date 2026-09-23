@@ -1,3 +1,8 @@
+# AI 按量付费完整接入示例 - Node.js
+
+以下代码展示严格验付和幂等履约的完整控制流。生成项目代码时，请按当前项目结构拆分并绑定真实持久化实现。
+
+```javascript
 /**
  * A2M 智能收产品接入示例 - Node.js 版本
  *
@@ -490,3 +495,4 @@ if (require.main === module) {
 }
 
 module.exports = { app, configureOrderRepository };
+```

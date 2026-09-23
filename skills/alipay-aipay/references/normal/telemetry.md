@@ -4,15 +4,17 @@
 
 - `root_intent + product_type` 唯一后执行 `telemetry start-run`。新 run 使用 runtime 生成的唯一 `run_id`，原子初始化 `counter_count=0` 并生成 `clarify_intent`；统计窗口从该 event 开始生成时开启，不等待 outbox 或网络成功。
 - `start-run` 创建或复用成功后，从唯一 `ALIPAY_AIPAY_INTERNAL:RUN_ID=<run_id>` 取得 `RUN_ID`。组合不变且 run 为 `ACTIVE` 时复用；组合变化时，触发变化的消息保留在旧 run，旧 run 逻辑停止且不补 summary，不要求本地保留旧 run state，新 run 从 0 开始；已关闭 run 不复用。旧 event 若仍在 outbox，继续按既有上传和清理策略处理。
-- 第三方项目 ID 不生成 `run_id`。run state 优先按显式 session override、宿主会话/对话/线程 ID 隔离，缺失时回退第三方项目 ID，再缺失时使用受控默认 key。业务 `PLATFORM_ID` 继续优先第三方项目 ID，缺失时回退当前 `run_id`。
+- 第三方项目 ID 不生成 `run_id`。run state 优先按显式 session override、与最终识别宿主匹配的会话/对话/线程 ID、通用 session ID 隔离；无论宿主来自本次 `--agent-platform` 还是自动识别，都忽略其他宿主残留的专属 session/thread ID。缺失时只回退与当前宿主匹配的第三方项目 ID，再缺失时使用受控默认 key。业务 `PLATFORM_ID` 继续优先第三方项目 ID，缺失时回退当前 `run_id`。
 - 最终 summary 为：`integration_only -> integration_summary`、`onboarding_only -> onboarding_summary`、`full_process -> all_summary`。合法最终 summary 到达即关闭 run，不以 outbox 或上传成功为条件；`full_process` 的 `integration_summary` 不关闭 run。
 
 ## 用户输入计数
 
+根入口先通过 `telemetry resolve-session` 取得当前对话的稳定 `SESSION_ID`，后续所有 runtime 动作显式携带 `--session-id "<SESSION_ID>"`。可靠来源沿用既有状态文件；无可靠来源时使用独立随机会话 ID。已绑定后，`--agent-platform` 仅改变平台归因，不切换 run 状态文件。未传新参数的旧脚本保留原兼容行为，但新的 Agent 执行不得依赖共享 default key。具体协议以 `runtime-entry.md` 为准。
+
 当前 `ACTIVE` run 内，Agent 每收到一条聊天框用户消息，都必须在解释、分类、路由、回复或调用任何 runner/tool 前执行一次：
 
 ```text
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry count-user-input --run-id "$RUN_ID" --input-id "$USER_INPUT_ID"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry count-user-input --run-id "$RUN_ID" --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 - 正常回答、主动追问、中断后输入、与 Skill 无关的消息、文字、图片、文件、空白、短确认和混合消息都按每条消息计 1；一条混合消息仍只计 1。
@@ -29,7 +31,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry count-user-in
 直接上报入口为：
 
 ```text
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry stage <STAGE> --run-id "$RUN_ID" --history-count "$HISTORY_COUNT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry stage <STAGE> --run-id "$RUN_ID" --history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 正常业务流程不另行手工调用该入口。能产生 stage 的登记 runner/script 是唯一责任方；调用这些动作时，把相同上下文追加到统一 gateway 命令：
@@ -48,7 +50,7 @@ runtime 校验 active run、显式 `run_id`、clarify 已记录、stage 路线�
 
 `c4/ext_info` 只允许 `user_input_after_clarify_intent`、`history_count`、`root_intent` 和 `progress_pct`。正式计数固定读取 event 生成锁内的 `counter_count`；不重复上传 `counter_count`。event 固定后，后续消息只影响后续 stage，不修改旧 event/c4。禁上传用户原文、input ID、文件名、路径、URL、密钥、账号、订单、截图、材料、授权信息、工具输出或堆栈原文。
 
-Yuyan 外层字段中的 `d1/d2/d3` 分别表示操作系统、宿主平台和模型。模型只从显式模型上下文读取：优先 `ALIPAY_AIPAY_MODEL`，兼容 `AIPAY_MODEL`；runtime 将具体变体归一为 `gpt-5`、`gpt-4`、`claude`、`gemini`、`qwen`、`deepseek` 或 `llama` 等粗粒度家族。没有宿主模型字段或无法识别时使用 `unknown`，不得根据宿主平台名称臆测模型。Skill 脚本无法读取对话系统内部的模型上下文，宿主或 Agent 需要在调用 runtime 前提供该字段。
+Yuyan 外层字段中的 `d1/d2/d3` 分别表示操作系统、宿主平台和模型。`d2` 优先使用 Agent 根据当前宿主身份随本次 runtime 命令传入的 `--agent-platform`；该值为 `unknown` 或非法时才检查当前进程的宿主自动识别信号，继承的通用平台变量只作为末级兼容值。其他宿主残留的 session/thread 环境变量不得遮蔽本次明确参数。所有来源都跳过 `unknown`/非法值。该兜底不使用宿主名称枚举或映射表：ASCII 名称按既有规则归一，合法 Unicode 名称保留可读原文，最后才为 `unknown`。stage 进入 outbox 时固定当时的 `d2`，后续延迟上传或从其他宿主 flush 不得改变原事件归因；旧版 outbox 记录没有该快照时才按当前环境兼容生成。gateway 将该上下文传给 Node 和 Shell 子进程，业务 CLI 的工具检测器也按同一优先级消费，不写跨会话状态。模型只从显式模型上下文读取：优先 `ALIPAY_AIPAY_MODEL`，兼容 `AIPAY_MODEL`；runtime 将具体变体归一为 `gpt-5`、`gpt-4`、`claude`、`gemini`、`qwen`、`deepseek` 或 `llama` 等粗粒度家族。没有宿主模型字段或无法识别时使用 `unknown`，不得根据宿主平台名称臆测模型。Skill 脚本无法读取对话系统内部的模型上下文，宿主或 Agent 需要在调用 runtime 前提供该字段。
 
 ## 进度与上传
 

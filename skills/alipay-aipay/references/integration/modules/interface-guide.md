@@ -2,7 +2,7 @@
 
 本文件只做本地接口契约和代码示例路由。正常代码开发默认读取本地契约与当前语言示例；在线文档只作为 `sourceUrl` 和 fallback，不作为默认运行时必读材料。
 
-本文中的 `./code-examples/...` 路径一律相对本文件所在目录 `references/integration/modules/` 解析。从 `references/integration/flow.md` 所在目录读取示例时，实际路径必须写成 `modules/code-examples/...`；例如 Node.js AI 按量付费示例是 `modules/code-examples/nodejs/4-按量付费/A2MPaymentDemo.js`。禁止查找不存在的 `references/integration/code-examples/...`。
+本文中的 `./code-examples/...` 路径一律相对本文件所在目录 `references/integration/modules/` 解析。从 `references/integration/flow.md` 所在目录读取示例时，实际路径必须写成 `modules/code-examples/...`；例如 Node.js AI 按量付费示例是 `modules/code-examples/nodejs/4-按量付费/A2MPaymentDemo.md`。禁止查找不存在的 `references/integration/code-examples/...`。
 
 ## 默认读取路由
 
@@ -24,13 +24,13 @@ fallback 仅在本地契约或示例缺失、字段不确定、排查官方错�
 
 | 语言 | 示例 |
 | --- | --- |
-| Java | `./code-examples/java/4-按量付费/A2MPaymentDemoController.java` |
-| Python | `./code-examples/python/4-按量付费/A2MPaymentDemo.py` |
-| Node.js | `./code-examples/nodejs/4-按量付费/A2MPaymentDemo.js` |
-| PHP | `./code-examples/php/4-按量付费/A2MPaymentDemo.php` |
-| C# | `./code-examples/csharp/4-按量付费/A2MPaymentDemo.cs` |
+| Java | `./code-examples/java/4-按量付费/A2MPaymentDemoController.md` |
+| Python | `./code-examples/python/4-按量付费/A2MPaymentDemo.md` |
+| Node.js | `./code-examples/nodejs/4-按量付费/A2MPaymentDemo.md` |
+| PHP | `./code-examples/php/4-按量付费/A2MPaymentDemo.md` |
+| C# | `./code-examples/csharp/4-按量付费/A2MPaymentDemo.md` |
 
-AI 按量付费使用 402、`Payment-Needed`、`Payment-Proof`、验付和履约确认；不读取通用收单接口或异步通知示例。五语言示例均提供完整的严格验付与幂等履约控制流，并暴露项目持久化端口。生成真实项目代码时必须把该端口绑定到项目已有数据库/ORM：返回 402 前创建待支付订单，按 `out_trade_no` 查询订单，原子准备或复用履约结果，并在 `fulfillment.confirm` 成功后标记最终完成。禁止猜测项目数据层、回退到进程内存，或保留可到达的固定资源与未验付交易号兜底。
+AI 按量付费使用 402、`Payment-Needed`、`Payment-Proof`、验付和履约确认；不读取通用收单接口或异步通知示例。五语言 Markdown 示例均提供一个语言标签匹配的源码代码块，包含完整的严格验付与幂等履约控制流，并暴露项目持久化端口；生成项目文件时只使用该代码块，不复制 Markdown 标题和说明。必须把持久化端口绑定到项目已有数据库/ORM：返回 402 前创建待支付订单，按 `out_trade_no` 查询订单，原子准备或复用履约结果，并在 `fulfillment.confirm` 成功后标记最终完成。禁止猜测项目数据层、回退到进程内存，或保留可到达的固定资源与未验付交易号兜底。
 
 ### AI 网页应用收款
 

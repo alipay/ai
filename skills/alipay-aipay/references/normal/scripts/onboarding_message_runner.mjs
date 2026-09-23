@@ -1186,6 +1186,9 @@ function closeoutInputFromArgs(args) {
     'product-name',
     'process-result-title',
     'application-operation-actual-status',
+    'application-operation-app-id',
+    'application-operation-next-action',
+    'application-operation-app-key-save-path',
     'next-flow-reminder'
   ].filter((name) => Object.prototype.hasOwnProperty.call(args, name));
   if (retiredArgs.length > 0) {
@@ -1234,15 +1237,11 @@ function closeoutInputFromArgs(args) {
   };
   const optionalMapping = {
     'sandbox-config-state': 'sandboxConfigState',
-    'manual-verification-items': 'manualVerificationItems',
-    'application-operation-app-id': 'applicationOperationAppId',
-    'application-operation-next-action': 'applicationOperationNextAction',
-    'application-operation-app-key-save-path': 'applicationOperationAppKeySavePath'
+    'manual-verification-items': 'manualVerificationItems'
   };
   for (const [argName, fieldName] of Object.entries(optionalMapping)) {
     if (Object.prototype.hasOwnProperty.call(args, argName)) input[fieldName] = required(args, argName);
   }
-  if (input.applicationOperationAppId) input.applicationOperationActualStatus = applicationResult;
   return input;
 }
 

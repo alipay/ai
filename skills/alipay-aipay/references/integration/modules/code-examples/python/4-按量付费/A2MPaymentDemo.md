@@ -1,3 +1,8 @@
+# AI 按量付费完整接入示例 - Python
+
+以下代码展示严格验付和幂等履约的完整控制流。生成项目代码时，请按当前项目结构拆分并绑定真实持久化实现。
+
+```python
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -533,3 +538,4 @@ if __name__ == '__main__':
     print(f'2. 有 Payment-Proof Header: curl -H "Payment-Proof: <value>" http://localhost:5000{RESOURCE_CONFIG["path"]}')
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+```

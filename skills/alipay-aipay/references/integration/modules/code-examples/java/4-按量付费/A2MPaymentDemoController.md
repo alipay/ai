@@ -1,3 +1,8 @@
+# AI 按量付费完整接入示例 - Java
+
+以下代码展示严格验付和幂等履约的完整控制流。生成项目代码时，请按当前项目结构拆分并绑定真实持久化实现。
+
+```java
 /*
  * Copyright (C) 2015-2026 Ant Group
  *
@@ -615,3 +620,4 @@ public class A2MPaymentDemoController {
         return AlipaySignature.rsaSign(signContent.toString(), privateKey, "UTF-8", "RSA2");
     }
 }
+```

@@ -86,11 +86,11 @@
 - 新项目：Agent 确定 `PROJECT_PATH`，`PROJECT_INPUT` 保留原话；runner 只调用 `prepare-new`，缺 `--project-path` 则未解析，禁止从原话猜测路径。默认新建由 Agent 选用户目录下 `alipay-aipay-projects/pay-demo`，非空占用则加安全后缀，并显式传入。仅退出码 0 且唯一 JSON 满足 `projectSelection/projectOrigin=NEW_PROJECT`、`projectOriginLabel=本轮新建项目`、`preparationStatus=READY` 才继续，并确认目标或最近父目录可写。路径非空、预检/权限失败时保留内容并改选空或不存在目录，禁止清空/覆盖。服务端语言缺失才补问；框架使用下方 runner。创建命令只来自用户指定、已有模板/项目或本轮已读官方文档，禁用覆盖选项和臆造脚手架。初始化并完成步骤 1 后转为 `PREPARED_NEW_PROJECT`，重入按现有项目重扫。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message resolve-project --project-input "$PROJECT_INPUT" --project-path "$PROJECT_PATH" --base-path "$USER_WORKSPACE_ROOT" --intent new --input-id "$USER_INPUT_ID"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message resolve-project --project-input "$PROJECT_INPUT" --project-path "$PROJECT_PATH" --base-path "$USER_WORKSPACE_ROOT" --intent new --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message resolve-project --project-input "$PROJECT_INPUT" --project-path "$PROJECT_PATH" --base-path "$USER_WORKSPACE_ROOT" --intent existing --input-id "$USER_INPUT_ID"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message resolve-project --project-input "$PROJECT_INPUT" --project-path "$PROJECT_PATH" --base-path "$USER_WORKSPACE_ROOT" --intent existing --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 - 项目准备失败时停留在步骤 1 前置准备，输出实际错误和待补条件；不得进入沙箱准备。目标项目准备成功后记录实际根目录，步骤 1、步骤 3 的沙箱配置和后续代码必须落入该项目；沙箱配置不得降级写入系统临时目录、Agent 原始工作目录或其他项目。
 
@@ -99,7 +99,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message res
 **启动前上下文补问**：缺少项目位置或服务端语言时，必须从本 flow 所在目录执行下列标准消息，一次补齐；只缺少新项目精确位置时仍使用上方 `integration.project_path.required`。框架缺失本身不触发补问。禁止使用 AskUserQuestion、request_user_input、宿主超时默认值、Agent 自创选项或自由话术替代；用户未明确补齐前不得创建目录、初始化项目、安装依赖或修改文件。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message context-required --missing-items "$MISSING_ITEMS"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message context-required --missing-items "$MISSING_ITEMS" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 `MISSING_ITEMS` 只允许由 `项目路径`、`技术栈` 按缺失项用顿号连接生成，其中 `技术栈` 只在服务端语言无法确定时缺失，不因框架未知而出现。产品不明确时使用 `product.clarify`，不得混入本消息。该消息必须把 stdout 原文作为当前回复正文发给用户，发出后立即停止并等待用户自由回复；用户回复后重新计算缺失项，不得靠超时或默认值推进。用户回复“当前项目”、相对路径或新建子目录时，先执行 `resolve-project` 得到规范化绝对路径和 `projectSelection`，再进入后续检查器、沙箱准备和启动方案展示；相对路径必须位于 `--base-path` 内，目录外项目必须由用户提供绝对路径。
@@ -107,11 +107,11 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message con
 项目路径与服务端语言确定后，初始化新项目或展示方案前必须执行一次框架解析。用户未明确框架时使用第一条；用户明确指定 Django、NestJS 等框架时使用第二条并以用户值优先：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message framework-resolve --project-selection "$PROJECT_SELECTION" --project-path "$PROJECT_PATH" --language "$SERVER_LANGUAGE"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message framework-resolve --project-selection "$PROJECT_SELECTION" --project-path "$PROJECT_PATH" --language "$SERVER_LANGUAGE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message framework-resolve --project-selection "$PROJECT_SELECTION" --project-path "$PROJECT_PATH" --language "$SERVER_LANGUAGE" --framework "$USER_FRAMEWORK"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message framework-resolve --project-selection "$PROJECT_SELECTION" --project-path "$PROJECT_PATH" --language "$SERVER_LANGUAGE" --framework "$USER_FRAMEWORK" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 只接受退出码 0 和唯一 JSON 中规范化后的 `language`、非空 `framework`、合法 `frameworkSource=EXPLICIT|DEFAULT_NEW_PROJECT|PROJECT_INFERRED|PROJECT_STRUCTURE_FALLBACK`；该 JSON 是内部机器事实，不对客展示。`NEW_PROJECT|PREPARED_NEW_PROJECT` 默认固定为 Java / Spring Boot、PHP / Laravel、Python / FastAPI、C# / ASP.NET Core、Node.js / Express。`CURRENT_PROJECT|OTHER_PROJECT` 先从当前项目依赖标记推导；无法推导时固定为 `沿用现有项目结构`，表示不迁移现有框架，不阻止继续。得到的 `FRAMEWORK` 和 `FRAMEWORK_SOURCE` 必须贯穿项目初始化和同一次 `start-confirm`，不得由 Agent 二次猜测或改写；`start-confirm` 会复核非 `EXPLICIT` 来源仍与当前项目事实一致。
@@ -119,14 +119,14 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message fra
 用户回复“不知道项目在哪”“帮我找项目”、提供子目录但该目录不是项目根，或当前目录解析失败且需要候选时，从本 flow 所在目录执行下列轻量定位命令。`SEARCH_INPUT` 取用户给出的搜索范围；未给出时固定为 `当前目录`。该命令只查找项目标记文件并跳过常见重目录，不扫描源码内容；stdout 是本动作唯一对客消息，发出后立即停止并等待用户选择候选序号、具体目录或新建目录。用户选择候选后，仍必须再执行 `resolve-project --intent existing` 取得规范化绝对路径；候选列表不能直接替代项目确认。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message locate-projects --base-path "$USER_WORKSPACE_ROOT" --search-input "$SEARCH_INPUT" --format message --input-id "$USER_INPUT_ID"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message locate-projects --base-path "$USER_WORKSPACE_ROOT" --search-input "$SEARCH_INPUT" --format message --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 **破坏性操作二次确认**：本支付产品-代码开发流程本身不得删除用户既有文件。用户另行主动要求删除具体文件时，先停止代码开发，列出每个精确规范化路径和不可逆影响，再在独立轮次等待用户逐项确认该清单；此前的项目/技术栈补充、代码开发方案展示、服务声明送达及任何含糊回复均无效。未取得二次明确确认时严禁调用删除、清空、强制覆盖或等价命令；即使确认，也禁止删除项目根目录、`.git`、使用通配符或触及清单外文件。
 
 **执行边界**：本流程只操作用户当前确认的项目路径、语言、框架、产品和范围。步骤 1 只使用项目路径和语言，不依赖产品；步骤 2 后的代码修改才依赖已确认产品。沙箱配置与测试结论来自本轮实际脚本结果，不得被 onboarding 的正式 `appId`、支付宝公钥或 `productionServiceId` 覆盖。
 
-项目路径和技术栈已由 runner 唯一解析后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration prepare`；不得提前读取步骤 1/2。
+项目路径和技术栈已由 runner 唯一解析后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration prepare --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；不得提前读取步骤 1/2。
 
 ---
 
@@ -147,17 +147,17 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message loc
 **执行规则**：
 
 1. 只确认创建和保存沙箱所需的目标项目路径、服务端语言与操作系统；不得为了创建匿名沙箱先要求用户确定支付产品。缺少多个字段时使用“启动前上下文补问”的固定标准消息一次补齐；字段已能从用户输入和项目事实确定时，不发送环境、项目识别或准备进度消息。
-2. Unix/macOS/Linux 从本 flow 目录执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env integration-check`；Windows 执行同一命令。该入口在检查开始时记录环境检查事实，不单独上报 telemetry stage。Windows 只检查本 Integration Node runner 所需运行时，不要求 Bash、jq 或当前流程不会调用的 alipay-cli。唯一 `CLI_ENV:READY` 时继续且不读取完整安装文档。`CLI_ENV:NEEDS_SETUP` 时才读取 `../normal/alipay-cli-env.md`：若唯一 `CLI_ENV_MISSING` 包含 `jq`，先以所需网络和 `~/.local/bin` 写权限执行一次 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env prepare-jq`；唯一 `ALIPAY_AIPAY_INTERNAL:JQ_PREPARE=READY` 后原样重跑 `env integration-check`。`FAILED|UNSUPPORTED`，或 `READY` 后复检仍缺 jq 时，由 Agent 按环境文档执行当前系统首选包管理器兜底并再次复检；macOS 必须从清华镜像开始，明确失败后才依次选择阿里云、中科大和直连，不并发、不回到 `prepare-jq` 循环。其他缺失项仍按当前系统分支补齐，完成后重跑检查；不得重复执行 `prepare-jq` 或新增业务确认点。其他输出、非 0 或 marker 冲突停在本步骤。
+2. Unix/macOS/Linux 从本 flow 目录执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env integration-check --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；Windows 执行同一命令。该入口在检查开始时记录环境检查事实，不单独上报 telemetry stage。Windows 只检查本 Integration Node runner 所需运行时，不要求 Bash、jq 或当前流程不会调用的 alipay-cli。唯一 `CLI_ENV:READY` 时继续且不读取完整安装文档。`CLI_ENV:NEEDS_SETUP` 时才读取 `../normal/alipay-cli-env.md`：若唯一 `CLI_ENV_MISSING` 包含 `jq`，先以所需网络和 `~/.local/bin` 写权限执行一次 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env prepare-jq --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；唯一 `ALIPAY_AIPAY_INTERNAL:JQ_PREPARE=READY` 后原样重跑 `env integration-check`。`FAILED|UNSUPPORTED`，或 `READY` 后复检仍缺 jq 时，由 Agent 按环境文档执行当前系统首选包管理器兜底并再次复检；macOS 必须从清华镜像开始，明确失败后才依次选择阿里云、中科大和直连，不并发、不回到 `prepare-jq` 循环。其他缺失项仍按当前系统分支补齐，完成后重跑检查；不得重复执行 `prepare-jq` 或新增业务确认点。其他输出、非 0 或 marker 冲突停在本步骤。
 3. Unix/macOS/Linux 从本 flow 所在的 `references/integration/` 目录执行唯一准备入口：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox ensure "<规范化项目路径>" "<已确认服务端语言>" [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"]
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox ensure "<规范化项目路径>" "<已确认服务端语言>" [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 4. Windows 不调用快速沙箱脚本。普通代码开发或完整接入请求没有明确要求当前配置沙箱时，不展示申领消息、不补问，直接记录 `sandboxConfigState=VERIFY_PENDING` 并继续步骤 2。只有用户明确要求现在配置/恢复 Windows 沙箱时，才执行下列既有标准消息 `sandbox.windows.manual_setup`；该消息使用自由资料回复，不要求用户输入 `1` 或自行执行脚本。随后只处理用户针对本轮该消息提供的资料：完整有效时写入目标项目的受保护本机配置并记录 `READY`，部分或错误时使用既有受控失败分支补问实际缺失/错误字段：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-setup
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-setup --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 资料校验通过后必须建立适用的版本控制忽略和访问保护。该例外只适用于当前沙箱资料；生产环境应用私钥和密码禁止提供给 Agent。Agent 不得在回复、摘要或普通日志中复述收到的值。
@@ -198,7 +198,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message win
 `ROOT_INTENT` 取当前路线的根意图，只能是 `integration_only` 或 `full_process`。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message start-confirm --root-intent "$ROOT_INTENT" --product-type "$PRODUCT_TYPE" --product-name "$PRODUCT_NAME" --project-path "$PROJECT_PATH" --project-selection "$PROJECT_SELECTION" --language "$SERVER_LANGUAGE" --framework "$FRAMEWORK" --framework-source "$FRAMEWORK_SOURCE"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message start-confirm --root-intent "$ROOT_INTENT" --product-type "$PRODUCT_TYPE" --product-name "$PRODUCT_NAME" --project-path "$PROJECT_PATH" --project-selection "$PROJECT_SELECTION" --language "$SERVER_LANGUAGE" --framework "$FRAMEWORK" --framework-source "$FRAMEWORK_SOURCE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 若 bootstrap 尚未创建正式 run，本命令在任何 Integration 业务 stage 前原子创建 run 和 `clarify_intent`，并输出后续唯一使用的 `RUN_ID` marker；触发本命令的首条消息不计入新 run。已有同组合 active run 时只复用 marker。步骤 3 之后所有能生成 stage 的登记命令都必须携带当前 telemetry context；runner 已生成 stage 后 Agent 禁止重复调用 `telemetry stage`。
@@ -239,7 +239,7 @@ runner 失败时不得展示手写方案或进入步骤 3。成功时必须取�
 4. Unix/macOS/Linux 仅在 `sandboxConfigState=READY` 时执行以下唯一复核命令，不先检查文件、不读取字段、不运行其他诊断：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox reverify "<规范化项目路径>" "<已确认服务端语言>" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox reverify "<规范化项目路径>" "<已确认服务端语言>" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 5. `reverify` 只接受与步骤 1 相同的三个互斥终态。`READY` 更新 `sandboxConfigState=READY` 并立即进入步骤 4；`VERIFY_PENDING` 已由脚本输出唯一待配置正文，更新状态后立即进入步骤 4。`reverify` 不允许创建分支，若异常出现 `CREATED|CREATE_PENDING` 标记必须按协议失败停止。所有终态之后禁止追加任何 `jq`、`cat`、`grep`、`ls`、`stat` 或临时脚本。
@@ -251,7 +251,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox reverify "<规�
 
 **任务**：阅读 SDK 要点、本地契约和当前语言示例
 
-读取本地依据前执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-context resolve --product-type "$PRODUCT_TYPE" --server-language "$SERVER_LANGUAGE"`。只接受唯一 `ALIPAY_AIPAY_INTERNAL:INTEGRATION_CONTEXT=<json>`，并在本步骤只读取其中 `sdk_reference`、`contracts` 和 `examples` 列出的当前产品/语言开发依据；`sandbox_acceptance` 只保存路径事实并延迟到步骤 6，`checklist.delivery_phase=checklist` 及章节名只保存交付事实，具体内容由步骤 8 loader 直接附带，禁止在本步骤提前读取。缺失、重复、路径不存在或产品/语言不一致时停止，不回退到跨产品预读；后续阶段复用同一 envelope，不重复执行 `integration-context resolve`。
+读取本地依据前执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-context resolve --product-type "$PRODUCT_TYPE" --server-language "$SERVER_LANGUAGE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。只接受唯一 `ALIPAY_AIPAY_INTERNAL:INTEGRATION_CONTEXT=<json>`，并在本步骤只读取其中 `sdk_reference`、`contracts` 和 `examples` 列出的当前产品/语言开发依据；`sandbox_acceptance` 只保存路径事实并延迟到步骤 6，`checklist.delivery_phase=checklist` 及章节名只保存交付事实，具体内容由步骤 8 loader 直接附带，禁止在本步骤提前读取。缺失、重复、路径不存在或产品/语言不一致时停止，不回退到跨产品预读；后续阶段复用同一 envelope，不重复执行 `integration-context resolve`。
 
 本步骤只加载和核对代码开发依据；成功时不发送“文档已读取”“准备完成”等对客进度，直接进入步骤 5。本地依据缺失时输出实际缺口，禁止猜测。在线文档只在 fallback 条件下读取，不作为默认必读材料。
 
@@ -288,7 +288,7 @@ curl -sL "<当前契约 sourceUrl 中的官方页面>"
 | 6 | 遇到 `invalid-signature` 报错 | 严禁凭猜测归因到私钥格式；先核对实际发送、参与签名和服务端验签的参数是否完全一致 |
 | 7 | 配置接入后必须后置校验 | Unix/macOS/Linux 必须确认服务端加载器直接读取已验证文件、字段映射正确且 SDK 配置匹配；Windows 必须确认项目读取同一套本机沙箱应用配置；失败时禁止继续联调 |
 
-步骤 4 的本地依据全部取得后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration implementation --product-type "$PRODUCT_TYPE"` 加载步骤 5；不得直接读取后续整段 flow。
+步骤 4 的本地依据全部取得后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration implementation --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 加载步骤 5；不得直接读取后续整段 flow。
 
 ---
 
@@ -311,11 +311,11 @@ curl -sL "<当前契约 sourceUrl 中的官方页面>"
 - [INT.LOCAL_ACCEPTANCE.NOTIFY_DEFERRED] 用户处于“本地生产参数验收模式”时，已明确记录当前暂不联调公网 `notify_url`，支付结果确认依赖异步通知处理代码加主动查询兜底；未把同步回跳参数当作支付成功依据
 - [INT.A2M.PRODUCTION_CONTROLS] 按量付费生产接入中已补齐订单持久化、本地订单匹配、金额一致性、资源防串、幂等履约和履约确认失败可重试逻辑，不存在未实现的关键 TODO
 
-**实现与自检入口**：按 runner 返回值读取当前语言和产品的本地接口契约及专用/通用示例，并完整应用 `modules/alipay-sdk-reminder.md` 的生成前自检与配置后置校验。从本 flow 所在目录读取实际示例时必须使用 `modules/code-examples/...`，例如 Node.js 按量付费示例为 `modules/code-examples/nodejs/4-按量付费/A2MPaymentDemo.js`，不得查找 `code-examples/...` 或 `references/integration/code-examples/...`。本地缺少示例不等于接口不适用；用户限定本轮范围时，未实现的适用接口必须列为待办，不得宣称完整集成。
+**实现与自检入口**：按 runner 返回值读取当前语言和产品的本地接口契约及专用/通用示例，并完整应用 `modules/alipay-sdk-reminder.md` 的生成前自检与配置后置校验。从本 flow 所在目录读取实际示例时必须使用 `modules/code-examples/...`，例如 Node.js 按量付费示例为 `modules/code-examples/nodejs/4-按量付费/A2MPaymentDemo.md`，不得查找 `code-examples/...` 或 `references/integration/code-examples/...`。Markdown 示例中的目标语言代码只取唯一且语言标签匹配的 fenced code block，标题和说明不得写入用户项目源码。本地缺少示例不等于接口不适用；用户限定本轮范围时，未实现的适用接口必须列为待办，不得宣称完整集成。
 
 **Node.js 项目前置核对**：目标语言为 Node.js 时，生成或修改代码前必须先读取目标项目 `package.json`，确认 `type`、启动脚本、已安装依赖和框架版本；安装或发现 `alipay-sdk` 后，必须按 `modules/alipay-sdk-reminder.md` 读取实际 `node_modules/alipay-sdk/package.json` 与类型定义来确定导入方式、`pageExec`/`sdkExecute`/`checkNotifySign` 等方法名。不得凭本地示例中的 `require`/`import` 行、历史记忆或其他项目版本推断当前项目写法。
 
-代码修改完成后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration verification --product-type "$PRODUCT_TYPE"` 加载配置后置校验；不得把代码写入直接当作验证通过。
+代码修改完成后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration verification --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 加载配置后置校验；不得把代码写入直接当作验证通过。
 
 <!-- ALIPAY_AIPAY_FLOW:INTEGRATION_IMPLEMENTATION:END -->
 
@@ -330,8 +330,10 @@ curl -sL "<当前契约 sourceUrl 中的官方页面>"
 
 **沙箱摘要展示入口**：只有 `sandboxConfigState=READY`、本步骤的代码实现和支付配置后置校验都已完成，才允许对客展示沙箱环境配置。待配置状态跳过本入口，不另写摘要或失败话术。Unix/macOS/Linux 从本 flow 所在目录执行：
 
+`environmentRows` 的具体值严禁编造、猜测、补全，禁止使用示例值、占位值或历史对话值替代本轮已校验配置。Unix/macOS/Linux 必须由登记脚本直接读取同一配置并生成四行，Agent 不得手填或改写；Windows 的应用 ID 和买家测试账号必须取自步骤 1/3 已校验的同一本机配置，两个密码行的固定保存提示仅在实际确认密码已写入该文件后使用。任一必需字段缺失、为空、配置无法读取或来源无法确认时，停止摘要展示并按既有配置失败分支处理，禁止为凑齐四行补值。
+
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox summary "<productType>" "<规范化项目路径>" "<已确认服务端语言>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox summary "<productType>" "<规范化项目路径>" "<已确认服务端语言>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 该命令 stdout 只渲染 `sandbox.environment.summary` 与 `sandbox.environment.reminder`；命令必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=sandbox.environment.summary`，带 `ALIPAY_AIPAY_INTERNAL:` 前缀的配置路径和 `FLOW:SANDBOX_CONFIGURED` 只用于流程转移，严禁对客。命令返回后下一动作必须将剔除内部行后的 stdout 原文独立送达，再进入后续沙箱测试或付款体验；不得把工具面板输出或自写摘要当作已送达。命令不重新创建沙箱，不调用 `createAnonymousSandbox`。`productType` 只能来自步骤 2 已确认的 `aipay|webpay|apppay`；配置路径和语言必须与步骤 1/3 一致。摘要展示失败时不得进入沙箱测试或付款体验，也不得改用 Agent 自写表格。
@@ -339,10 +341,10 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox summary "<produ
 Windows 从项目实际读取的同一本机配置构造不含密码和密钥原文的 `ENVIRONMENT_ROWS`，再从本 flow 所在目录执行以下固定命令；不得重新索取或复述步骤 1 已提供的敏感值，也不得改用 Unix 快速沙箱脚本：
 
 ```powershell
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-summary --product-name "$PRODUCT_NAME" --config-path "$CONFIG_PATH" --environment-rows "$ENVIRONMENT_ROWS" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-summary --product-name "$PRODUCT_NAME" --config-path "$CONFIG_PATH" --environment-rows "$ENVIRONMENT_ROWS" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝对路径；`ENVIRONMENT_ROWS` 只包含实际取得的非敏感应用、商家、买家和沙箱标识，缺失可选项直接省略。两个 renderer 任一失败都按摘要展示失败处理，禁止手写补齐。
+Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝对路径；`ENVIRONMENT_ROWS` 固定依次为“沙箱支付宝应用ID（appID）”“沙箱买家测试账号”“沙箱买家登录密码”“沙箱买家支付密码”四行。前两行使用实际沙箱应用 ID 和买家登录账号；两个密码行只展示“已写入本地配置文件，默认不在对话中展开”，不得传入密码原文。不追加 pid、商家或买家 userId、sandboxId。两个 renderer 任一失败都按摘要展示失败处理，禁止手写补齐。
 
 <!-- ALIPAY_AIPAY_PRODUCT:webpay:START -->
 **网站支付回跳默认规则**：用户未特别说明时，默认实现支付后同步回跳。`return_url` 必须来自已确认目标项目的实际协议、主机、端口和路由，禁止保留 `your-domain.com`、示例端口或猜测路径。项目没有结果页时，在当前技术栈内新增与既有 UI 一致的 GET 回跳路由和页面。用户已明确不需要同步回跳时，直接按关闭分支验收，不增加第二次确认；仍必须保留异步通知、交易查询和商户订单查询页。用户未明确关闭但代码缺少 `return_url` 时，必须修复为默认同步回跳分支，不得要求用户接受遗漏。验收结论必须从实际代码重新检查，不接受调用方自报 `returnMode`。
@@ -352,7 +354,7 @@ Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝�
 **本地生产参数验收模式**：用户项目尚未上线、无法提供真实公网地址，或当前自定义域名/TLS 检查失败时，网站支付/APP 支付可以进入本模式。要求如下：
 
 1. 代码层必须已经实现异步通知处理入口、验签、关键字段校验、幂等和成功响应 `success`，只是当前环境不对外联调。
-2. 运行层可以临时关闭异步通知发起配置或不传 `notify_url`；如项目已有显式开关，也可使用项目内已有的 `notify_enabled=false` 等等价配置，并执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message local-acceptance-notice`，不得另写近似话术。
+2. 运行层可以临时关闭异步通知发起配置或不传 `notify_url`；如项目已有显式开关，也可使用项目内已有的 `notify_enabled=false` 等等价配置，并执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message local-acceptance-notice --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`，不得另写近似话术。
 3. 本地模式下，网站支付保留 `localhost` 或当前可访问开发地址的 `return_url`/结果页，APP 支付保留本地订单查询链路，并统一提供服务端交易查询或订单查询页作为结果确认兜底。
 4. 任何本地模式结果都只能表述为“本地正式验收完成”或“本地生产参数验收完成，公网异步通知待补齐”，不得表述为“生产就绪”。
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
@@ -365,7 +367,7 @@ Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝�
 > ⚠️ **按量付费**：代码生成后启动本地服务，后续步骤 6 将默认进行端到端沙箱服务端联调。服务需实现 402 协议（无 `Payment-Proof` 时返回 HTTP 402 + `Payment-Needed` 头）。
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 
-配置后置校验结束后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration acceptance --product-type "$PRODUCT_TYPE"` 加载当前产品适用验收和步骤 7；APP 支付 loader 不记录沙箱验收 stage，但仍加载步骤 7。
+配置后置校验结束后，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration acceptance --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 加载当前产品适用验收和步骤 7；APP 支付 loader 不记录沙箱验收 stage，但仍加载步骤 7。
 
 ---
 
@@ -439,9 +441,9 @@ Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝�
 
 ```bash
 # GET
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-execution-guard --project-path "$PROJECT_PATH" --service-url "$SERVICE_URL" --http-method GET [--prior-receipt "$A2M_EXECUTION_RECEIPT"]
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-execution-guard --project-path "$PROJECT_PATH" --service-url "$SERVICE_URL" --http-method GET [--prior-receipt "$A2M_EXECUTION_RECEIPT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 # POST
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-execution-guard --project-path "$PROJECT_PATH" --service-url "$SERVICE_URL" --http-method POST --request-body-file "$POST_BODY_FILE" [--prior-receipt "$A2M_EXECUTION_RECEIPT"]
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-execution-guard --project-path "$PROJECT_PATH" --service-url "$SERVICE_URL" --http-method POST --request-body-file "$POST_BODY_FILE" [--prior-receipt "$A2M_EXECUTION_RECEIPT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 只接受唯一 `ALIPAY_AIPAY_INTERNAL:A2M_EXECUTION=<json>`。`decision=RUN` 时保存新 receipt 并继续；`REUSE_PASSED` 复用同一项目和输入的本轮通过证据，不重复联调；`BLOCK_UNCHANGED` 表示失败后代码、配置和输入均未变化，禁止重跑，将本轮 A2M 联调记录为失败并继续步骤 7/8；`UNKNOWN_PREVIOUS_EXECUTION` 表示上次命令可能已发出但未登记终态，当前没有登记的结果查询入口，禁止自动重跑或临时探测，固定记录联调结果未知并继续步骤 7/8。项目代码或配置的实际内容、服务 URL、方法或 POST body 变化时 runner 才会产生新的 `RUN` receipt；仅文件时间戳变化或同内容重写不属于输入变化。receipt 只保留在当前会话，不写跨会话业务进度。
@@ -449,45 +451,45 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m
 4. 仅 `decision=RUN` 时执行下列固定 runner 命令，输出固定联调说明后立即继续，不等待用户确认；禁止另写开始话术。服务地址和 HTTP 方法只用于后续实际命令，不在本消息中展示：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-test-start
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-test-start --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 5. Unix/macOS/Linux 按实际 HTTP 方法从本 flow 所在目录继续执行且只执行以下既有命令。POST body 必须来自已确认目标项目中的实际文件，不把动态 JSON 拼进命令文本：
 
 ```bash
 # GET
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 
 # POST
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 Windows 使用 Node 启动器选择 `py -3|python|python3`，不依赖 Bash 命令解析。先按实际 HTTP 方法执行只读预检的对应单行命令：
 
 ```powershell
 # GET
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 
 # POST
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 预检通过后再执行对应联调单行命令：
 
 ```powershell
 # GET
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 
 # POST
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-只传已确认的本机服务 URL、GET/POST、实际沙箱买家 userId 和项目内 POST body 文件；禁止传入自定义收银端点、`Payment-Proof` 或 attestation。只有同一次命令退出码为 0，且输出包含实际资源交付校验通过和敏感产物已清理，才能记录联调通过；204、空响应、空资源、明确验付/履约失败或异常 `Payment-Validation` 均不得通过。命令结束后立即执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-execution-result --receipt "$A2M_EXECUTION_RECEIPT" --outcome <PASSED|FAILED>` 并保存返回的新 receipt；进程被中断且无法登记时保留原 receipt，由下次 guard 返回 `UNKNOWN_PREVIOUS_EXECUTION`。失败、阻断重复或结果未知都必须进入步骤 7 和最终 checklist 的失败/人工待验证项；只有项目代码、配置或执行输入实际变化并取得新 `RUN` receipt 才能重新联调。
+只传已确认的本机服务 URL、GET/POST、实际沙箱买家 userId 和项目内 POST body 文件；禁止传入自定义收银端点、`Payment-Proof` 或 attestation。只有同一次命令退出码为 0，且输出包含实际资源交付校验通过和敏感产物已清理，才能记录联调通过；204、空响应、空资源、明确验付/履约失败或异常 `Payment-Validation` 均不得通过。命令结束后立即执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-execution-result --receipt "$A2M_EXECUTION_RECEIPT" --outcome <PASSED|FAILED> --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 并保存返回的新 receipt；进程被中断且无法登记时保留原 receipt，由下次 guard 返回 `UNKNOWN_PREVIOUS_EXECUTION`。失败、阻断重复或结果未知都必须进入步骤 7 和最终 checklist 的失败/人工待验证项；只有项目代码、配置或执行输入实际变化并取得新 `RUN` receipt 才能重新联调。
 
 服务未就绪时固定使用 `integration.service.not_ready` 输出实际缺口和恢复动作；必须执行下列命令。不得运行测试、登记 `INT.A2M.SERVICE_READY=PASS` 或临场改写近似话术。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message service-not-ready --recovery-action "$RECOVERY_ACTION"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message service-not-ready --recovery-action "$RECOVERY_ACTION" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 > 详细测试流程见 `modules/sandbox/a2m-sandbox-test.md`
@@ -505,7 +507,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message ser
 **安全与上线提醒（必须明文打印给用户）**：使用 `../normal/json/customer-messages.json` 的 `integration.safety.closeout`，按 `aipay=AIPAY`、`webpay=WEBPAY`、`apppay=APPPAY` 映射产品并传入实际验收口径。模板覆盖私钥保护、支付结果依据、异常恢复、异步通知或 `Payment-Proof`/履约确认、生产配置、真实 `serviceId` 和私钥格式；不重复沙箱摘要、账号密码、Android 下载或步骤 6 体验。不得临场删减、拆分或维护近似话术。命令必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=integration.safety.closeout`；返回后的下一动作先将 stdout 原文独立送达，再进入步骤 8。必须执行：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message safety-closeout --variant "$PRODUCT_VARIANT" --acceptance-summary "$ACCEPTANCE_SUMMARY"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message safety-closeout --variant "$PRODUCT_VARIANT" --acceptance-summary "$ACCEPTANCE_SUMMARY" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 生产密钥的一致性、语言格式、官方工具转换、沙箱/生产配置替换、`notify_url` 公网联调边界、按量付费 `api_mock_service_id` 替换和生产就绪表述限制均由上述一条标准消息统一输出。实际写入配置时仍使用不带 PEM 头尾、包装行或说明文字的原始私钥字符串；该执行细节不得省略或改写密钥内容。
@@ -514,7 +516,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message saf
 - 如果当前意图是 `integration_only`：提醒用户正式上线前还需要完成对应支付产品的产品开通。
 - 如果当前意图是 `full_process`：本步骤只说明仍需完成步骤 8 集成校验；此时不展示签约待办、MCC、授权范围或材料。全部适用步骤通过时进入 onboarding；只有沙箱待配置且其余检查通过，或沙箱 `READY` 且仅剩非阻塞人工待验证项时，也以“部分通过”继续 onboarding；其他阻塞缺口仍停在代码开发。
 
-步骤 7 完成后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration checklist --product-type "$PRODUCT_TYPE" --project-path "$PROJECT_PATH"`；只接受该命令生成的本轮 `CHECKLIST_SCOPE_RECEIPT`，不得使用修复前或其他项目的 receipt。
+步骤 7 完成后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration checklist --product-type "$PRODUCT_TYPE" --project-path "$PROJECT_PATH" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；只接受该命令生成的本轮 `CHECKLIST_SCOPE_RECEIPT`，不得使用修复前或其他项目的 receipt。
 
 ---
 
@@ -558,17 +560,17 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message saf
 
 <!-- ALIPAY_AIPAY_PRODUCT:aipay:START -->
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant AIPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --sandbox-result "$SANDBOX_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant AIPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --sandbox-result "$SANDBOX_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:webpay:START -->
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant WEBPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --webpay-experience-result "$WEBPAY_EXPERIENCE_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant WEBPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --webpay-experience-result "$WEBPAY_EXPERIENCE_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:apppay:START -->
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant APPPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant APPPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 

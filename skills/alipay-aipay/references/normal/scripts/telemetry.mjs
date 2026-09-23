@@ -6,6 +6,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { normalizeAgentPlatform as normalizePlatform } from './agent_platform.mjs';
 
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
 const disableValues = new Set(['0', 'false', 'off', 'no']);
@@ -26,20 +27,18 @@ const outboxFlushLimit = 50;
 const outboxClaimTtlMs = 5 * 60 * 1000;
 const outboxMaxRecords = 1000;
 const outboxMaxAgeMs = 7 * 24 * 60 * 60 * 1000;
-const platformProjectIdEnvKeys = Object.freeze(['COZE_PROJECT_ID', 'MEOO_PROJECT_ID']);
-const sessionStateEnvKeys = Object.freeze([
-  'CODEX_THREAD_ID',
-  'CODEX_SESSION_ID',
-  'CLAUDE_CODE_SESSION_ID',
-  'OPENCLAW_SESSION_ID',
-  'CURSOR_SESSION_ID',
-  'CURSOR_TRACE_ID',
-  'COZE_SESSION_ID',
-  'COZE_CONVERSATION_ID',
+const genericSessionStateEnvKeys = Object.freeze([
   'HERMES_SESSION_ID',
   'OPENAI_CONVERSATION_ID',
   'SESSION_ID',
   'CI_JOB_ID'
+]);
+const platformSessionStateEnvKeys = new Map([
+  ['codex', Object.freeze(['CODEX_THREAD_ID', 'CODEX_SESSION_ID'])],
+  ['claudecode', Object.freeze(['CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID'])],
+  ['openclaw', Object.freeze(['OPENCLAW_SESSION_ID'])],
+  ['cursor', Object.freeze(['CURSOR_SESSION_ID', 'CURSOR_TRACE_ID'])],
+  ['coze', Object.freeze(['COZE_SESSION_ID', 'COZE_CONVERSATION_ID'])]
 ]);
 const permissionedFlushNetworkErrors = new Set([
   'ENOTFOUND',
@@ -202,7 +201,8 @@ function shouldCloseRunAfterStage(event, state = {}) {
   return false;
 }
 
-const outboxRecordFields = new Set(['schema_ver', 'created_at', 'event']);
+const outboxV1RecordFields = new Set(['schema_ver', 'created_at', 'event']);
+const outboxV2RecordFields = new Set(['schema_ver', 'created_at', 'platform', 'event']);
 const metricEventFields = new Set([
   'schema_ver',
   'event_id',
@@ -284,16 +284,44 @@ function isMaintenanceProcess(env = process.env, argv = process.argv) {
   return argv.some((arg) => /(^|[/\\])test[/\\].+\.test\.mjs$/u.test(String(arg || '')));
 }
 
+function stableSessionSource(env = process.env) {
+  const explicitSession = safeRunId(env.ALIPAY_AIPAY_SESSION_ID);
+  if (explicitSession) return explicitSession;
+  const agentPlatform = platformFromEnv(env);
+  const platformKeys = platformSessionStateEnvKeys.get(agentPlatform) || [];
+  const sessionKeys = [...platformKeys, ...genericSessionStateEnvKeys];
+  return sessionKeys.map((key) => safeRunId(env[key])).find(Boolean) || '';
+}
+
 function stableStateSource(env = process.env) {
-  return env.ALIPAY_AIPAY_SESSION_ID
-    || sessionStateEnvKeys.map((key) => safeRunId(env[key])).find(Boolean)
-    || platformProjectId(env)
-    || '';
+  return stableSessionSource(env) || platformProjectId(env) || '';
+}
+
+// Resolve once per conversation; callers carry the result across process boundaries.
+export function resolveTelemetrySession(env = process.env) {
+  return stableSessionSource(env) || `session-${crypto.randomUUID()}`;
+}
+
+export function applyTelemetrySession(args, env = process.env) {
+  const remaining = [];
+  let session;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== '--session-id') {
+      remaining.push(args[index]);
+      continue;
+    }
+    if (session !== undefined) throw new Error('duplicate --session-id');
+    const value = args[++index];
+    if (!value || value.startsWith('--') || !safeRunId(value)) throw new Error('invalid --session-id');
+    session = value;
+  }
+  if (session !== undefined) env.ALIPAY_AIPAY_SESSION_ID = session;
+  return remaining;
 }
 
 function stateKeyFromSource(source) {
   if (!source) return 'default';
-  if (safeText(source) && source.length <= 128) return source;
+  if (safeText(source) && source.length <= 128 && source !== '.' && source !== '..') return source;
   return `key-${crypto.createHash('sha256').update(source).digest('hex')}`;
 }
 
@@ -508,8 +536,9 @@ function writeOutboxRecord(event, env = process.env) {
     const filename = outboxFilename(normalizedEvent);
     const finalPath = path.join(dir, filename);
     if (!writePrivateJson(finalPath, {
-      schema_ver: 1,
+      schema_ver: 2,
       created_at: Date.now(),
+      platform: platformFromEnv(env),
       event: normalizedEvent
     })) return '';
     pruneOutbox(env);
@@ -529,14 +558,10 @@ function safeRunId(value) {
   return /[\u0000-\u001f\u007f,^=]/u.test(value) ? '' : value;
 }
 
-function platformProjectId(env = process.env) {
-  for (const key of platformProjectIdEnvKeys) {
-    const value = safeRunId(env[key]);
-    if (value) return value;
-  }
-  if (env.MIAODA) {
-    return safeRunId(env.VITE_APP_ID) || '';
-  }
+function platformProjectId(env = process.env, agentPlatform = platformFromEnv(env)) {
+  if (agentPlatform === 'coze') return safeRunId(env.COZE_PROJECT_ID) || '';
+  if (agentPlatform === 'meoo') return safeRunId(env.MEOO_PROJECT_ID) || '';
+  if (agentPlatform === 'miaoda' && env.MIAODA) return safeRunId(env.VITE_APP_ID) || '';
   return '';
 }
 
@@ -920,26 +945,9 @@ function normalizeOS(platform = process.platform) {
   }
 }
 
-function normalizePlatform(value) {
-  const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]/g, '');
-  if (normalized === 'codex') return 'codex';
-  if (normalized === 'claudecode' || normalized === 'claude') return 'claudecode';
-  if (normalized === 'cursor') return 'cursor';
-  if (normalized === 'coze') return 'coze';
-  if (normalized === 'meoo') return 'meoo';
-  if (normalized === 'miaoda') return 'miaoda';
-  if (normalized === 'openclaw') return 'openclaw';
-  if (normalized === 'traesolo') return 'traesolo';
-  if (normalized === 'qoder') return 'qoder';
-  if (/^[a-z0-9.]{1,40}$/.test(normalized) && normalized !== 'unknown') return normalized;
-  return 'unknown';
-}
-
-function platformFromEnv(env = process.env) {
-  if (env.ALIPAY_AIPAY_PLATFORM) return normalizePlatform(env.ALIPAY_AIPAY_PLATFORM);
-  if (env.AIPAY_AGENT_TYPE) return normalizePlatform(env.AIPAY_AGENT_TYPE);
-  if (env.DEV_TOOL_NAME) return normalizePlatform(env.DEV_TOOL_NAME);
-  if (env.PLATFORM) return normalizePlatform(env.PLATFORM);
+export function platformFromEnv(env = process.env) {
+  const agentPlatform = normalizePlatform(env.ALIPAY_AIPAY_AGENT_PLATFORM);
+  if (agentPlatform !== 'unknown') return agentPlatform;
   if (env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT) return 'claudecode';
   if (env.OPENCLAW_SESSION_ID || env.OPENCLAW_AGENT_ID) return 'openclaw';
   if (env.CURSOR_TRACE_ID || env.CURSOR_SESSION_ID || env.CURSOR_AGENT || env.CURSOR_LAYOUT) return 'cursor';
@@ -949,6 +957,10 @@ function platformFromEnv(env = process.env) {
   if (env.CODEX_CI || env.CODEX_THREAD_ID || env.CODEX_SESSION_ID || env.CODEX_SANDBOX_NETWORK_DISABLED !== undefined) return 'codex';
   if (env.TRAE_BRAND_NAME) return 'traesolo';
   if (env.QODER_CLI) return 'qoder';
+  for (const key of ['ALIPAY_AIPAY_PLATFORM', 'AIPAY_AGENT_TYPE', 'DEV_TOOL_NAME', 'PLATFORM']) {
+    const platform = normalizePlatform(env[key]);
+    if (platform !== 'unknown') return platform;
+  }
   return 'unknown';
 }
 
@@ -1106,7 +1118,7 @@ function normalizeMetricEvent(event) {
   return normalized;
 }
 
-export function buildSyncLogReport(event, env = process.env) {
+export function buildSyncLogReport(event, env = process.env, dimensions = {}) {
   const normalizedEvent = normalizeMetricEvent(event);
   if (!normalizedEvent) return null;
   const skillVersion = skillVersionFromEvent(normalizedEvent);
@@ -1114,7 +1126,9 @@ export function buildSyncLogReport(event, env = process.env) {
     code: syncLogCode,
     msg: syncLogMsg,
     d1: normalizeOS(),
-    d2: platformFromEnv(env),
+    d2: Object.prototype.hasOwnProperty.call(dimensions, 'platform')
+      ? normalizePlatform(dimensions.platform)
+      : platformFromEnv(env),
     d3: modelFromEnv(env),
     d4: skillVersion,
     d5: normalizedEvent.product_type || 'UNKNOWN',
@@ -1383,11 +1397,23 @@ function outboxTargetFilePending(file) {
 function readOutboxRecord(file) {
   try {
     const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (!hasOnlyFields(record, outboxRecordFields) || record.schema_ver !== 1) return null;
+    if (record?.schema_ver === 1) {
+      if (!hasOnlyFields(record, outboxV1RecordFields)) return null;
+    } else if (record?.schema_ver === 2) {
+      if (!hasOnlyFields(record, outboxV2RecordFields)) return null;
+      if (typeof record.platform !== 'string' || normalizePlatform(record.platform) !== record.platform) return null;
+    } else {
+      return null;
+    }
     if (!Number.isSafeInteger(record.created_at) || record.created_at <= 0) return null;
     const event = normalizeMetricEvent(record.event);
     if (!event) return null;
-    return { schema_ver: 1, created_at: record.created_at, event };
+    return {
+      schema_ver: record.schema_ver,
+      created_at: record.created_at,
+      ...(record.schema_ver === 2 ? { platform: record.platform } : {}),
+      event
+    };
   } catch {
     return null;
   }
@@ -1485,7 +1511,11 @@ export async function flushOutbox(env = process.env, {
       } catch {}
       continue;
     }
-    const report = buildSyncLogReport(record.event, env);
+    const report = buildSyncLogReport(
+      record.event,
+      env,
+      record.schema_ver === 2 ? { platform: record.platform } : {}
+    );
     if (!report) {
       result.invalid += 1;
       try {
@@ -1620,6 +1650,11 @@ function emitTelemetryError(error) {
 export async function runTelemetryCli(argv = process.argv) {
   try {
     const { command, args } = parseCliArgs(argv);
+    if (command === 'resolve-session') {
+      assertCliArgs(args, new Set(), 0);
+      process.stderr.write(`${internalPrefix}SESSION_ID=${resolveTelemetrySession(process.env)}\n`);
+      return 0;
+    }
     if (command === 'start-run') {
       assertCliArgs(args, new Set(['root-intent', 'product-type']), 0);
       if (!allowedRootIntents.has(args['root-intent'])) {

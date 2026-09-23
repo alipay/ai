@@ -26,10 +26,10 @@
 
 ```bash
 # GET
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 
 # POST
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 POST body 必须来自已确认目标项目中的实际文件。`seller_signature` 由代码示例中的 `generateSellerSignature` / `generate_seller_signature` 生成，签名入参中的 `service_id` 与 `method.service_id` 都必须使用 `api_mock_service_id`；禁止使用空值、其他占位符或要求用户提供正式 `serviceId`。预检输出只打印校验结论和字段名，不打印字段值。
@@ -37,8 +37,8 @@ POST body 必须来自已确认目标项目中的实际文件。`seller_signatur
 `precheck` 只请求本地服务并校验 HTTP 402/字段，不调用沙箱收银。Windows 也使用相同的 Node 单行入口，由启动器选择可用的 Python 3：
 
 ```powershell
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method GET --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 ---
@@ -46,10 +46,10 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m precheck --url "$SE
 ## 测试脚本路径
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-Windows 使用 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m`；启动器只允许该内置脚本，并按系统选择可用的 Python 3 命令。
+Windows 使用 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；启动器只允许该内置脚本，并按系统选择可用的 Python 3 命令。
 
 脚本只提供 `run` 子命令，并要求使用 `--auto-complete` 在同一次命令内获取 Payment-Needed、调用沙箱收银和携带 Payment-Proof 重试原始服务。不存在跨轮 `complete` 或恢复命令。
 
@@ -88,7 +88,7 @@ Windows 使用 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m`；
 先按统一 runtime 的 `integration-message a2m-execution-guard` 当前会话 receipt 契约校验项目快照、服务 URL、HTTP 方法和可选 POST body。项目快照按代码和配置的实际内容计算，仅文件时间戳变化或同内容重写不产生新的执行机会；实际内容变化时才允许生成新的 `RUN` receipt。只有 `decision=RUN` 才使用 `../../../normal/json/customer-messages.json` 的 `a2m.test.start` 渲染固定联调说明并立即运行脚本；`REUSE_PASSED|BLOCK_UNCHANGED|UNKNOWN_PREVIOUS_EXECUTION` 均不得重复发起完整联调。服务地址和 HTTP 方法只用于实际命令，不在开始消息中展示。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-test-start
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m-test-start --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 不得在模块或 Agent 回复中维护第二份近似开始话术。
@@ -96,20 +96,20 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message a2m
 GET 请求：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 POST 请求：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "$BODY" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "$BODY" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 Windows 从本文件所在目录按实际 HTTP 方法执行对应单行命令：
 
 ```powershell
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method GET --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE_URL" --method POST --body "@$POST_BODY_FILE" --buyer-id "$BUYER_2088" --auto-complete --require-payment-validation --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 **脚本执行步骤**：
@@ -186,7 +186,7 @@ Payment-Proof 参考结构：
 
 测试结束后使用 `a2m.test.result`：只有脚本退出码和本模块要求的组合证据都成立时选择 `PASSED`；其他情况选择 `FAILED` 并传入实际证据与确定恢复动作。不得把用户付款体验、沙箱配置落盘或任意 2xx 响应替代通过证据。
 
-输出测试结论后，使用 `a2m.payment.experience/FULL` 展示付款链接和已经通过快速沙箱字段校验的实际买家账号。缺少任一账号字段时，当前沙箱配置必须已经在前置校验进入待配置状态，不得执行本联调或输出付款体验，也不得编造缺失凭据。随后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message sandbox-android-client` 统一输出 Android-only 官方下载与失败兜底。两条消息都不增加阻塞点，也不反向改变服务端联调结论。
+输出测试结论后，使用 `a2m.payment.experience/FULL` 展示付款链接和已经通过快速沙箱字段校验的实际买家账号。缺少任一账号字段时，当前沙箱配置必须已经在前置校验进入待配置状态，不得执行本联调或输出付款体验，也不得编造缺失凭据。随后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message sandbox-android-client --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 统一输出 Android-only 官方下载与失败兜底。两条消息都不增加阻塞点，也不反向改变服务端联调结论。
 
 最后必须提醒用户：
 

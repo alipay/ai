@@ -65,7 +65,7 @@
 用户描述模糊或关键词匹配不明确时，执行下列命令固定渲染 `product.clarify`，等待用户以自然语言回复产品名称和业务需求。本模块不维护第二份澄清模板；不得临场增加不支持产品、改写 AI 网页应用收款接口或省略三种支持产品。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message product-clarify
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message product-clarify --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 ### 不支持场景回复
