@@ -17,7 +17,7 @@
 
 先确认唯一项目和服务端语言，再在产品确定前执行步骤 1；匿名沙箱不传 `PRODUCT`，缺失时创建、存在时复核，待配置只阻止沙箱依赖动作。步骤 2 的完整方案可见送达前不得改代码；送达后按步骤 2 完成执行者分流，再由确定的执行者按同一产品、项目和技术栈开工，不再执行方案 receipt 或项目快照二次校验。`integration_only/full_process` 共用检查器事实和非阻塞 `integration.start.confirm`，一次只开发一个产品。网站支付/APP 支付必须实现下单、查询、退款、退款查询、关闭和异步通知；按量付费只实现 402、验付和履约确认。本流程不主动发起真实生产交易。
 
-生产 `appId`、应用公钥、应用私钥和支付宝公钥必须属于同一生产应用，私钥格式必须匹配当前语言，格式转换只用支付宝官方密钥工具。网站支付/APP 支付本地无公网 `notify_url` 时仍实现通知代码，可暂不传地址并用查询验收；生产上线前必须恢复公网通知及验签、幂等、关键字段、`success` 回写和补偿查询，不得提前宣称生产就绪。
+生产 `appId`、应用公钥、应用私钥和支付宝公钥必须属于同一生产应用，私钥格式必须匹配当前语言，格式转换只用支付宝官方密钥工具。网站支付/APP 支付必须同时实现通知处理和交易查询；缺少 notify_url 时下单省略该字段并由服务端主动查单兜底，不会仅因缺少该地址而报错，也不因此将本轮校验判为失败；`notify_url` 可选，生产也可省略。使用通知时验证公网 HTTPS 地址、验签、关键字段、幂等、`success` 回写及补偿查询；不使用时验证商家服务端可靠主动查单、响应验签、订单/金额/状态/归属校验、持久化幂等、后台重试及未决订单恢复。未验证所选链路前不得宣称生产就绪。
 
 ### 标准消息执行规则
 
@@ -36,7 +36,7 @@
 ## 用户阻塞点索引
 
 <!-- GENERATED:INTEGRATION-GUARDS:START -->
-共享护栏：`P-MCP-CONTRACT-FROZEN` 仅用已验证脚本；禁推断或尝试近似方法；`P-SANDBOX-CREDENTIAL-EXCEPTION` 仅登记且已校验的快速沙箱或 Windows 手工沙箱资料可按 flow 用于受保护项目；禁复述、另存或扩展到生产值；`P-SENSITIVE-STATE` 公钥限当前 app 调用且禁复述/保存；敏感值禁入回复/摘要/日志/状态/宽权限文件；临时 URL 仅由登记动作展示；`P-PROJECT-PROTECT` 禁清空/覆盖/删除既有项目；仅改已确认路径和范围；`P-CUSTOMER-OUTPUT-EXCLUSIVE` 登记 stdout 原文是唯一正文；阻塞送达后立即等待；`P-DETERMINISTIC-HANDOFF` 仅执行登记命令并按唯一终态转移；禁追加解析；失败只走登记恢复。
+共享护栏：`P-MCP-CONTRACT-FROZEN` 仅用已验证脚本；禁推断或尝试近似方法；`P-SANDBOX-CREDENTIAL-EXCEPTION` 仅登记且已校验的快速沙箱或 Windows 手工沙箱资料可按 flow 用于受保护项目；快速沙箱买家密码按既有登记消息展示，Windows 仅网页收款登记摘要可明文展示；最终收口仅网页收款三项买家信息；其他原文禁复述、另存或扩展到生产值；`P-SENSITIVE-STATE` 公钥限当前 app 调用且禁复述/保存；敏感值禁入回复/摘要/日志/状态/宽权限文件；临时 URL 仅由登记动作展示；`P-PROJECT-PROTECT` 禁清空/覆盖/删除既有项目；仅改已确认路径和范围；`P-CUSTOMER-OUTPUT-EXCLUSIVE` 登记 stdout 原文是唯一正文；阻塞送达后立即等待；`P-DETERMINISTIC-HANDOFF` 仅执行登记命令并按唯一终态转移；禁追加解析；失败只走登记恢复。
 <!-- GENERATED:INTEGRATION-GUARDS:END -->
 <!-- GENERATED:INTEGRATION-GUARDS-AIPAY:START -->
 共享护栏：`P-A2M-SANDBOX` A2M 沙箱固定 api_mock_service_id 与沙箱网关；生产值仅用于正式配置；`P-A2M-SUCCESS` 联调仅在 HTTP 200、资源可归属、无业务失败且适用回执有效时通过。
@@ -160,10 +160,10 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox ensure "<规范
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-setup --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-资料校验通过后必须建立适用的版本控制忽略和访问保护。该例外只适用于当前沙箱资料；生产环境应用私钥和密码禁止提供给 Agent。Agent 不得在回复、摘要或普通日志中复述收到的值。
+资料校验通过后必须建立适用的版本控制忽略和访问保护。该例外只适用于当前沙箱资料；生产环境应用私钥和密码禁止提供给 Agent。Agent 不得在回复、摘要或普通日志中复述收到的值；仅 AI 网页应用收款在本步骤 5 已校验后，允许登记沙箱摘要展示买家账号及两个密码，最终 summary 只展示这三项。
 
 5. Unix/macOS/Linux 的 `ensure` 只依据同一目标项目的 `.alipay-sandbox.json` 当前事实分流：文件不存在时执行既有 `create`；文件存在或为符号链接时执行既有 `verify` 安全路径。已存在配置不得再次调用 `createAnonymousSandbox`、不得覆盖，也不得因为中断重来要求用户删除配置；无效、不安全或被 Git 跟踪时不得使用，脚本按待配置终态统一输出后继续代码开发。
-6. 只有 Unix/macOS/Linux 创建分支会调用冻结的 `alipay-anonymous-sandbox.createAnonymousSandbox`、`{"request":{"appType":"PUBLICAPP"}}`、`PLATFORM`、`PLATFORM_ID`、`ALIPAYCLI_BIZ_INFO` 环境变量和 `result.content[0].text -> success -> data` 解包逻辑；`ALIPAYCLI_BIZ_INFO` 固定标识当前调用方 Skill、当前生效版本和匿名 `skill_user_id`，禁止传入 `PRODUCT`。Windows 不调用该方法或 `sandbox_config.sh`。
+6. 只有 Unix/macOS/Linux 创建分支会调用冻结的 `alipay-anonymous-sandbox.createAnonymousSandbox`、`{"request":{"appType":"PUBLICAPP"}}`、`PLATFORM`、`PLATFORM_ID`、`ALIPAYCLI_BIZ_INFO` 环境变量和 `result.content[0].text -> success -> data` 解包逻辑；`ALIPAYCLI_BIZ_INFO` 固定标识当前调用方 Skill、当前生效版本、匿名 `skill_user_id` 及合法 `PROFILE` 中可选的 `chinfo`、`vid`，各字段缺少时分别省略且不回填，禁止传入 `PRODUCT`。Windows 不调用该方法或 `sandbox_config.sh`。
 7. Unix/macOS/Linux 只接受以下互斥最终结果和一个临时恢复结果；待配置不算成功：
    - `READY`：退出码为 0；唯一带 `ALIPAY_AIPAY_INTERNAL:` 前缀的 `SANDBOX_ENSURE_ACTION=CREATED|VERIFIED`、`SANDBOX_CONFIG_PATH=<同一目标项目绝对路径>/.alipay-sandbox.json` 和 `FLOW:SANDBOX_CONFIG_READY` 内部事实。
    - `CREATE_PENDING`：退出码为 0；脚本 stdout 已渲染唯一 `sandbox.configuration.pending/CREATE` 正文，并产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=sandbox.configuration.pending`；另有唯一带 `ALIPAY_AIPAY_INTERNAL:` 前缀的 `SANDBOX_PENDING_PATH=<同一目标项目绝对路径>/.alipay-sandbox.json` 和 `FLOW:SANDBOX_CONFIG_PENDING_CREATE` 内部事实；不得出现 READY 标记。
@@ -330,21 +330,21 @@ curl -sL "<当前契约 sourceUrl 中的官方页面>"
 
 **沙箱摘要展示入口**：只有 `sandboxConfigState=READY`、本步骤的代码实现和支付配置后置校验都已完成，才允许对客展示沙箱环境配置。待配置状态跳过本入口，不另写摘要或失败话术。Unix/macOS/Linux 从本 flow 所在目录执行：
 
-`environmentRows` 的具体值严禁编造、猜测、补全，禁止使用示例值、占位值或历史对话值替代本轮已校验配置。Unix/macOS/Linux 必须由登记脚本直接读取同一配置并生成四行，Agent 不得手填或改写；Windows 的应用 ID 和买家测试账号必须取自步骤 1/3 已校验的同一本机配置，两个密码行的固定保存提示仅在实际确认密码已写入该文件后使用。任一必需字段缺失、为空、配置无法读取或来源无法确认时，停止摘要展示并按既有配置失败分支处理，禁止为凑齐四行补值。
+`environmentRows` 的具体值严禁编造、猜测、补全，禁止使用示例值、占位值或历史对话值替代本轮已校验配置。Unix/macOS/Linux 必须由登记脚本直接读取同一配置并生成四行，Agent 不得手填或改写；Windows 的字段必须取自步骤 1/3 已校验的同一本机配置；网页收款两个密码行使用已校验沙箱买家密码明文，其他产品仅在实际确认密码已写入该文件后使用固定保存提示。任一必需字段缺失、为空、配置无法读取或来源无法确认时，停止摘要展示并按既有配置失败分支处理，禁止为凑齐四行补值。
 
 ```bash
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox summary "<productType>" "<规范化项目路径>" "<已确认服务端语言>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-该命令 stdout 只渲染 `sandbox.environment.summary` 与 `sandbox.environment.reminder`；命令必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=sandbox.environment.summary`，带 `ALIPAY_AIPAY_INTERNAL:` 前缀的配置路径和 `FLOW:SANDBOX_CONFIGURED` 只用于流程转移，严禁对客。命令返回后下一动作必须将剔除内部行后的 stdout 原文独立送达，再进入后续沙箱测试或付款体验；不得把工具面板输出或自写摘要当作已送达。命令不重新创建沙箱，不调用 `createAnonymousSandbox`。`productType` 只能来自步骤 2 已确认的 `aipay|webpay|apppay`；配置路径和语言必须与步骤 1/3 一致。摘要展示失败时不得进入沙箱测试或付款体验，也不得改用 Agent 自写表格。
+仅 AI 网页应用收款在该命令成功交付后，在当前对话上下文保留剔除内部行的完整 stdout 为 `SANDBOX_SUMMARY`；只允许本轮原始登记摘要，不写业务状态、不摘出或复述凭据。配置后置校验失败、最终状态不再 READY 或实际配置变化时立即丢弃，禁止拿旧摘要补齐。该命令 stdout 只渲染 `sandbox.environment.summary` 与 `sandbox.environment.reminder`；命令必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=sandbox.environment.summary`，带 `ALIPAY_AIPAY_INTERNAL:` 前缀的配置路径和 `FLOW:SANDBOX_CONFIGURED` 只用于流程转移，严禁对客。命令返回后下一动作必须将剔除内部行后的 stdout 原文独立送达，再进入后续沙箱测试或付款体验；不得把工具面板输出或自写摘要当作已送达。命令不重新创建沙箱，不调用 `createAnonymousSandbox`。`productType` 只能来自步骤 2 已确认的 `aipay|webpay|apppay`；配置路径和语言必须与步骤 1/3 一致。摘要展示失败时不得进入沙箱测试或付款体验，也不得改用 Agent 自写表格。
 
-Windows 从项目实际读取的同一本机配置构造不含密码和密钥原文的 `ENVIRONMENT_ROWS`，再从本 flow 所在目录执行以下固定命令；不得重新索取或复述步骤 1 已提供的敏感值，也不得改用 Unix 快速沙箱脚本：
+Windows 从项目实际读取的同一本机配置构造 `ENVIRONMENT_ROWS`：网页收款允许已校验沙箱买家密码明文，其他产品继续仅显示本地保存提示，所有产品均不得包含密钥原文，再从本 flow 所在目录执行以下固定命令；除上述网页收款买家密码外，不得重新索取或复述步骤 1 已提供的敏感值，也不得改用 Unix 快速沙箱脚本：
 
 ```powershell
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-summary --product-name "$PRODUCT_NAME" --config-path "$CONFIG_PATH" --environment-rows "$ENVIRONMENT_ROWS" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝对路径；`ENVIRONMENT_ROWS` 固定依次为“沙箱支付宝应用ID（appID）”“沙箱买家测试账号”“沙箱买家登录密码”“沙箱买家支付密码”四行。前两行使用实际沙箱应用 ID 和买家登录账号；两个密码行只展示“已写入本地配置文件，默认不在对话中展开”，不得传入密码原文。不追加 pid、商家或买家 userId、sandboxId。两个 renderer 任一失败都按摘要展示失败处理，禁止手写补齐。
+Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝对路径；`ENVIRONMENT_ROWS` 固定依次为“沙箱支付宝应用ID（appID）”“沙箱买家测试账号”“沙箱买家登录密码”“沙箱买家支付密码”四行。前两行使用实际沙箱应用 ID 和买家登录账号；网页收款两个密码行使用已校验沙箱买家密码明文；其他产品两个密码行只展示“已写入本地配置文件，默认不在对话中展开”，不得传入密码原文。不追加 pid、商家或买家 userId、sandboxId。两个 renderer 任一失败都按摘要展示失败处理，禁止手写补齐。仅网页收款成功交付后保留完整原始 stdout 为 `SANDBOX_SUMMARY`，供最终收口提取三项买家信息；其他产品不保留该变量。
 
 <!-- ALIPAY_AIPAY_PRODUCT:webpay:START -->
 **网站支付回跳默认规则**：用户未特别说明时，默认实现支付后同步回跳。`return_url` 必须来自已确认目标项目的实际协议、主机、端口和路由，禁止保留 `your-domain.com`、示例端口或猜测路径。项目没有结果页时，在当前技术栈内新增与既有 UI 一致的 GET 回跳路由和页面。用户已明确不需要同步回跳时，直接按关闭分支验收，不增加第二次确认；仍必须保留异步通知、交易查询和商户订单查询页。用户未明确关闭但代码缺少 `return_url` 时，必须修复为默认同步回跳分支，不得要求用户接受遗漏。验收结论必须从实际代码重新检查，不接受调用方自报 `returnMode`。
@@ -398,7 +398,7 @@ Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝�
 3. 默认分支继续启动服务，并对不带支付结果参数的 `return_url` 发起 GET 访问。这一步只验证路由和页面壳：无订单上下文时应展示安全的中性状态，不得因没有签名参数而绕过真实回跳请求的验签和订单归属校验。确认响应成功、无认证或重定向循环；单页应用直接刷新不得返回 404。
 4. 默认分支中，Agent 具备浏览器/UI 验证能力时，实际打开回跳页，确认页面非空白、无可见报错且关键状态内容正常渲染。不具备时，不向用户追加人工确认；将“回跳页 UI 人工待验证”记录到最终 checklist 的 `manualItems`，并继续提供沙箱付款入口。
 
-5. 用户已明确关闭同步回跳时，不要求或猜测 `return_url`；确认 SDK 请求未传该字段，并改为验证异步通知处理代码、交易查询和商户订单查询页。本地生产参数验收模式下，如暂无公网 HTTPS `notify_url`，将公网异步通知联调标记为人工待验证，不以此阻塞本地正式验收。
+5. 用户已明确关闭同步回跳时，不要求或猜测 `return_url`；确认 SDK 请求未传该字段，并改为验证异步通知处理代码、交易查询和商户订单查询页。如尚未部署公网 HTTPS `notify_url`，保留上线前提醒，不单独计入本轮失败或人工待验证项；生产不使用通知时需验证服务端可靠主动查单。
 6. 输出沙箱付款说明。操作顺序为：启动服务 → 用浏览器访问支付页面 → 发起支付 → 唤起沙箱收银台 → 用户从“收银台账号登录”与“安卓沙箱支付宝扫码”中二选一完成付款 → 返回商户结果页并查询展示订单状态。
 
 回跳地址无法确定、访问失败或页面出现确定错误时，必须先修正；本轮无法继续修正时进入最终 checklist 的未完成项，不得宣称网站支付代码开发完成。仅缺少浏览器/UI 证据时记录“回跳页 UI 人工待验证”，不得宣称回跳页已验证，但不阻塞沙箱付款入口交付。该体验不新增业务写操作确认点，用户暂未付款不阻止后续代码校验。
@@ -411,7 +411,7 @@ Windows 的 `CONFIG_PATH` 必须是步骤 1/3 已校验的实际本机配置绝�
 以下两项按实际分支二选一，不得同时要求：
 
 - [INT.WEBPAY.RETURN_VERIFIED] 默认分支已确认实际 `return_url` 与项目路由一致，启动服务后 GET 访问通过，且已通过 Agent 浏览器/UI 验证取得页面正常渲染的证据；当前环境无法取得 UI 证据时只能记为人工待验证，不能满足本完成条件
-- [INT.WEBPAY.NO_RETURN_VERIFIED] 关闭分支已记录用户先前明确提出的不使用同步回跳，确认 SDK 请求未传 `return_url`，并完成异步通知处理代码、交易查询和商户订单查询页校验；缺少公网 HTTPS `notify_url` 时，已明确标记公网通知联调为人工待验证
+- [INT.WEBPAY.NO_RETURN_VERIFIED] 关闭分支已记录用户先前明确提出的不使用同步回跳，确认 SDK 请求未传 `return_url`，并完成异步通知处理代码、交易查询和商户订单查询页校验；缺少公网 HTTPS `notify_url` 时已保留上线前提醒；不使用通知时验证服务端可靠主动查单
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 <!-- ALIPAY_AIPAY_PRODUCT:aipay:START -->
@@ -499,22 +499,20 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message ser
 
 ### 步骤 7：集成后说明
 
-**任务**：在最终校验前一次输出安全红线和上线指引，不得提前宣称集成已经完成
+**任务**：按产品交付集成后说明，并进入步骤 8 代码开发校验。
 
 **完成条件**：
-- [INT.CLOSEOUT.SAFETY_AND_NEXT_STEPS_PRINTED] 已向用户明文输出安全红线和完整上线指引
+- [INT.CLOSEOUT.SAFETY_AND_NEXT_STEPS_HANDLED] 已完成下述产品分支的集成后说明。
 
-**安全与上线提醒（必须明文打印给用户）**：使用 `../normal/json/customer-messages.json` 的 `integration.safety.closeout`，按 `aipay=AIPAY`、`webpay=WEBPAY`、`apppay=APPPAY` 映射产品并传入实际验收口径。模板覆盖私钥保护、支付结果依据、异常恢复、异步通知或 `Payment-Proof`/履约确认、生产配置、真实 `serviceId` 和私钥格式；不重复沙箱摘要、账号密码、Android 下载或步骤 6 体验。不得临场删减、拆分或维护近似话术。命令必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=integration.safety.closeout`；返回后的下一动作先将 stdout 原文独立送达，再进入步骤 8。必须执行：
+网页收款与按量付费直接进入步骤 8。
+
+<!-- ALIPAY_AIPAY_PRODUCT:apppay:START -->
+APP 支付使用 `integration.safety.closeout/APPPAY` 交付商家服务端与客户端的接入范围说明。命令必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=integration.safety.closeout`；返回后的下一动作先将 stdout 原文独立送达，再进入步骤 8：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message safety-closeout --variant "$PRODUCT_VARIANT" --acceptance-summary "$ACCEPTANCE_SUMMARY" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message safety-closeout --variant APPPAY --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
-
-生产密钥的一致性、语言格式、官方工具转换、沙箱/生产配置替换、`notify_url` 公网联调边界、按量付费 `api_mock_service_id` 替换和生产就绪表述限制均由上述一条标准消息统一输出。实际写入配置时仍使用不带 PEM 头尾、包装行或说明文字的原始私钥字符串；该执行细节不得省略或改写密钥内容。
-
-**签约衔接提醒（必须输出）**：
-- 如果当前意图是 `integration_only`：提醒用户正式上线前还需要完成对应支付产品的产品开通。
-- 如果当前意图是 `full_process`：本步骤只说明仍需完成步骤 8 集成校验；此时不展示签约待办、MCC、授权范围或材料。全部适用步骤通过时进入 onboarding；只有沙箱待配置且其余检查通过，或沙箱 `READY` 且仅剩非阻塞人工待验证项时，也以“部分通过”继续 onboarding；其他阻塞缺口仍停在代码开发。
+<!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 步骤 7 完成后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration checklist --product-type "$PRODUCT_TYPE" --project-path "$PROJECT_PATH" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；只接受该命令生成的本轮 `CHECKLIST_SCOPE_RECEIPT`，不得使用修复前或其他项目的 receipt。
 
@@ -530,33 +528,34 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message saf
 
 **自动执行规则**：步骤 7 完成后进入 `checklist` 阶段；最终收口阶段统一记录 `integration_summary`，输出唯一 `ALIPAY_AIPAY_INTERNAL:CHECKLIST_SCOPE_RECEIPT=<receipt>`，并在本 bundle 末尾直接附带当前产品适用清单。该 scope receipt 仅绑定当前产品、路径与快照，防止错配或变更后沿用旧结论，不证明检查已执行。不得再单独读取整份 `modules/checklist.md`。默认只执行代码阅读、最终 runner 内固定 implementation audit、配置后置校验、语法/静态检查，以及无需安装依赖、联网或监听端口的已有定向测试，并复用步骤 5、步骤 6 已取得的校验证据，不增加“是否需要校验”的用户确认。
 
+**禁止循环与定向复检**：首次覆盖全部适用项，并复用本轮已有且仍有效的证据。局部修复后严禁重新运行全部测试、全部 checklist 动作或无关端到端联调；只复检修复项及有直接依赖、接口、配置或安全影响的关联项，先明确受影响范围，其余未受影响项沿用原证据。每个问题自动修复后最多一次定向复检；仍失败、结果无变化、缺少新证据或受环境阻断时立即停止该问题的重复检测，保留失败／待验证结果并进入最终收口，不以换命令、重载阶段、刷新 scope、重新进入 flow 或主 Agent 要求继续来重置次数。局部复检新发现的问题直接列入本轮结果，不开启无限修复链；后续只有用户明确要求继续处理时再按实际缺口推进。重新取得 scope 只绑定修改后的快照，不代表必须重测所有项目；最终 runner 的固定只读 implementation audit 仍按原契约执行，不等于授权全量测试。
+
 **执行边界**：默认禁止安装依赖或浏览器、切换运行时版本、启动长期服务、申请网络/端口权限、执行截图或 UI 自动化，也不得重复步骤 6 已完成的端到端测试。遇到 `EPERM`、网络受限、缺少浏览器等环境限制时，将对应项标记为“人工待验证”并停止扩展排查；不得据此推断代码或运行时兼容问题。只有用户明确要求继续扩展验证时，才展示拟执行动作并按原确认规则处理。
 
 步骤 3 至步骤 7 的必要依据、配置摘要、代码修复、网站回跳或按量付费联调在本轮无法继续时，跳过所有依赖该失败事实的后续动作，但仍进入本步骤：把未满足条件和被跳过动作按实际证据标记为失败或人工待验证，并使用同一 `integration.checklist.result` 收口。不得为了生成结果重新执行已阻断的外部动作。该 runner 只能在当前产品匹配且未收口的 `integration_only|full_process` active run 内执行；telemetry 开启时缺少或不匹配 run 会直接停止，禁止完成 checklist 后静默丢失 `integration.complete_coding`。`full_process` 中，只有沙箱为 `CREATE_PENDING|VERIFY_PENDING` 且代码实现与不依赖沙箱的安全检查均通过、或沙箱为 `READY` 且仅剩非阻塞人工待验证项时，才在输出标准“部分通过”结果后继续 onboarding；存在其他代码、安全或必要依据失败时仍停在代码开发。
 
-校验项包括：
-- 签名验签
-- 异步通知
-- 异常处理
+**验收阶段边界**：本轮代码开发按沙箱集成验收；checklist 第七节中尚未开通产品或尚未取得、切换生产实值的检查，记为当前阶段不适用并保留上线前待办，不计入失败项或人工待验证项，不单独阻止 Onboarding。仍须检查生产配置加载边界、环境隔离和所有适用代码/安全控制；已发现的实现缺陷、泄露或环境混用仍是阻断缺口。不得为完成本轮检查索取生产私钥、提前改用生产配置或宣称生产就绪。
 
-> 详细校验清单已附在当前阶段 bundle 的“当前产品适用校验清单”。
+**校验完整性要求**：内部必须覆盖当前 bundle 中适用于目标产品的密钥与安全、异步通知、接口覆盖、支付结果处理、按量付费专项、退款、上线前和结果输出章节。checklist 校验结果段落：通过时只输出通过结论和下一步；完整接入部分通过或未通过时只输出实际存在的未完成项、人工待验证项和下一步；两类缺口分别展示，不把人工待验证项复制为未完成项，无项目时不输出对应标签；仅代码开发不展示“未完成项”“人工待验证”独立标签，将实际失败问题及下一步放在【当前状态】，需核实事项只在上线关键点内列一次；仅代码开发另由同一 renderer 追加下述最终摘要。联调或付款体验结论不重复展开；仅网页收款在仅代码开发的最终 checklist 上线关键点前展示步骤 5 已交付摘要中的三项买家信息，完整接入则留到 Onboarding 最终总收口；按量付费与 APP 支付最终 summary 不展示沙箱配置。通过项与不适用项无需逐行展开，用户要求明细时再输出完整逐项结果。精简输出不得导致任何适用校验被跳过。
 
-**校验完整性要求**：内部必须覆盖当前 bundle 中适用于目标产品的密钥与安全、异步通知、接口覆盖、支付结果处理、按量付费专项、退款、上线前和结果输出章节，不得只检查上方三个摘要项。通过时默认对客只输出通过结论和下一步；部分通过或未通过时只输出实际未完成项、人工待验证项和下一步。步骤 5/6 已展示的沙箱配置、联调或付款体验结论不在 checklist 结果中重复。通过项与不适用项无需逐行展开，用户要求明细时再输出完整逐项结果。精简输出不得导致任何适用校验被跳过。
+先汇总 checklist 证据；本轮可修复时按上述有限修复预算处理，只定向复检受影响项，不渲染中间结果。项目快照变化会使旧 `CHECKLIST_SCOPE_RECEIPT` 失效，必须重新加载本阶段并重跑受影响检查。
 
-先汇总 checklist 证据；本轮可修复时先修复、重检，不渲染中间结果。项目快照变化会使旧 `CHECKLIST_SCOPE_RECEIPT` 失效，必须重新加载本阶段并重跑受影响检查。
+项目不再变化且准备生成最终结论时，下方唯一 runner 会重算项目快照、校验 scope，并执行固定 implementation audit；审计只读非测试生产源码，检查核心接口标记和登记的疑似危险模式，不替代完整 checklist，也不接受 Agent 审计 receipt。
 
-项目不再变化且准备生成最终结论时，按 `aipay=AIPAY`、`webpay=WEBPAY`、`apppay=APPPAY` 得到 `PRODUCT_VARIANT`。下方唯一 runner 会重算项目快照、校验 scope，并执行固定 implementation audit；审计只读非测试生产源码，检查核心接口标记和登记的高置信度危险模式，不替代完整 checklist，也不接受 Agent 审计 receipt。
+若存在未排除的审计命中且未传 finalize，stdout 为空，stderr 只接受唯一 `ALIPAY_AIPAY_INTERNAL:CHECKLIST_AUDIT={state:"REPAIR_REQUIRED",findings:[...]}`。`findings` 是待核对线索，不凭关键字距离认定实际缺陷。Agent 对同一快照的每个命中先核对一次当前源码、实际控制流或配置依赖：有明确依据证明误报才排除；真实缺陷或证据不足仍阻断，禁止仅改名、搬动代码或改写正确实现来迎合扫描。不能因为接口标记存在就省略完整业务审查。
 
-若审计发现问题且命令未传 `--finalize-audit-findings true`，stdout 为空，stderr 只接受唯一 `ALIPAY_AIPAY_INTERNAL:CHECKLIST_AUDIT={state:"REPAIR_REQUIRED",findings:[...]}`。本轮可修复时先修复，重新加载 checklist 阶段取得新 scope，再用更新后的实际证据重跑同一结论命令，禁止渲染中间结果。无法修复时向同一命令追加 `--finalize-audit-findings true`，runner 将 findings 合入“未通过”并收口；该内部重跑不新增用户操作点。`full_process` 必须停在 Integration。
+需要记录核对时，向同一结论命令追加 `--audit-review "$AUDIT_REVIEW_JSON"`。该值为 JSON 数组，每项只含 `findingId`（当前 findings 中的 `id`）、`decision`（`FALSE_POSITIVE|CONFIRMED|UNRESOLVED`）、`evidence`（1—20 项）。每条 evidence 只含 `path`（当前项目生产源码的规范化相对路径，使用 `/`）、`line`（从 1 开始的非空源码行号）、`reason`（12—2000 字符单行具体理由，说明该代码如何证明误报或实际缺口）。禁止笼统“已检查/正常”、复制密钥或凭证；通过宿主参数数组或安全引用传 JSON，不手写转义链。runner 核对 finding 与当前产品/快照绑定、路径及行有效性；理由是否成立仍由 Agent 对实际代码负责，不能声称 runner 已证明业务正确。只有有依据的 `FALSE_POSITIVE` 可排除；未提供核对、`CONFIRMED` 或 `UNRESOLVED` 均继续阻断。代码或配置内容变化后旧 findingId 失效，不复用旧核对。
+
+仅排除误报且项目未变时，复用当前 scope 和已有检查证据再次执行结论命令，不重跑测试。真实缺陷有修复预算时只修复并定向复检受影响项，重新加载 checklist 取得新 scope 后重算命中；不得借核对、刷新 scope 或新 findingId 重置同一问题预算。核对后剩余缺陷预算耗尽、无进展或无法确认/修复时，保留已有合法核对并追加 `--finalize-audit-findings true`，将其余 findings 合入“未通过”收口，未核对或无法确认的项保留“静态扫描疑点尚未排除”措辞，不伪称已确认缺陷；只有全部误报已排除时不得传 finalize。最终只渲染一次，`full_process` 有剩余阻断时停在 Integration。
 
 对客结论统一使用 `integration.checklist.result`；整体结论、失败/部分通过项和人工待验证项必须来自最终一轮 checklist 实际证据。最终渲染成功时必须产生唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=integration.checklist.result`；命令返回后的下一动作先将 stdout 原文独立送达，不得以工具面板或自写总结替代。首次调用前先按以下完整契约确定参数，禁止改枚举：
 
 - `variant` 映射 `aipay=AIPAY`、`webpay=WEBPAY`、`apppay=APPPAY`；`overallResult` 只允许“通过、部分通过、未通过”。
-- `failedItems`/`manualItems` 必须是含下一步的受控单行值，无项目传“无”。`sandboxConfigState` 只允许 `READY|CREATE_PENDING|VERIFY_PENDING`；除沙箱配置及其直接依赖外存在代码、安全或必要依据缺口时 `blockingDefectState=PRESENT`，否则 `NONE`。待配置时 `failedItems` 必须列出沙箱配置及依赖动作未完成；恢复口令只由步骤 1/3 已发送的 `sandbox.configuration.pending` 正文提供。
+- `failedItems`/`manualItems` 必须是含下一步的受控单行值，无项目传“无”。先按证据分类：单纯尚无公网 `notify_url` 属于通用上线提醒，用户尚未自愿完成沙箱付款属于可选体验，两者不得进入 `failedItems`、`manualItems` 或影响完成判定的待办；付款入口及完整指引仍须按步骤 6 交付。实际 UI／已选通知链路证据缺口进入 `manualItems` 并保留部分通过，代码／安全缺陷进入 `failedItems` 并按原门禁处理。不得为每个项目固定添加 UI 或通知幂等待验证项；不得仅因沙箱摘要未展示而改变分类。renderer 拒绝把上述通用提醒、可选体验作为缺口的旧输入；遇到分类错误只修正结果参数，不重新执行已完成检查。`sandboxConfigState` 只允许 `READY|CREATE_PENDING|VERIFY_PENDING`；除沙箱配置及其直接依赖外存在代码、安全或必要依据缺口时 `blockingDefectState=PRESENT`，否则 `NONE`。待配置时 `failedItems` 必须列出沙箱配置及依赖动作未完成；恢复口令只由步骤 1/3 已发送的 `sandbox.configuration.pending` 正文提供。
 - `executionMode`：`integration_only` 固定“仅代码开发”，`nextFlowReminder` 固定“正式上线前还需完成支付产品-产品开通。”。`full_process` 固定“完整接入”：`READY` 且“通过”时提醒“代码开发校验通过后将自动进入支付产品-产品开通；未通过时停留在代码开发。”；沙箱待配置且 `blockingDefectState=NONE` 时提醒“沙箱配置尚未完成，但不阻塞本轮继续支付产品-产品开通；完成配置后再进行沙箱测试。”；`READY`、`failedItems=无` 且仅有人工待验证项时提醒“代码开发自动校验已完成，仍有人工待验证项；本轮继续产品开通。”，并把 `manualItems` 原样带入 Onboarding Step 6。其他阻断结果停在 Integration。
-- 仅 `AIPAY` 传 `sandboxResult`：步骤 6 端到端联调通过为“AI 按量付费沙箱服务端联调通过”，否则为“AI 按量付费沙箱服务端联调未通过”。仅 `WEBPAY` 传 `webpayExperienceResult`，按步骤 6 证据从三个登记值中选择：已提供入口指引且待用户实际付款、未提供完整入口指引、或用户已完成一笔沙箱付款且结果有核验证据。`APPPAY` 不传这两个参数。
+- 仅 `AIPAY` 传 `sandboxResult`：步骤 6 端到端联调通过为“AI 按量付费沙箱服务端联调通过”，否则为“AI 按量付费沙箱服务端联调未通过”。仅 `WEBPAY` 传 `webpayExperienceResult`，按步骤 6 证据从本 bundle 附带的“WEBPAY 结果参数精确枚举”中选择原值；该列表直接来自当前消息目录。`APPPAY` 不传这两个参数。
 
-必须从本 flow 所在目录执行当前产品对应单行 runner；runner stdout 是唯一对客正文，必须把 stdout 原文作为当前回复正文发给用户：
+执行当前产品对应单行 runner；runner stdout 是唯一对客正文，必须把 stdout 原文作为当前回复正文发给用户：
 
 <!-- ALIPAY_AIPAY_PRODUCT:aipay:START -->
 ```bash
@@ -565,7 +564,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message che
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:webpay:START -->
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant WEBPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --webpay-experience-result "$WEBPAY_EXPERIENCE_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message checklist-result --variant WEBPAY --project-path "$PROJECT_PATH" --scope-receipt "$CHECKLIST_SCOPE_RECEIPT" --overall-result "$OVERALL_RESULT" --failed-items "$FAILED_ITEMS" --manual-items "$MANUAL_ITEMS" --webpay-experience-result "$WEBPAY_EXPERIENCE_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --blocking-defect-state "$BLOCKING_DEFECT_STATE" --execution-mode "$EXECUTION_MODE" --next-flow-reminder "$NEXT_FLOW_REMINDER" [--sandbox-summary "$SANDBOX_SUMMARY"] --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:apppay:START -->
@@ -578,11 +577,21 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message che
 
 同一次代码开发流程只渲染一次最终 checklist 结果；renderer stdout 是本次默认收口的唯一对客正文，禁止在前后追加风险说明、通过项摘要、执行说明、衔接提醒或第二份待办。
 
+最终摘要：仅代码开发时，runner 在 checklist 结论后统一输出【当前状态】、符合条件时的【沙箱测试配置】、【上线前有以下关键点】和【提示】。仅网页收款在 `sandboxConfigState=READY` 且步骤 5 的配置后置校验与摘要交付成功、当前实际配置未变化时，传 `--sandbox-summary "$SANDBOX_SUMMARY"`；没有有效原摘要时省略该参数，不读文件、不重建沙箱、不编造字段。最终回放遇到原摘要缺失、过期、格式异常或校验失败时，只省略【沙箱测试配置】，严禁阻塞其余 summary 对客正文；首次配置校验和实际业务门禁保持不变。该区块仅保留沙箱买家测试账号、沙箱买家登录密码、沙箱买家支付密码三项，密码明文展示（含 Windows），不展示产品、配置路径、appId 或密钥行，不表示付款测试通过。按量付费与 APP 支付不得传此参数，不展示该区块。完整接入的中间 checklist 禁止传该参数、禁止提前重复上线清单，原摘要保留给 Onboarding Step 6。传参使用宿主进程参数数组或安全引用，不把多行正文嵌入手写 Shell/JSON。
+
 这些产品专属字段只用于 renderer 校验最终结论，不在 checklist 对客结果中重复展示。APP 支付未来沙箱测试对客引导的维护 TODO 只保留在消息目录对应变体，不得渲染给用户；补充时必须同步本 flow、`modules/checklist.md` 和测试。
 
-**完成语义**：只有步骤 1-8 的适用完成条件均满足且 `sandboxConfigState=READY` 后，才可声明支付产品-代码开发完成。沙箱待配置但代码实现与其余检查通过时只能输出“部分通过”，不得改写为完成；存在其他未通过项时输出“未通过”；若配置已就绪且仅剩无法自动验证项，输出“部分通过”并登记人工待验证项，不得改写为完成或生产就绪。
+**完成语义**：只有步骤 1-8 的适用完成条件均满足且 `sandboxConfigState=READY` 后，才可声明支付产品-代码开发完成。沙箱待配置但代码实现与其余检查通过时只能输出“部分通过”，不得改写为完成；存在其他未通过项时输出“未通过”；若配置已就绪且仅剩无法自动验证项，输出“部分通过”并登记人工待验证项，不得改写为完成或生产就绪。沙箱状态不得被产品开通结果覆盖。
 
-完成结论必须逐项来自本轮实际检查：项目和代码项重新扫描目标目录；Unix/macOS/Linux 只有 `sandboxConfigState=READY` 时才重新执行严格的 `sandbox_config.sh verify`，待配置时直接复用本轮脚本终态并标记相关项未完成，不得在 checklist 中再次创建或复核；Windows 只有 `READY` 时重新检查项目实际读取的本地配置、密钥格式和版本控制保护，`VERIFY_PENDING` 时直接标记配置及依赖动作未完成；按量付费联调只接受本轮 `run --auto-complete --require-payment-validation` 的实际成功；用户确认项只接受当前摘要后的回复。任何一项缺失、失败或无法执行都标记为失败或人工待验证，不得由 Agent 自填 `PASS`。
+完成结论必须逐项来自本轮实际检查。配置内容、当前语言字段选择、实际加载路径/加载器或适用保护变化导致旧证据失效时，只复检受影响的配置项；证据仍有效时复用步骤 3/5 的实际结果，不因进入步骤 8 再做一遍。Windows 手工配置沿用原位检查方式，不改用快速沙箱脚本。沙箱待配置时复用实际终态、跳过依赖动作，不读取、创建或循环复核配置。按量付费联调只接受步骤 6 本轮 `run --auto-complete --require-payment-validation` 的实际成功，不重复联调；不得由 Agent 自填 `PASS`。
+
+仅 Unix/macOS/Linux 的快速沙箱原为 `READY`、且配置内容/文件保护证据失效需要重新校验时，按本轮有限预算执行一次固定命令；仅加载器变化时定向审查加载器及 SDK 映射，不因此重验原始配置：
+
+```text
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox reverify "$PROJECT_PATH" "$SERVER_LANGUAGE" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+```
+
+只接受唯一 `ALIPAY_AIPAY_INTERNAL:FLOW:SANDBOX_CONFIG_READY` 或 `ALIPAY_AIPAY_INTERNAL:FLOW:SANDBOX_CONFIG_PENDING_VERIFY` 及成功退出。前者复用更新后就绪证据，后者更新为 `VERIFY_PENDING`、交付脚本已有待配置正文并停止沙箱依赖动作；异常或不可唯一解析时保留阻断事实并收口，不猜测就绪、不换命令追加尝试。该动作不创建配置，不修改原脚本内部重试预算；项目内容因此变化时仅刷新 scope、复检受影响项，不全量重测。
 
 **沙箱结论边界**：步骤 8 的代码与配置校验不得把步骤 3 的字段完整性、网站支付的付款指引或 APP 支付跳过步骤 6 改写为“沙箱测试通过”。只有按量付费步骤 6 已取得完整端到端成功证据时，最终摘要才可复用该测试结论。
 
@@ -593,10 +602,4 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message che
 仅在用户报告报错、错误码、问题、排查、调试或异常时读取 `modules/troubleshooting-flow.md`；正常路径不得预加载。先确认产品，有错误码时再确认接口；禁止猜测密钥格式、MCP 方法或业务规则。
 
 ---
-
-## 代码开发完成确认
-
-- `integration_only`：仅由 `integration.checklist.result` 输出未通过项、人工待验证项和产品开通提醒，不追加第二份话术。
-- `full_process`：全部适用步骤通过后进入 `references/onboarding/flow.md`；仅沙箱待配置，或沙箱 `READY` 且仅剩非阻塞人工待验证项时，以“部分通过”继续并保留未完成事实。其他代码、安全或依据缺口停在 Integration，不提前执行 Onboarding。
-- 未通过时不得宣称完成；沙箱状态不得被产品开通结果覆盖。
 <!-- ALIPAY_AIPAY_FLOW:INTEGRATION_CHECKLIST:END -->

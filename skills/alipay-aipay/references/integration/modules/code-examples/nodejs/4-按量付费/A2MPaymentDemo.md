@@ -2,13 +2,15 @@
 
 以下代码展示严格验付和幂等履约的完整控制流。生成项目代码时，请按当前项目结构拆分并绑定真实持久化实现。
 
+金额校验由商家服务端执行：验付返回非空金额时必须与本地持久化订单匹配；仅 SDK 网关严格为 `https://openapi-sandbox.dl.alipaydev.com/gateway.do` 且 `serviceId=api_mock_service_id` 的精确沙箱模式下，验付缺少金额才允许使用本地订单金额继续判断。生产缺少金额必须拒绝交付。自动沙箱联调脚本不直接比较这两个金额，脚本通过不能代替商家代码校验。
+
 ```javascript
 /**
  * A2M 智能收产品接入示例 - Node.js 版本
  *
  * 本示例展示 A2M 核心协议、严格验付和幂等履约流程。
  * 必须通过 configureOrderRepository 绑定项目真实持久化实现；
- * 端口未绑定时明确失败，不使用内存订单、固定资源或验付字段缺失兜底。
+ * 端口未绑定时明确失败，不使用内存订单或固定资源；生产环境不使用验付字段缺失兜底。
  * 
  * 本文件演示 A2M 核心协议调用流程：
  * 1. 返回 402 Payment-Needed Header
@@ -161,6 +163,7 @@ function base64UrlDecode(str) {
 }
 
 function normalizeAmount(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
   if (!match) return null;
   return `${BigInt(match[1]).toString()}.${(match[2] || '').padEnd(2, '0')}`;
@@ -345,7 +348,8 @@ async function verifyPaymentAndDeliverResource(req, res, paymentProof) {
     const order = verifyOutTradeNo ? await repository.findByOutTradeNo(verifyOutTradeNo) : null;
     const sandboxMode = isExactSandboxMode();
     const verifyTradeNo = returnedTradeNo || (sandboxMode ? tradeNo : '');
-    const verifyAmount = returnedAmount || (sandboxMode && order ? order.amount : '');
+    const amountMissing = returnedAmount === undefined || returnedAmount === null || returnedAmount === '';
+    const verifyAmount = amountMissing && sandboxMode && order ? order.amount : returnedAmount;
     const resourceIdVerified = returnedResourceId || (sandboxMode && order ? order.resourceId : '');
 
     if (process.env.A2M_DEBUG === 'true') {

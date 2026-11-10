@@ -123,7 +123,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE
 8. 生成浏览器付款链接
 9. 使用同一过程产物构建 Payment-Proof 并重试原始服务
 10. 仅在 HTTP 200、非空且可归属的资源、无明确业务失败，并且当前示例要求的 `Payment-Validation` 校验通过时输出服务端联调成功
-11. 命令结束前清理敏感过程产物；失败后重新执行完整联调，不保存跨轮恢复状态
+11. 命令结束前清理敏感过程产物，不保存跨轮恢复状态；失败或中断后必须重新按执行 guard 判定，不得直接重跑
 
 **脚本输出**：
 - Payment-Needed 获取结果（终端不输出原始值）
@@ -134,7 +134,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE
 - Payment-Proof 重试后的服务响应与测试结论；`Payment-Validation` 原始值不在终端输出
 
 **错误处理**：
-- 沙箱化 Agent 环境执行本脚本时，首次执行即申请可联网权限；如果已因网络受限失败，复用同一条命令申请可联网权限重试
+- 沙箱化 Agent 环境执行本脚本时，首次执行即申请可联网权限；权限恢复只允许原样重试可确认尚未发出的命令。命令可能已发出时仍按执行 guard 处理，不以网络恢复为由重放结果未知的请求
 - 如果未找到 `Payment-Needed` 响应头，确认服务端是否实现了 402 协议
 - 如果收银接口返回 `PARAM_INVALID: protocol.sellerSignature不能为空`，回到预检步骤检查 `protocol.seller_signature` 是否为空、缺失或仍是占位符
 - 如果 `pay_before` 相关参数报错，检查是否使用 ISO 8601 带时区格式
@@ -142,7 +142,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE
 
 ### 第三步：连续验证 Payment-Proof 重试
 
-标准流程只使用第二步命令中的 `--auto-complete`。脚本生成付款链接后，在同一次进程内继续构建 Payment-Proof、重试原始服务并输出结果；进程中断后重新执行完整联调。
+标准流程只使用第二步命令中的 `--auto-complete`。脚本生成付款链接后，在同一次进程内继续构建 Payment-Proof、重试原始服务并输出结果；进程中断后按执行 guard 处理，结果未知时不得自动重新执行完整联调。
 
 **脚本执行步骤**：
 1. 读取过程产物目录中的 `state.json`
@@ -154,7 +154,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" a2m run --url "$SERVICE
 **Payment-Proof 处理约束**：
 - `trade_no` 必须使用前面沙箱收银接口返回并写入 `state.json` 的交易号；不得改用商户侧 `out_trade_no` 或重新生成。
 - `payment_proof`、`client_session` 和最终请求头由脚本按沙箱联调约定自动处理；Agent 不得手工拼接、改写或向用户展开其原始值和内部处理规则。
-- 进程中断后只能在确认上次命令未取得可用过程产物时重新执行完整 `run --auto-complete` 联调，不复用旧过程产物；明确业务失败、服务实现失败或脚本已输出失败结论时，禁止立即重复执行同一联调命令刷远程动作，必须先处理失败原因。
+- 进程中断后，不得以过程产物缺失或已清理推定请求未发出；`UNKNOWN_PREVIOUS_EXECUTION` 固定记录结果未知，禁止自动重跑。明确业务失败、服务实现失败或脚本已输出失败结论时，禁止立即重复执行同一联调命令；输入未变化时按 `BLOCK_UNCHANGED` 停止；只有代码、配置、URL、方法或 POST body 实际变化且 guard 返回新 `RUN` 时，才允许重新发起完整联调，禁止复用旧过程产物。
 
 Payment-Proof 参考结构：
 

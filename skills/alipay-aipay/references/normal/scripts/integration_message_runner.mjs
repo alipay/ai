@@ -750,7 +750,81 @@ export function inspectImplementation(variant, projectPath, snapshot = null) {
 
   findings.sort((left, right) => `${left.code}:${left.path || ''}:${left.line || 0}`
     .localeCompare(`${right.code}:${right.path || ''}:${right.line || 0}`));
+  for (const finding of findings) {
+    finding.id = crypto.createHash('sha256')
+      .update(JSON.stringify([variant, currentSnapshot.fingerprint, finding]))
+      .digest('hex');
+  }
   return { projectPath: canonicalPath, variant, findings };
+}
+
+function reviewedAuditFindings(audit, rawReview, snapshot) {
+  if (rawReview === undefined) return audit.findings.map((finding) => ({ ...finding, reviewDecision: 'UNREVIEWED' }));
+  if (typeof rawReview !== 'string' || rawReview.length > 65536) throw new Error('audit-review 必须是受控 JSON 数组');
+  let reviews;
+  try { reviews = JSON.parse(rawReview); } catch { throw new Error('audit-review 不是合法 JSON'); }
+  if (!Array.isArray(reviews)) throw new Error('audit-review 必须是 JSON 数组');
+  const findings = new Map(audit.findings.map((finding) => [finding.id, finding]));
+  const reviewedIds = new Set();
+  const decisions = new Map();
+  const excluded = new Set();
+  const sources = new Set(implementationSourceFiles(snapshot.canonicalPath, snapshot.sources, snapshot.contents));
+  for (const review of reviews) {
+    if (!review || typeof review !== 'object' || Array.isArray(review)
+      || Object.keys(review).some((key) => !['findingId', 'decision', 'evidence'].includes(key))
+      || !findings.has(review.findingId) || reviewedIds.has(review.findingId)) {
+      throw new Error('audit-review 必须逐项绑定当前产品和项目快照的唯一 findingId');
+    }
+    reviewedIds.add(review.findingId);
+    if (!['FALSE_POSITIVE', 'CONFIRMED', 'UNRESOLVED'].includes(review.decision)) {
+      throw new Error('audit-review decision 仅支持 FALSE_POSITIVE、CONFIRMED、UNRESOLVED');
+    }
+    decisions.set(review.findingId, review.decision);
+    if (!Array.isArray(review.evidence) || review.evidence.length === 0 || review.evidence.length > 20) {
+      throw new Error('audit-review 每项必须提供当前生产代码的定位和核对依据');
+    }
+    for (const evidence of review.evidence) {
+      if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)
+        || Object.keys(evidence).some((key) => !['path', 'line', 'reason'].includes(key))
+        || typeof evidence.path !== 'string' || !evidence.path || evidence.path.includes('\\')
+        || path.posix.isAbsolute(evidence.path) || path.win32.isAbsolute(evidence.path)
+        || evidence.path.split('/').some((part) => !part || part === '.' || part === '..')
+        || !Number.isInteger(evidence.line) || evidence.line < 1
+        || typeof evidence.reason !== 'string' || evidence.reason.trim().length < 12 || evidence.reason.length > 2000
+        || /[\u0000-\u001f\u007f]/u.test(evidence.reason)) {
+        throw new Error('audit-review evidence 必须包含规范化相对 path、有效 line 和具体单行 reason');
+      }
+      const file = path.resolve(snapshot.canonicalPath, evidence.path);
+      const source = snapshot.contents.get(file)?.toString('utf8');
+      const lines = source === undefined ? [] : stripSourceComments(source, path.extname(file).toLowerCase()).split(/\r?\n/u);
+      if (!sources.has(file) || !lines?.[evidence.line - 1]?.trim()) {
+        throw new Error('audit-review evidence 必须指向当前快照内非空的生产源码行');
+      }
+    }
+    // The runner validates the snapshot and locations; the Agent owns the code reasoning.
+    // Unreviewed, confirmed and unresolved findings remain blocking.
+    if (review.decision === 'FALSE_POSITIVE') excluded.add(review.findingId);
+  }
+  return audit.findings.filter((finding) => !excluded.has(finding.id))
+    .map((finding) => ({ ...finding, reviewDecision: decisions.get(finding.id) || 'UNREVIEWED' }));
+}
+
+function mergeAuditItems(failedItems, findings) {
+  let items = failedItems && failedItems !== '无' ? [failedItems] : [];
+  if (items[0]?.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(items[0]);
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) items = parsed;
+    } catch { /* Preserve plain text. */ }
+  }
+  items = items.flatMap((item) => item.split('；')).map((item) => item.trim()).filter(Boolean);
+  for (const finding of findings) {
+    const location = finding.path ? `（${finding.path}${finding.line ? `:${finding.line}` : ''}）` : '';
+    const prefix = finding.reviewDecision === 'CONFIRMED' ? '' : '静态扫描疑点尚未排除：';
+    const item = `${prefix}${finding.message}${location}`;
+    if (!items.includes(item)) items.push(item);
+  }
+  return [...new Set(items)].join('；');
 }
 
 function scanProjectRoute(productType, projectPath, projectSelection) {
@@ -1255,18 +1329,20 @@ function runServiceNotReady(args) {
 
 function runSafetyCloseout(args) {
   const variant = required(args, 'variant');
-  if (!['AIPAY', 'WEBPAY', 'APPPAY'].includes(variant)) throw new Error('variant 非法，仅支持 AIPAY、WEBPAY、APPPAY');
-  return requireCustomerMessageDelivery('integration.safety.closeout', renderMessage('integration.safety.closeout', variant, {
-    acceptanceSummary: required(args, 'acceptance-summary')
-  }));
+  if (variant !== 'APPPAY') throw new Error('步骤 7 提醒仅适用于 APPPAY；AIPAY、WEBPAY 直接进入最终 checklist，上线提醒由最终 summary 输出');
+  return requireCustomerMessageDelivery('integration.safety.closeout', renderMessage('integration.safety.closeout', variant, {}));
 }
 
 function runWindowsSandboxSummary(args) {
+  const productName = required(args, 'product-name');
   const environmentRows = required(args, 'environment-rows');
   const passwordSaveHint = '已写入本地配置文件，默认不在对话中展开';
   const lines = environmentRows.split('\n');
-  if (lines[2] !== `| 沙箱买家登录密码 | ${passwordSaveHint} |`
-      || lines[3] !== `| 沙箱买家支付密码 | ${passwordSaveHint} |`) {
+  if (productName === 'AI 网页应用收款' && lines.slice(2).some((line) => line.includes(passwordSaveHint))) {
+    throw new Error('网页收款沙箱摘要必须展示已校验的买家密码明文');
+  }
+  if (productName !== 'AI 网页应用收款' && (lines[2] !== `| 沙箱买家登录密码 | ${passwordSaveHint} |`
+      || lines[3] !== `| 沙箱买家支付密码 | ${passwordSaveHint} |`)) {
     throw new Error('Windows 沙箱摘要的两个密码行必须只使用固定本地保存提示');
   }
   const summary = renderMessage('sandbox.environment.summary', 'DEFAULT', {
@@ -1290,6 +1366,7 @@ function checklistInputFromArgs(args) {
     'overall-result': 'overallResult',
     'failed-items': 'failedItems',
     'manual-items': 'manualItems',
+    'sandbox-summary': 'sandboxSummary',
     'sandbox-result': 'sandboxResult',
     'webpay-experience-result': 'webpayExperienceResult',
     'sandbox-config-state': 'sandboxConfigState',
@@ -1343,26 +1420,21 @@ async function runChecklistResult(args) {
   }
   const input = checklistInputFromArgs(args) || await readStdin();
   const audit = inspectImplementation(variant, projectPath, snapshot);
-  if (audit.findings.length === 0 && finalizesAuditFindings) {
+  const findings = reviewedAuditFindings(audit, args['audit-review'], snapshot);
+  if (findings.length === 0 && finalizesAuditFindings) {
     throw new Error('finalize-audit-findings 仅用于收口实际 audit findings');
   }
-  if (audit.findings.length > 0) {
+  if (findings.length > 0) {
     if (args['finalize-audit-findings'] !== 'true') {
       process.stderr.write(`${internalPrefix}CHECKLIST_AUDIT=${JSON.stringify({
         state: 'REPAIR_REQUIRED',
-        findings: audit.findings
+        findings
       })}\n`);
       return null;
     }
-    const auditItems = audit.findings.map((finding) => {
-      const location = finding.path ? `（${finding.path}${finding.line ? `:${finding.line}` : ''}）` : '';
-      return `${finding.message}${location}`;
-    }).join('；');
     input.overallResult = '未通过';
     input.blockingDefectState = 'PRESENT';
-    input.failedItems = input.failedItems && input.failedItems !== '无'
-      ? `${input.failedItems}；${auditItems}`
-      : auditItems;
+    input.failedItems = mergeAuditItems(input.failedItems, findings);
     if (input.executionMode === '完整接入') {
       input.nextFlowReminder = '代码开发校验通过后将自动进入支付产品-产品开通；未通过时停留在代码开发。';
     }

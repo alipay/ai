@@ -18,7 +18,7 @@ which alipay-cli 2>/dev/null && alipay-cli version
 
 **重要：工具返回的 `data` 只是候选沙箱配置；必须先按 `sandbox-setup-guide.md` 完成字段完整性校验，校验通过后再写入正式本地配置文件。创建阶段不对客输出字段核对表、独立校验结论或沙箱环境摘要表；代码开发完成并通过配置后置校验后，才按该指南输出一张沙箱环境摘要表。该结果不代表沙箱支付测试通过。privateKey、publicKey 等密钥字段不得展开。**
 
-`createAnonymousSandbox` 的 MCP 请求体只有业务入参 `request.appType`，当前固定为 `PUBLICAPP`。`PLATFORM`、`PLATFORM_ID` 和 `ALIPAYCLI_BIZ_INFO` 是 alipay-cli 上下文环境变量，禁止写入 `--data` 的 JSON。匿名沙箱创建不依赖本轮最终选择的支付产品，因此不得为了创建沙箱先编造或强行确认 `PRODUCT`。
+`createAnonymousSandbox` 的 MCP 请求体只有业务入参 `request.appType`，当前固定为 `PUBLICAPP`。`PLATFORM`、`PLATFORM_ID` 和 `ALIPAYCLI_BIZ_INFO` 是 alipay-cli 上下文环境变量，禁止写入 `--data` 的 JSON。匿名沙箱创建不依赖本轮最终选择的支付产品，因此不得为了创建沙箱先编造或强行确认 `PRODUCT`。 下列命令展示无合法 `PROFILE.chinfo` 和 `PROFILE.vid` 的技能市场来源示例；存在合法值时 `common.sh` 会在同一 JSON 中分别追加 `"chinfo":"<来源>"` 和 `"vid":"<来源>"`。
 
 ```bash
 PLATFORM="<PLATFORM>" \
@@ -41,7 +41,7 @@ alipay-cli mcp call alipay-anonymous-sandbox.createAnonymousSandbox \
 |------|------|----------|
 | `PLATFORM` | AI 编程工具识别结果 | 参考通用脚本 `../../../normal/scripts/detect_dev_tool.sh` 识别当前工具后使用其输出值；缺失时使用 `unknown`。例如 Codex 环境检测结果为 `codex` |
 | `PLATFORM_ID` | 第三方项目 ID；缺失时为当前逻辑 `run_id` | 由 `sandbox_config.sh` 通过 `common.sh` 读取，遥测开启或关闭都不影响该值；第三方项目 ID 只用于项目维度，不能生成逻辑 `run_id`，缺失时才保持 `PLATFORM_ID <- run_id` fallback，且不阻断沙箱创建 |
-| `ALIPAYCLI_BIZ_INFO` | 当前生效 Skill 的 `VERSION` 与匿名机器哈希 | 由 `common.sh` 动态生成 JSON：`{"skill":"alipay-aipay","skill_version":"v<当前 VERSION>","skill_user_id":"machine_<32位匿名机器哈希>"}`；`skill` 固定，版本统一带 `v` 前缀，`skill_user_id` 复用 telemetry 的 `machineUserID`，极端环境无法取得合法 `machine_` 标识时省略该字段；禁止由 Agent 手写或沿用外部同名值 |
+| `ALIPAYCLI_BIZ_INFO` | 当前生效 Skill 的 `VERSION`、匿名机器哈希及可选来源字段 | 由 `common.sh` 动态生成 JSON：基础字段为 `{"skill":"alipay-aipay","skill_version":"v<当前 VERSION>","skill_user_id":"machine_<32位匿名机器哈希>"}`；Skill 根目录存在合法 `PROFILE.chinfo` 或 `PROFILE.vid` 时分别追加对应字段，任一字段缺少时仅省略该字段，且不以 `PLATFORM` 回填 `chinfo`。`skill_user_id` 复用 telemetry 的 `machineUserID`，极端环境无法取得合法 `machine_` 标识时省略该字段；禁止由 Agent 手写或沿用外部同名值 |
 | `PRODUCT` | 不再传入 | 该 MCP 方法当前不需要产品上下文；不得把产品名写入 `--data` 或 CLI 环境变量 |
 
 **Codex 环境示例：**

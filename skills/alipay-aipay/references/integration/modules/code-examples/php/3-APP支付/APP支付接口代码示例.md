@@ -16,7 +16,7 @@ $alipayClient = new AopClient(getAlipayConfig());
 $request = new AlipayTradeAppPayRequest();
 $notifyUrl = trim(getenv('ALIPAY_NOTIFY_URL') ?: '');
 if ($notifyUrl !== '') {
-    $request->setNotifyUrl($notifyUrl);  // 真实生产或公网联调时传入；本地没有公网 HTTPS notify_url 时不要传 null、空字符串或占位 URL
+    $request->setNotifyUrl($notifyUrl);  // 使用异步通知时传入；未配置时由服务端可靠主动查单。没有公网 HTTPS notify_url 时不要传 null、空字符串或占位 URL
 }
 $model = array();
 

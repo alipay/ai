@@ -31,7 +31,7 @@ public class AlipayTradeAppPay {
         AlipayTradeAppPayRequest request = new AlipayTradeAppPayRequest();
         String notifyUrl = System.getenv("ALIPAY_NOTIFY_URL");
         if (notifyUrl != null && !notifyUrl.isBlank()) {
-            request.setNotifyUrl(notifyUrl.trim());  // 真实生产或公网联调时传入；本地没有公网 HTTPS notifyUrl 时不要调用 setNotifyUrl(null/空字符串/占位 URL)
+            request.setNotifyUrl(notifyUrl.trim());  // 使用异步通知时传入；未配置时由服务端可靠主动查单。没有公网 HTTPS notifyUrl 时不要调用 setNotifyUrl(null/空字符串/占位 URL)
         }
         AlipayTradeAppPayModel model = new AlipayTradeAppPayModel();
         

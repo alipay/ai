@@ -255,10 +255,11 @@ init_platform_id() {
 }
 
 init_alipay_cli_biz_info() {
-  local common_dir version_file version skill_user_id
+  local common_dir skill_dir version_file version skill_user_id profile_script merged
 
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  version_file="${common_dir}/../../../VERSION"
+  skill_dir="$(cd "${common_dir}/../../.." && pwd)"
+  version_file="${skill_dir}/VERSION"
   if [ ! -f "$version_file" ]; then
     echo "❌ 无法读取当前 alipay-aipay Skill 版本" >&2
     return 1
@@ -271,11 +272,14 @@ init_alipay_cli_biz_info() {
   fi
 
   skill_user_id="$(machine_user_id_for_biz_info "$common_dir" || true)"
+  profile_script="${common_dir}/profile.mjs"
   if [[ "$skill_user_id" =~ ^machine_[0-9a-f]{32}$ ]]; then
     printf -v ALIPAYCLI_BIZ_INFO '{"skill":"alipay-aipay","skill_version":"v%s","skill_user_id":"%s"}' "$version" "$skill_user_id"
   else
     printf -v ALIPAYCLI_BIZ_INFO '{"skill":"alipay-aipay","skill_version":"v%s"}' "$version"
   fi
+  merged="$(node "$profile_script" merge-biz-info --skill-dir "$skill_dir" --base-json "$ALIPAYCLI_BIZ_INFO" 2>/dev/null || true)"
+  if [ -n "$merged" ]; then ALIPAYCLI_BIZ_INFO="$merged"; fi
   export ALIPAYCLI_BIZ_INFO
 }
 

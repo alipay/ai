@@ -13,7 +13,7 @@
 
 步骤顺序固定为方案展示后自动授权，再执行适用只读查询，最后处理独立分支。查询失败只阻断对应分支，不当作空列表；其他成功分支可继续。
 
-方案展示前只按本轮 `mcc.sh resolve-plan` 结果陈述 MCC 名称、描述和特殊资质。Agent 可从用户原始经营描述提炼有依据的行业概念和同义表达；本地词面结果不明确时，runner 会把同一次 `queryMcc` 返回的当前产品 MCC 名称和描述以一次性目录复核 marker 交给 Agent，Agent 只能返回目录引用，runner 再映射并校验为当前动态目录中的候选。`ar-support.queryMcc`、按需 `mccsearchservice.batchQueryMcc` 及候选快照的完整执行和失效规则见步骤 2；无查询依据的结论禁止推断。
+方案展示前只按本轮 `mcc.sh resolve-plan` 结果陈述 MCC 名称、描述和特殊资质。合法 MCC 编码和规范化后的完整类目名称由 runner 确定性匹配；其他自然语言由 Agent 对同一次 `queryMcc` 返回的当前产品完整 MCC 名称和描述做一次受限目录判断。Agent 只能返回目录引用，runner 再映射并校验为当前动态目录中的候选。`ar-support.queryMcc`、按需 `mccsearchservice.batchQueryMcc` 及候选快照的完整执行和失效规则见步骤 2；无查询依据的结论禁止推断。
 
 ---
 
@@ -103,29 +103,29 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message prod
 
 产品明确但无经营描述/MCC：执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message mcc-clarify --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。该命令必须先创建或复用正式 telemetry run 并记录 `clarify_intent`；缺少或非法 `ROOT_INTENT` 时停止，不得继续 MCC 或授权。
 
-已有经营描述、二级类目名称或编码时，以原话作为 `MCC_SEARCH_QUERY` 进入唯一 MCC 解析/方案入口。非精确编码时，Agent 应先理解原话；遇到行业俗称、场景表达或目录不一定直接出现的用词时，在首次调用中一并传入 0 到 12 个有原话依据的行业概念、经营对象或同义表达，形成 `MCC_SEMANTIC_TERMS_JSON`；只传概念，不补原话无依据的行业。没有可靠扩展时省略，不追加用户确认。runner 在完整动态类目内做 NFKC、泛词剥离、标点边界内二/三元词组召回和动态稀有度排序；原始精确编码/完整名称决定性优先，其余原话与 Agent 辅助概念联合评分，语义项按 `0.7` 权重参与，名称证据高于描述，其他候选最多 8 项。若本地结果为 `NONE`、候选冲突或仅由低置信语义词产生，runner 只发出一次 `MCC_AGENT_REVIEW_REQUIRED`，其中包含当前动态目录的稳定引用、名称和描述；Agent 必须基于该目录返回最多 8 个引用，并在同一原始 query 下用 `--agent-candidate-refs-json` 重跑，runner 只接受本轮目录中的引用。目录复核不新增 MCP 或网络调用，也不替代本地校验；禁止业务词到 MCC 的硬编码点映射、自由提交 MCC code、远程语义或额外网络调用。
+已有经营描述、二级类目名称或编码时，以原话作为 `MCC_SEARCH_QUERY` 进入唯一 MCC 解析/方案入口。合法 MCC 编码或规范化后与完整二级类目名称相等时由 runner 直接匹配，不调用 Agent。其他自然语言由 runner 输出一次 `MCC_AGENT_REVIEW_REQUIRED`，其中包含当前动态目录的稳定引用、名称、描述及固定判断约束；Agent 阅读用户完整原话和完整目录，只返回按匹配度排序的 0 到 8 个目录引用。用户明确提供的行业、商品、服务对象、经营方式和场景都是筛选条件，与明确条件冲突的候选必须排除；用户没有说明的细分维度保持开放，不能擅自排除或补充经营范围。候选超过 8 项时只保留最相关的 8 项。禁止业务词到 MCC 的硬编码点映射、自由提交 MCC code、远程语义或额外网络调用。
 
-同一 `run + 用户输入 + 原始 MCC_SEARCH_QUERY + 产品` 的语义扩充最多重试 2 次。首次未提供语义词且结果为 `NONE`，或已提供语义词但结果仍为 `NONE` 且仍有预算时，`mcc.sh` 只输出唯一内部 `MCC_SEMANTIC_RETRY_REQUIRED`，stdout 为空；Agent 必须保留原始 query、复用同一 `USER_INPUT_ID`，根据原话补充此前未使用且有依据的概念后原样重跑本命令，不向用户展示中间无匹配。后续重试提交的语义词必须保留此前语义词并至少新增一个此前未使用的词；未新增或替换原语义词时不消耗额度，直接进入既有无匹配分支。`MCC_SEMANTIC_RETRY_REQUIRED` 的 `attempt` 从 1 到 2，达到 2 后不再产生该 marker；仍为 `NONE` 时输出下方既有无匹配文案并停止。精确 MCC 编码不存在不进入语义重试；网络/CLI 失败仍只走各自既有恢复分支。语义重试计数只保存在当前 run 的私有缓存中，不随 MCC 树缓存 TTL 过期，读写异常按已耗尽处理，禁止通过更换 query、重置参数或重复调用绕过上限。
+同一 `run + 产品 + USER_INPUT_ID + 原始 MCC_SEARCH_QUERY + 动态目录摘要` 的自然语言判断只允许一次；同一 `USER_INPUT_ID` 不得通过改写 query 重新发起判断。Agent 返回非 JSON 字符串数组、目录外或重复引用、超过 8 项等协议错误时，runner 只输出一次 `MCC_AGENT_REPAIR_REQUIRED`；Agent 必须基于 marker 中的同一目录和明确错误原因，只修正格式、去重、排序或裁剪为最多 8 项，再用同一 query、`USER_INPUT_ID` 和 `--agent-candidate-refs-json` 原样重跑。修复不得重新解释用户意图、扩大经营范围、重新查询目录或改变用户原话。第二次仍非法、判断或修复状态重复、动态目录变化、状态不可安全记录时立即输出既有 MCC 暂时无法处理正文并停止，不回退字符匹配、不再次调用 Agent、不进入授权或签约。合法空数组表示当前目录无匹配，直接输出既有无匹配文案并等待用户补充描述，不触发修复。
 
-`queryMcc` 树和多候选快照使用默认 1800 秒、本轮 run 私有缓存；无有效 run 不缓存。快照绑定产品、salesCode、原查询、规范化语义词、选择回执、候选树事实及按需取得的资格详情；有效命中原样复用，失效才重查。runner 只接受最多 12 项、单项 2 到 40 字符、总计不超过 240 字符的 JSON 字符串数组并拒绝 MCC 编码；Agent 参数错误时基于原话更正或省略，不要求用户重述。两种 MCP 请求体不变；`batchQueryMcc` 最多一次，只传树内命中且 `needSpecialQual=true` 的候选编码。
+`queryMcc` 树和多候选快照使用默认 1800 秒、本轮 run 私有缓存；无有效 run 不缓存。快照绑定产品、salesCode、原查询、选择回执、候选树事实及按需取得的资格详情；有效命中原样复用，失效才重查。两种 MCP 请求体不变；`batchQueryMcc` 最多一次，只传 Agent 最终候选中 `needSpecialQual=true` 的编码。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" [--semantic-terms-json "$MCC_SEMANTIC_TERMS_JSON"] [--agent-candidate-refs-json "$MCC_AGENT_CANDIDATE_REFS_JSON"] --input-id "$USER_INPUT_ID" [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" [--agent-candidate-refs-json "$MCC_AGENT_CANDIDATE_REFS_JSON"] --input-id "$USER_INPUT_ID" [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-只收唯一 `ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=SUCCESS` 与 `ALIPAY_AIPAY_INTERNAL:MCC_RESOLUTION=<json>`。若同时收到唯一 `ALIPAY_AIPAY_INTERNAL:MCC_AGENT_REVIEW_REQUIRED=<json>` 且 stdout 为空，Agent 读取其中稳定引用、名称和描述，最多返回 8 个当前目录引用后用同一 query、语义词和 `USER_INPUT_ID` 原样重跑一次；不得把该 marker 或中间状态展示给用户。目录复核最多一次，不消耗语义扩充预算；未返回有效引用时沿用本地结果并继续既有 `NONE`/候选分支。若同时收到唯一 `ALIPAY_AIPAY_INTERNAL:MCC_SEMANTIC_RETRY_REQUIRED=<json>` 且 stdout 为空，按上面的规则在同一工作回合自动重跑；不得把该 marker 或中间状态展示给用户。`UNIQUE` 恰一项，并有唯一 `CUSTOMER_MESSAGE_DELIVERY_REQUIRED=onboarding.plan.confirm`、`MCC_CONTEXT_RECEIPT`；先把 stdout 作为可见进行中消息原文送达，随后同一回合进入 `execute`，不等待回复。`MULTIPLE` 送候选后等待；预算耗尽的 `NONE` 送既有无匹配文案后等待用户重新描述。禁止旧 `mcc-search`/`mcc-candidates`、手写候选或近似追问。
+只收唯一 `ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=SUCCESS` 与适用的内部结果。若同时收到唯一 `MCC_AGENT_REVIEW_REQUIRED` 且 stdout 为空，Agent 按上面的判断约束返回 0 到 8 个当前目录引用并原样重跑一次；若收到唯一 `MCC_AGENT_REPAIR_REQUIRED` 且 stdout 为空，只做一次协议修复并原样重跑。两个 marker 和中间状态都不得展示给用户。`UNIQUE` 恰一项，并有唯一 `CUSTOMER_MESSAGE_DELIVERY_REQUIRED=onboarding.plan.confirm`、`MCC_CONTEXT_RECEIPT`；先把 stdout 作为可见进行中消息原文送达，随后同一回合进入 `execute`，不等待回复。`MULTIPLE` 送候选后等待；合法 `NONE` 送既有无匹配文案后等待用户重新描述。禁止旧 `mcc-search`/`mcc-candidates`、手写候选或近似追问。
 
 `MCC_FLOW:RETRY_WITH_NETWORK`：联网后原样重试同一 `mcc resolve-plan`。`CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION` 且 stdout 空：给同命令 CLI 私有状态目录权限后原样重试。失败停 MCC；禁无匹配兜底或进方案/授权/签约。
 
-`ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=FAILED` 且无 `MCC_FLOW:RETRY_WITH_NETWORK`：送stdout，停MCC；非无匹配，禁候选/方案/授权/签约。
+`ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=FAILED` 且无 `MCC_FLOW:RETRY_WITH_NETWORK`：送 stdout，停 MCC；非无匹配，禁候选/方案/授权/签约。只有用户按 stdout 指引重新发送经营描述后才开始新一轮匹配：先按统一前置规则计数，把该聊天消息原话作为新的 `MCC_SEARCH_QUERY`，使用该消息新的 `USER_INPUT_ID` 调用 `mcc resolve-plan`；不得复用上次的目录引用、修复 marker 或选择回执。即使用户原样重发经营描述，新 `USER_INPUT_ID` 也允许重新匹配。Agent 不得在没有新用户消息时自动发起第二轮，也不得因再次失败循环重试。
 
-`MULTIPLE` 还须取得唯一 `MCC_SELECTION_RECEIPT`。用户回复序号、当前候选完整名称或编码时，以原始 `MCC_SEARCH_QUERY` 和首次检索使用的同一 `MCC_SEMANTIC_TERMS_JSON` 重跑同一入口：`node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" [--semantic-terms-json "$MCC_SEMANTIC_TERMS_JSON"] --select "$SELECTED_MCC_CODE" --selection-receipt "$MCC_SELECTION_RECEIPT" --input-id "$USER_INPUT_ID" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。有效详情快照直接生成方案，不再调用 `queryMcc` 或 `batchQueryMcc`；runner 仍校验当前 run、产品、原话、规范化语义词、候选和事实哈希。receipt 或快照失效时不得沿用或自动套用旧选择，必须基于完整当前产品目录重新召回并至少重新展示一次当前候选。
+`MULTIPLE` 还须取得唯一 `MCC_SELECTION_RECEIPT`。用户回复序号、当前候选完整名称或编码时，以原始 `MCC_SEARCH_QUERY` 重跑同一入口：`node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" --select "$SELECTED_MCC_CODE" --selection-receipt "$MCC_SELECTION_RECEIPT" --input-id "$USER_INPUT_ID" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。有效详情快照直接生成方案，不再调用 `queryMcc` 或 `batchQueryMcc`；runner 仍校验当前 run、产品、原话、候选和事实哈希。receipt 或快照失效时不得沿用或自动套用旧选择，必须基于完整当前产品目录重新判断并至少重新展示一次当前候选。
 
 用户指定的 MCC 不在候选中时，按该 MCC 重新查询，不沿用旧候选回执，也不要要求用户换类目。
 
 `salesCode`、`scope` 和基础材料只取“产品映射”。方案只由 `mcc resolve-plan` 或已有唯一 MCC 事实时的 `onboarding-message plan-confirm --root-intent "$ROOT_INTENT" --mcc-context-receipt ... [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"]` 生成，展示产品/scope、MCC、特殊资质、企业账号边界及商家平台链接。已有 active run 时必须传 telemetry 参数；如果该命令首次创建 run，则尚无 marker，省略参数并由同一进程把本次 plan stage 的 history 固定为 0，命令返回后取得后续使用的 `RUN_ID`。`ROOT_INTENT` 取当前路线根意图，只能是 `onboarding_only` 或 `full_process`。特殊资质只来自 `qualificationGroups`：多个 group 是 OR 关系；同一 group 内多个 qualifications 是 AND 关系；`attaType` 为空或 null 的 qualification 只展示 `qualName`，不生成上传项。禁止补充模板外资格或审核规则。
 
-不得保留“先运行旧字符串搜索，无匹配后再临时让 Agent 猜”的无边界两阶段流程，或重复询问已知信息；目录复核是完整 `queryMcc` 事实上的一次受限 Agent 判断，必须在 `MCC_AGENT_REVIEW_REQUIRED` marker 后立即完成，最多一次且不增加用户确认。语义重试只允许按上一段登记的两次预算执行。语义概念、目录引用与原话必须在同一次 `resolve-plan` 中提交并统一校验。唯一事实校验通过、方案 marker 唯一且 stdout 已送达后，执行 `onboarding-execute-ready --product-type "$PRODUCT_TYPE"`；缺值/冲突/非唯一继续澄清，产品/MCC 变更重渲染。`execute` loader 只继承 `clarify_intent` 已记录的正式 run 事实，不再单独记录 stage，不代表新增用户回复，禁手工上报；Agent 在收到每条聊天框用户消息时，必须先按 `runtime-entry.md` 的统一前置命令计数，不按是否与 Skill 相关筛选，`summary` 收口后不再计入当前 run，`full_process` 不重置。
+不得保留“先运行旧字符串搜索，无匹配后再临时让 Agent 猜”的两阶段流程，或重复询问已知信息；自然语言只允许完整动态目录上的一次受限 Agent 判断和一次协议修复，二者预算由本轮私有状态原子固定。唯一事实校验通过、方案 marker 唯一且 stdout 已送达后，执行 `onboarding-execute-ready --product-type "$PRODUCT_TYPE"`；缺值/冲突/非唯一继续澄清，产品/MCC 变更重渲染。`execute` loader 只继承 `clarify_intent` 已记录的正式 run 事实，不再单独记录 stage，不代表新增用户回复，禁手工上报；Agent 在收到每条聊天框用户消息时，必须先按 `runtime-entry.md` 的统一前置命令计数，不按是否与 Skill 相关筛选，`summary` 收口后不再计入当前 run，`full_process` 不重置。
 
 <!-- ALIPAY_AIPAY_FLOW:ONBOARDING_ENTRY:END -->
 
@@ -153,7 +153,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-execute-read
 
 若组合动作本身不可用，原子 fallback 固定为先执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding execute --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`，再执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env check --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；fallback 不得重复 stage 或重复环境检查。
 
-签约脚本仍通过 `error_handler.sh -> common.sh` 初始化 `DEV_TOOL_NAME`、`PLATFORM`、当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 版本和匿名 `skill_user_id` 的 `ALIPAYCLI_BIZ_INFO`，以及当前产品 `PRODUCT`。有任务工具时只内部记录实际阶段，不维护任务数量；只保留当前对话最小上下文，不创建业务进度文件。
+签约脚本仍通过 `error_handler.sh -> common.sh` 初始化 `DEV_TOOL_NAME`、`PLATFORM`、优先取有效第三方项目 ID、缺失时取当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 版本、匿名 `skill_user_id` 及合法 `PROFILE` 中可选 `chinfo`、`vid` 的 `ALIPAYCLI_BIZ_INFO`，以及当前产品 `PRODUCT`。缺少 `chinfo` 或 `vid` 时分别保持省略，不以 `PLATFORM` 回填。有任务工具时只内部记录实际阶段，不维护任务数量；只保留当前对话最小上下文，不创建业务进度文件。
 
 本步骤成功时不输出“环境检查完成”“任务已创建”等对客消息，直接进 Step 3；只有安装失败、权限不足或缺工具时才输出实际问题和恢复动作。工具能力差异不得省略任务、步骤或完成状态。
 
@@ -242,7 +242,7 @@ Step 5 直接使用对应 phase 的完整命令；仅出现脚本异常、需要
 2. 服务：仅按量付费由 runner 执行原 `service.sh list`；其他产品 envelope 固定为 `NOT_APPLICABLE`。成功候选只取 envelope 的 `service.candidates`。
 3. 应用：runner 执行原 `app.sh list --product-type "$PRODUCT_TYPE" --sales-code "$SALES_CODE"`。成功候选和 `WEBAPP|MOBILEAPP` 只取 envelope 的 application 分支；不得宣称返回应用已与当前支付产品绑定。
 
-> ⚠️ 脚本通过 `error_handler.sh` 间接初始化 `DEV_TOOL_NAME`、当前 `run_id` 对应的 `PLATFORM_ID`、当前 Skill 版本和匿名 `skill_user_id` 对应的 `ALIPAYCLI_BIZ_INFO`，以及 CLI `PRODUCT`；签约查询必须传入当前产品的 `--sales-code` 和 `--product-type`（aipay|webpay|apppay）做一致性校验。AI 网页应用收款和 AI 移动应用收款使用不同 salesCode，禁止混用。
+> ⚠️ 脚本通过 `error_handler.sh` 间接初始化 `DEV_TOOL_NAME`、优先取有效第三方项目 ID、缺失时取当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 版本、匿名 `skill_user_id` 及合法 `PROFILE` 中可选 `chinfo`、`vid` 对应的 `ALIPAYCLI_BIZ_INFO`，以及 CLI `PRODUCT`；缺少任一来源字段时分别保持省略。签约查询必须传入当前产品的 `--sales-code` 和 `--product-type`（aipay|webpay|apppay）做一致性校验。AI 网页应用收款和 AI 移动应用收款使用不同 salesCode，禁止混用。
 
 各适用查询仍是独立 CLI/MCP 调用，runner 只编排现有脚本，必须分别完成原有错误检测，禁止伪造合并 MCP。失败后按错误类型处理：
 
@@ -271,6 +271,8 @@ Step 5 直接使用对应 phase 的完整命令；仅出现脚本异常、需要
 ### Step 4: 分支摘要与分类材料
 
 Step 3.1 通常已在同一次 stdout 展示三分支摘要；网站支付和 APP 支付的服务市场固定为“无需处理”，查询失败显示“查询失败”。本地权限未恢复时没有摘要，只消费最新失败 envelope，禁止补写或重放。进入本阶段后只消费同一 `DISCOVERY_RESULT`，不得再次调用 `discovery-summary`、手写或重复输出摘要。
+
+应用配置首次展示时，`application-candidates` 的默认 `initial` 输出先包含 `application.configuration.intro` 科普，再展示同一次查询的应用事实及适用选择提示；无应用、仅未上线和含已上线候选均适用。不得单独手写或重复渲染科普；无效选择的 `invalid` 输出及 `application-recheck` 的候选变化提示不重复科普，补资料、获取公钥和后续写操作也不重复展示。
 
 轮到服务或应用时，只有 `query_status=SUCCESS` 且 `candidates` 为数组，才用以下 runner 基于同一快照生成候选事实和选择提示；stdout 是唯一正文，禁止提前展示、手工拼表、压缩、拆分或改写。应用候选存在上线或未上线记录时，runner 必须产生且仅产生一个 `CUSTOMER_MESSAGE_DELIVERY_REQUIRED=application.candidate.select`；命令后的下一动作先将 stdout 原文送达，不得添加标题、提示、风险说明、前后缀或改写，然后立即等待用户选择：
 
@@ -532,25 +534,29 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message appl
 
 **完成条件**：当前登录、scope 和 MCC 必须有效；签约必须由实际查询确认为已生效；仅按量付费适用的服务分支必须复用或保存成功并取得实际 `serviceId`；应用必须达到 `ON_LINE`、应用公钥已生效且支付宝公钥已实际导出。存在失败、未知、待生效、待审核或人工配置时不得宣称产品开通完成。不维护人工完成条件数量。
 
-使用 `../normal/json/customer-messages.json` 的 `process.partial_result` 逐分支收口，必须通过 `onboarding_message_runner.mjs closeout` 托管输出并原文发送 stdout。禁止 Agent 手写短摘要、删减 `productionReadinessBlock`、删减 AI 网页应用收款限制引导或改写后续衔接；AI 网页应用收款收口缺少“【上线前有以下关键点】”和“AI 网页应用收款限制”时视为标准收口未送达，必须重发同一次 stdout。自动重试耗尽、业务错误或查询失败且仍未恢复的动作，统一写入分支结果和 `remainingActions`，只说明一次，不在收口后追问是否重试。必须执行：
+使用 `../normal/json/customer-messages.json` 的 `process.partial_result` 逐分支收口，必须通过 `onboarding_message_runner.mjs closeout` 托管输出并原文发送 stdout。禁止 Agent 手写短摘要、删减 `productionReadinessBlock`、删减 AI 网页应用收款限制引导或改写后续衔接；AI 网页应用收款收口缺少“【上线前有以下关键点】”和“AI 网页应用收款限制”时视为标准收口未送达，必须重发同一次 stdout。自动重试耗尽、业务错误或查询失败且仍未恢复的动作，保留在分支结果及内部 `remainingActions`，未解决业务分支的必要恢复动作由 `remainingActions` 放入【当前状态】的“下一步”，不能只依赖前序消息；产品开通各分支已完成且仅剩代码人工验证或沙箱待配置时，分别沿用上线关键点或独立恢复口令，不重复内部汇总待办；仅保留本轮尚未解决分支的具体恢复指引，不重复通用上线提醒或已在上线关键点列出的人工验证项。UNKNOWN 仍先核对事实，禁止自动重放写操作，不在收口后追问是否重试。必须执行：
 
 `SIGNING_RESULT`、`SERVICE_RESULT`、`APPLICATION_RESULT` 和 `INTEGRATION_RESULT` 必须使用消息目录允许的状态枚举原文，禁止拼接 `appId`、公钥文件路径、错误码、截图证据或其他自由文本；本轮 `ALIPAY_PUBLIC_KEY_EXPORT_STATUS=EXPORTED` 时，`APP_KEY_SAVE_PATH` 必须传入前一步独立应用结果 runner。这些证据不能污染分支结果枚举。
 
 进入本步骤前，应用分支已按前一步的交付规则独立输出 `application.operation.result`（无实际 appId 的例外沿用前一步），runner 必须输出唯一 `ALIPAY_AIPAY_INTERNAL:CUSTOMER_MESSAGE_DELIVERY_REQUIRED=application.operation.result`。命令后的下一个 Agent 动作必须先将该次 stdout 原文作为独立用户可见消息送达，送达前禁止 closeout、合并或继续工具调用；总收口不能替代这条应用结果消息。该约束只强化消息交付编排，不新增用户确认点；marker 缺失或不唯一时停止并重跑同一登记命令。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message closeout --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" --signing-result "$SIGNING_RESULT" --application-result "$APPLICATION_RESULT" --remaining-actions "$REMAINING_ACTIONS" [--integration-result "$INTEGRATION_RESULT"] [--service-result "$SERVICE_RESULT"] [--sandbox-config-state "$SANDBOX_CONFIG_STATE"] [--manual-verification-items "$MANUAL_VERIFICATION_ITEMS"] --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message closeout --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" --signing-result "$SIGNING_RESULT" --application-result "$APPLICATION_RESULT" --remaining-actions "$REMAINING_ACTIONS" [--integration-result "$INTEGRATION_RESULT"] [--service-result "$SERVICE_RESULT"] [--sandbox-config-state "$SANDBOX_CONFIG_STATE"] [--manual-verification-items "$MANUAL_VERIFICATION_ITEMS"] [--sandbox-summary "$SANDBOX_SUMMARY"] --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
 用户输入计数严格继承 `runtime-entry.md`：active run 内每条聊天框用户消息先执行唯一 `count-user-input --run-id "$RUN_ID" --input-id "$USER_INPUT_ID"`，不按 Skill 相关性筛选；runner、recovery、renderer 和 closeout 不做隐式计数。closeout 生成最终 summary 前使用当前 `HISTORY_COUNT` 快照，正式值始终由 runtime counter 写入，禁止传入或覆盖 `user_input_after_clarify_intent`。
 
-runner 从 `PRODUCT_TYPE` 派生产品名，网站支付/APP 支付派生服务结果“无需处理”，从 `ROOT_INTENT` 派生代码开发栏和后续衔接；标题只按完成条件派生。`onboarding_only` 省略 `--integration-result`、`--sandbox-config-state` 和 `--manual-verification-items`。`full_process`：代码开发通过填“已完成”并传 `READY`；仅沙箱待配置且其余代码与安全检查通过填“部分完成，沙箱配置待完成”并传 `CREATE_PENDING|VERIFY_PENDING`；沙箱 `READY` 且只剩非阻塞人工待验证项时填“部分完成，人工待验证”，传 `READY`，把 checklist `manualItems` 原样作为 `MANUAL_VERIFICATION_ITEMS`，并在 `REMAINING_ACTIONS` 写明实际待办，禁止传“无”。runner 拒绝旧完整参数、stdin JSON、`--input-json`、可派生字段和空字符串伪值。renderer 校验结果与沙箱状态/人工待验证项一致，并派生恢复口令或人工待验证展示；不增加确认点。不得在 stdout 前后追加衔接提醒，不伪造本轮代码修改、沙箱创建或测试结果，也不重复进入 integration。
+runner 从 `PRODUCT_TYPE` 派生产品名，网站支付/APP 支付派生服务结果“无需处理”，从 `ROOT_INTENT` 派生代码开发栏和后续衔接；标题只按完成条件派生。`onboarding_only` 省略 `--integration-result`、`--sandbox-config-state` 和 `--manual-verification-items`。`full_process`：代码开发通过填“已完成”并传 `READY`；仅沙箱待配置且其余代码与安全检查通过填“部分完成，沙箱配置待完成”并传 `CREATE_PENDING|VERIFY_PENDING`；沙箱 `READY` 且只剩非阻塞人工待验证项时填“部分完成，人工待验证”，传 `READY`，把 checklist 已分类的实际 `manualItems` 原样作为 `MANUAL_VERIFICATION_ITEMS`，并在 `REMAINING_ACTIONS` 写明实际待办，禁止传“无”。runner 拒绝旧完整参数、stdin JSON、`--input-json`、可派生字段和空字符串伪值。renderer 校验结果与沙箱状态/人工待验证项一致，并派生恢复口令；`remainingActions` 和 `manualVerificationItems` 仍用于完成条件校验，最终总收口不再单列“本轮流程仍需处理”和“人工待验证”，保留分支状态表、【当前状态】及沙箱恢复提示，不增加确认点。不得在 stdout 前后追加衔接提醒，不伪造本轮代码修改、沙箱创建或测试结果，也不重复进入 integration。
 
-三个产品的总收口只保留分支状态表中的应用发布结果和实际待办，不再重复输出应用结果详情、appId、支付宝公钥保存路径或应用结果专属下一步。应用详情仅由前一步 `application.operation.result` 独立交付；`closeout` 拒绝旧 `--application-operation-*` 参数，禁止把详情改塞入 `remainingActions` 或其他字段。应用创建、提审、复用和人工配置的事实判据保持不变。
+三个产品的总收口只保留分支状态表中的应用发布结果，不再重复输出应用结果详情、appId、支付宝公钥保存路径或应用结果专属下一步。应用详情仅由前一步 `application.operation.result` 独立交付；`closeout` 拒绝旧 `--application-operation-*` 参数，禁止把详情改塞入 `remainingActions` 或其他字段。应用创建、提审、复用和人工配置的事实判据保持不变。
 
-当且仅当签约结果为“已提交，等待生效”且应用结果为“已提交审核，等待上线”时，renderer 从消息目录自动在 `remainingActions` 后追加状态查询提示；该提示不是 flow 入参，Agent 禁止自行传入、拼接或在模板外重复输出。其他结果组合不展示该提示。
+当且仅当签约结果为“已提交，等待生效”且应用结果为“已提交审核，等待上线”时，renderer 从消息目录自动在分支状态表后独立展示状态查询提示；该提示不是 flow 入参，Agent 禁止自行传入、拼接或在模板外重复输出。其他结果组合不展示该提示。
 
-renderer 还会按 `productName` 和分支完成条件自动派生上线前检查块。Agent 不传入、不改写该字段，也不得在模板外补第二份生产上线清单。该检查使用“【当前状态】/【上线前有以下关键点】/【提示】”结构，不单列“相关站点”，也不在模板尾部追加第二个查询入口；必要 URL 只放在具体操作步骤中。完成态只能表述为代码开发和产品开通流程已完成，不得替用户确认生产配置已替换、产品真实可收款或应用页面状态；通用上线提醒固定分为三点：前往支付宝 AI 付站点查看产品开通情况；进入一站式接入 → 选择产品 → 密钥配置确认目标支付宝应用已上线；将项目中的支付宝应用配置替换为生产配置，确保 appId、应用私钥、支付宝公钥同属一套生产环境支付宝应用并使用生产网关。三个产品的专属提醒从第 4 点开始；AI 网页应用收款和 AI 移动应用收款必须完成公网 HTTPS `notify_url` 的验签、关键字段校验、幂等、`success` 回写和补偿查询；AI 按量付费必须把沙箱 `api_mock_service_id` 替换为服务市场真实 `serviceId`，A2M 示例中的 `sellerId` 来自商户 PID/2088，由商家自行在支付宝平台确认，不由 Agent 猜测、生成或代填。生产环境应用私钥、账号密码、支付凭证和未脱敏通知内容仍禁止提供给 Agent。分支未完成时，该派生块必须明确上表待办完成前不能正式收款。该提示只在消息目录维护，不增加用户确认点，Agent 不得在模板外重复输出或改写。
+renderer 按产品和实际结果自动派生【当前状态】、可选【沙箱测试配置】、【上线前有以下关键点】和【提示】。`onboarding_only` 禁止传 `--sandbox-summary`，不展示沙箱信息；`full_process` 仅 AI 网页应用收款在沙箱 READY、代码配置后置校验通过且原摘要有效时，传 Integration 本轮已交付的完整 `SANDBOX_SUMMARY`，包括 Worker 返回的原登记正文。不得重读配置、重建沙箱、摘出凭据或手写表格；无有效原摘要时省略，不展示占位信息。原摘要缺失、过期、格式异常或回放校验失败时，renderer 只省略该可选区块，严禁因此阻塞整个 summary；不输出未校验凭据，也不因省略展示改变或证明业务状态。区块只保留沙箱买家测试账号、沙箱买家登录密码、沙箱买家支付密码，两个密码明文展示（含 Windows）；不展示配置路径、appId、产品或密钥行。按量付费与 APP 支付禁止传该参数，最终 summary 不展示沙箱配置。沙箱区块用于用户后续测试，不宣称测试通过。
+
+上线关键点按“确认上线条件 → 生产配置替换 → 产品专属支付结果确认/服务配置 → 适用收款限制”组织。生产配置包括 appId、应用私钥、对应支付宝公钥及生产网关；应用公钥与应用私钥必须配对，在支付宝侧配置，无需额外配到项目中。应用上线提醒覆盖本轮新建和用户自行准备的其他生产应用。网页/移动收款必须同时实现通知处理和交易查询；缺少 `notify_url` 时省略该字段并由服务端查单兜底，不会仅因缺少该地址而报错。允许省略 `notify_url`，但商家服务端必须可靠主动查单并完成响应验签、订单/金额/状态/归属校验、持久化幂等、后台重试及未决订单恢复；使用通知时需公网 HTTPS、验签、关键字段校验、幂等、`success` 回写和补偿查询。仅没有公网通知地址不应判为不能上线。按量付费 summary 仅保留真实 serviceId、商户 PID/2088 等生产服务配置，不再单列 402 验付和履约回执验证提醒。最终 summary 不重复私钥格式，也不逐字段解释通知校验；这些实现和检查要求仍由原契约、代码开发 flow 及 checklist 执行，不改变自动测试脚本。
+
+通用通知地址提醒和用户可选沙箱付款体验不属于缺口，不得写入 `remainingActions`／`manualVerificationItems` 影响完成判定；仅剩这些提醒时按其余适用检查实际证据确定代码结果。实际待验证项必须与部分完成状态对应，不能在 renderer 中隐藏；上游分类有误时只纠正参数，不重测项目。本轮实际尚未验证的项目在上线关键点中列出，不单列“人工待验证”段落，不把尚未验证改成已通过。应用结果与支付宝公钥保存路径仍在前一步独立交付。禁止 Agent 在模板外补第二份生产上线清单或删掉网页收款限制；生产应用私钥、账号密码、支付凭证和未脱敏通知内容不得提供给 Agent。完成态不代表已切生产配置或已可真实收款，不新增确认点。
 
 签约、服务和应用分别按本轮脚本实际结果表达：签约提交成功但未生效时，`signingResult` 固定使用“已提交，等待生效”；服务创建或修改成功且取得 `serviceId`、但未取得服务状态时，`serviceResult` 分别固定使用“创建成功，状态未取得”或“修改成功，状态未取得”。任一分支失败或结果未知不清除其他分支成功，也不能概括为“全部失败”。`APPLICATION_RESULT` 沿用应用阶段上述唯一状态映射和本轮实际 marker，字面值必须与消息目录逐字一致。
 

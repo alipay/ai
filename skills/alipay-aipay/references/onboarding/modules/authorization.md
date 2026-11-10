@@ -32,7 +32,7 @@ CLI `login --complete` 成功只表示页面侧确认完成，不代表本机已
 
 授权页只允许 `https://aipay.alipay.com/cli-auth`，必含唯一 `deviceCode/productCode/mccCode`，只允许可选 `platform`；`mccContextReceipt` 只用于本地上下文校验和短时状态，不进入授权 URL。禁止 CLI `verification_url`、额外参数、重复参数和 fragment。页面 stdout 必须先作为独立对客消息送达，再执行 `auth.sh open` 和 `auth.sh wait`，后续 pending 或收口不得合并进同一回复。
 
-`wait` 生产最多查询 12 次，未成功的相邻查询间隔 5 秒，成功或过期立即停止。耗尽后按 flow 登记命令把用户原始回复和当前 `USER_INPUT_ID` 交给统一 runtime 的 `onboarding-recovery auth-confirm`；runner 复用统一肯定语义判定器并对该用户消息幂等计数，接受 `继续`、`好了`、`已完成`、`确认`、`OK` 和兼容输入 `1`，每次接受只执行一次 `auth.sh confirm`，不重启自动轮询。否定、疑问、取消、修改意见或含糊输入不查询。
+`wait` 生产最多查询 12 次，未成功的相邻查询间隔 5 秒，成功或过期立即停止。耗尽后，Agent 先按统一入口执行 `count-user-input` 计入这条用户消息，再按 flow 登记命令把原始回复和当前 `USER_INPUT_ID` 交给 `onboarding-recovery auth-confirm`；runner 只复用统一肯定语义判定器，不再计数。接受 `继续`、`好了`、`已完成`、`确认`、`OK` 和兼容输入 `1` 时，每次只执行一次 `auth.sh confirm`，不重启自动轮询。否定、疑问、取消、修改意见或含糊输入不查询。
 
 授权对客正文只由 `auth.sh` 调用消息目录生成。初始页面不得提前要求回复完成；pending 的自然语言提示、允许回复和授权页返回提示都不在本模块维护副本。
 

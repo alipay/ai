@@ -28,6 +28,8 @@ const shellEntrypoints = Object.freeze({
 });
 
 const nodeEntrypoints = Object.freeze({
+  conversation: ['conversation_consent.mjs', 'runConversationConsentCli'],
+  'channel-offer': ['channel_offer.mjs', 'runChannelOfferCli'],
   telemetry: ['telemetry.mjs', 'runTelemetryCli'],
   flow: ['flow_loader.mjs', 'runFlowCli'],
   'onboarding-message': ['onboarding_message_runner.mjs', 'runOnboardingMessageCli'],
@@ -84,6 +86,7 @@ function runtimeError(domain, error) {
     'onboarding-message': 'ONBOARDING_MESSAGE_ERROR:',
     'integration-message': 'INTEGRATION_MESSAGE_ERROR:',
     reply: 'ALIPAY_AIPAY_INTERNAL:REPLY_VALIDATION_ERROR=',
+    'channel-offer': 'ALIPAY_AIPAY_INTERNAL:CHANNEL_OFFER_ERROR=',
     'integration-context': 'ALIPAY_AIPAY_INTERNAL:INTEGRATION_CONTEXT_ERROR=',
     'onboarding-discovery': 'ALIPAY_AIPAY_INTERNAL:DISCOVERY_RUNNER_ERROR=',
     'onboarding-recovery': 'ALIPAY_AIPAY_INTERNAL:RECOVERY_RUNNER_ERROR=',
@@ -132,7 +135,7 @@ function assertEnumOption(options, name, allowedValues, { required = true } = {}
 }
 
 function applyTelemetryContext(domain, args) {
-  if (domain === 'telemetry') return args;
+  if (domain === 'telemetry' || domain === 'channel-offer') return args;
   const remaining = [];
   const values = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -244,6 +247,7 @@ async function dispatch(domain, args) {
     const { runSelfUpdateCli } = await import('./self_update.mjs');
     const outcome = await runSelfUpdateCli(cliArgv(args));
     const version = outcome.version ? `=${outcome.version.raw}` : '';
+    if (outcome.kind==='SESSION_READY') process.stderr.write(`ALIPAY_AIPAY_INTERNAL:SELF_UPDATE_SESSION_SKILL_DIR=${JSON.stringify(outcome.skillDir)}\n`);
     process.stderr.write(`SELF_UPDATE:${outcome.kind}${version}\n`);
     return;
   }

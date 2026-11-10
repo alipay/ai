@@ -4,8 +4,8 @@
 
 sourceUrl:
 
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/api-list/async-notify-verify.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/async-notify-verify.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/api-list/async-notify-verify.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/async-notify-verify.md>
 
 当前两份官方文档内容一致。运行时默认读取本文和当前语言 `1-通用接口/异步通知处理代码示例.md`；在线文档只在 fallback 条件下读取。
 
@@ -19,7 +19,7 @@ sourceUrl:
 
 `notify_url` 是商家服务端接收支付宝 POST 表单通知的地址，不是前端页面地址，也不是支付宝生成的 URL。
 
-本地正式验收或本地生产参数验收时，若暂时没有公网 HTTPS 通知地址，可以不传 `notify_url`，但仍必须实现通知处理代码并用交易查询兜底。不要向 SDK 传 `undefined`、`null`、空字符串或占位 URL；没有可用地址时应直接省略该字段或不调用对应 setter。真实生产或公网联调时必须传入可公网访问的 HTTPS `notify_url`，地址不能包含多余字符或发生重定向。
+通知处理与交易查询接口必须同时实现。`notify_url` 是可选参数；当前商家没有配置该地址时，下单省略该字段并由服务端交易查询兜底，不会仅因缺少该地址而报错。生产也允许省略。未配置时不触发该地址的异步通知，必须由商家服务端通过 `alipay.trade.query` 主动确认支付结果，校验订单、金额、支付状态及归属，幂等更新订单；即使用户关闭页面，仍须继续处理查询重试和未决订单。如使用异步通知，配置商家已部署、支付宝服务端可公网访问的 HTTPS 地址并完成验签、关键字段校验、幂等、`success` 回写和补偿查询。不能只因没有公网通知地址阻止流程或判定不能上线；通知处理代码仍须实现，实际代码或支付结果确认链路缺陷仍是阻断项。 没有可用地址时省略该字段，不向 SDK 传 `undefined`、`null`、空字符串或占位 URL；使用通知时地址不得包含多余字符或发生重定向。
 
 ## 必须实现的处理链路
 
@@ -50,19 +50,20 @@ sourceUrl:
 
 ## 验收分层
 
-- 本地正式验收 / 本地生产参数验收模式：允许暂时没有公网 HTTPS `notify_url`，但通知处理代码、验签、业务字段校验、持久化幂等和主动查询兜底必须存在；公网通知联调标记为人工待验证。没有可用通知地址时省略 `notify_url`，不要向 SDK 传 `undefined`、`null`、空字符串或占位 URL。
-- 真实生产上线：必须配置公网 HTTPS `notify_url`，完成支付宝服务器可访问联调、验签、关键字段校验、幂等处理、返回 `success` 和补偿查询。
+- 本地开发 / 沙箱集成：通知处理代码、验签、关键字段校验、持久化幂等和主动查询必须实现。仅尚未部署公网通知地址属于上线前方案选择与验证提醒，不计入本轮失败或人工待验证项；实际通知代码缺陷仍须修复。
+- 真实生产上线，使用通知：配置公网 HTTPS `notify_url`，验证支付宝服务器可访问、验签、关键字段校验、幂等处理、返回 `success` 和补偿查询。
+- 真实生产上线，不使用通知：下单省略 `notify_url`，验证服务端主动查单、查询响应验签和订单/金额/状态/归属校验、幂等交付、后台重试和未决订单恢复。不得把浏览器关闭或一次查询未成功当作付款失败。
 
-没有完成真实生产上线层时，不得表述为生产就绪或正式上线完成。
+生产配置及所选支付结果确认链路尚未验证时，不得表述为生产就绪或正式上线完成。仅缺少 `notify_url` 不是不能上线的依据。
 
 ## 本地示例索引
 
 | 语言 | 示例 |
 | --- | --- |
-| Java | `code-examples/java/1-通用接口/异步通知处理代码示例.md` |
-| Python | `code-examples/python/1-通用接口/异步通知处理代码示例.md` |
-| Node.js | `code-examples/nodejs/1-通用接口/异步通知处理代码示例.md` |
-| PHP | `code-examples/php/1-通用接口/异步通知处理代码示例.md` |
-| C# | `code-examples/csharp/1-通用接口/异步通知处理代码示例.md` |
+| Java | `../code-examples/java/1-通用接口/异步通知处理代码示例.md` |
+| Python | `../code-examples/python/1-通用接口/异步通知处理代码示例.md` |
+| Node.js | `../code-examples/nodejs/1-通用接口/异步通知处理代码示例.md` |
+| PHP | `../code-examples/php/1-通用接口/异步通知处理代码示例.md` |
+| C# | `../code-examples/csharp/1-通用接口/异步通知处理代码示例.md` |
 
 Java 官方示例明确使用 `AlipaySignature.rsaCheckV1`。Node.js 示例给出 `checkNotifySignV2(params)` 的落地形态，但 Agent 落地前必须先读取目标项目 `alipay-sdk` 的 package.json 和类型定义，确认当前版本确实暴露该 API。Python、PHP、C# 示例使用项目内支付宝 SDK 验签适配器表示验签边界；适配器必须封装当前项目实际 SDK API，禁止临时手写不确定的 RSA 验签实现。

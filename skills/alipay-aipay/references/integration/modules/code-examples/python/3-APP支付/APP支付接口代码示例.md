@@ -24,7 +24,7 @@ client = DefaultAlipayClient(alipay_client_config=config)
 request = AlipayTradeAppPayRequest()
 notify_url = os.getenv("ALIPAY_NOTIFY_URL", "").strip()
 if notify_url:
-    request.notify_url = notify_url  # 真实生产或公网联调时传入；本地没有公网 HTTPS notify_url 时不要传 None、空字符串或占位 URL
+    request.notify_url = notify_url  # 使用异步通知时传入；未配置时由服务端可靠主动查单。没有公网 HTTPS notify_url 时不要传 None、空字符串或占位 URL
 model = AlipayTradeAppPayModel()
 
 model.out_trade_no = "MERCHANT_ORDER_NO_PLACEHOLDER"

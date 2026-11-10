@@ -4,7 +4,7 @@
 # 功能描述: 查询当前产品支持的 MCC 经营类目并托管 MCC 匹配与方案展示
 # 调用位置: Step 1 方案规划
 # 用法:
-#   bash mcc.sh resolve-plan --query <经营描述|MCC编码> --product-type <aipay|webpay|apppay> --root-intent <onboarding_only|full_process> [--semantic-terms-json <JSON数组>] [--agent-candidate-refs-json <JSON数组>] [--select <MCC编码> --selection-receipt <receipt>] [--input-id <USER_INPUT_ID>]
+#   bash mcc.sh resolve-plan --query <经营描述|MCC编码> --product-type <aipay|webpay|apppay> --root-intent <onboarding_only|full_process> [--agent-candidate-refs-json <JSON数组>] [--select <MCC编码> --selection-receipt <receipt>] [--input-id <USER_INPUT_ID>]
 #=============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +20,6 @@ fi
 source "${SCRIPT_DIR}/network_retry.sh"
 
 ONBOARDING_RUNNER="${SCRIPT_DIR}/../../../normal/scripts/onboarding_message_runner.mjs"
-MCC_SEMANTIC_RETRY_LIMIT=2
 
 require_command jq || exit 1
 require_command node || exit 1
@@ -62,7 +61,7 @@ network_failure() {
 }
 
 mcc_query_failed() {
-  echo "❌ MCC 经营类目查询结果暂时无法处理，请稍后重试。"
+  echo "经营类目匹配暂时未完成，本次未继续授权或签约。请重新发送一次经营描述，我会重新匹配；如果仍未完成，请稍后再试。"
   emit_control "MCC_QUERY_RESULT=FAILED"
   exit 1
 }
@@ -230,14 +229,11 @@ read_mcc_selection_cache() {
     --arg receipt "$receipt" \
     --argjson now "$now" \
     --argjson ttl "$ttl" '
-      if .schemaVersion == 3
+      if .schemaVersion == 4
         and .productType == $productType
         and .salesCode == $salesCode
         and .query == $query
         and .selectionReceipt == $receipt
-        and ((.semanticTerms // null) | type == "array")
-        and ((.semanticTerms | length) <= 12)
-        and all(.semanticTerms[]; type == "string")
         and ((.createdAtEpoch // null) | type == "number")
         and (($now - .createdAtEpoch) >= 0)
         and (($now - .createdAtEpoch) <= $ttl)
@@ -271,7 +267,7 @@ read_mcc_selection_cache() {
 }
 
 write_mcc_selection_cache() {
-  local product_type="$1" sales_code="$2" query="$3" receipt="$4" semantic_terms="$5" candidate_rows="$6" details="$7"
+  local product_type="$1" sales_code="$2" query="$3" receipt="$4" candidate_rows="$5" details="$6"
   local file dir now tmp
   file="$(mcc_selection_cache_file "$product_type" "$sales_code" "$receipt")" || return 0
   dir="${file%/*}"
@@ -283,17 +279,15 @@ write_mcc_selection_cache() {
     --arg salesCode "$sales_code" \
     --arg query "$query" \
     --arg selectionReceipt "$receipt" \
-    --argjson semanticTerms "$semantic_terms" \
     --argjson createdAtEpoch "$now" \
     --argjson candidateRows "$candidate_rows" \
     --argjson details "$details" \
     '{
-      schemaVersion: 3,
+      schemaVersion: 4,
       productType: $productType,
       salesCode: $salesCode,
       query: $query,
       selectionReceipt: $selectionReceipt,
-      semanticTerms: $semanticTerms,
       createdAtEpoch: $createdAtEpoch,
       candidateRows: $candidateRows,
       details: $details
@@ -305,22 +299,6 @@ write_mcc_selection_cache() {
     rm -f "$tmp" 2>/dev/null || true
     return 0
   }
-}
-
-mcc_semantic_retry_file() {
-  local product_type="$1" sales_code="$2" root scope
-  root="$(mcc_cache_root)" || return 1
-  scope="$(mcc_cache_scope_id)" || return 1
-  if [ -e "$root" ] && { [ ! -d "$root" ] || [ -L "$root" ]; }; then
-    return 1
-  fi
-  mkdir -p "$root" 2>/dev/null || return 1
-  chmod 700 "$root" 2>/dev/null || true
-  printf '%s/%s.%s.%s.semantic-retries.json' \
-    "$root" \
-    "$(mcc_cache_component "$scope")" \
-    "$(mcc_cache_component "$product_type")" \
-    "$(mcc_cache_component "$sales_code")"
 }
 
 mcc_agent_review_file() {
@@ -339,32 +317,32 @@ mcc_agent_review_file() {
     "$(mcc_cache_component "$sales_code")"
 }
 
-mcc_agent_review_issued() {
-  local product_type="$1" sales_code="$2" input_id="$3" file
-  file="$(mcc_agent_review_file "$product_type" "$sales_code")" || return 1
-  [ -f "$file" ] && [ ! -L "$file" ] || return 1
-  jq -e \
-    --arg inputId "$input_id" \
-    '.schemaVersion == 1
-      and ((.entries // null) | type == "array")
-      and all(.entries[];
-        type == "object"
-        and ((.query // null) | type == "string")
-        and ((.inputId // null) | type == "string")
-      )
-      and any(.entries[]; .inputId == $inputId)' \
-    "$file" >/dev/null 2>&1
+mcc_catalog_digest() {
+  printf '%s' "$1" | "${NODE_BINARY:-node}" -e '
+    const crypto = require("node:crypto");
+    const fs = require("node:fs");
+    process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(0)).digest("hex"));
+  ' 2>/dev/null
 }
 
-mark_mcc_agent_review_issued() {
-  local product_type="$1" sales_code="$2" query="$3" input_id="$4"
-  local file dir lock tmp
+claim_mcc_agent_phase() {
+  local product_type="$1" sales_code="$2" query="$3" input_id="$4" phase="$5" catalog_digest="$6"
+  local file dir lock tmp lock_acquired=false
+  case "$phase" in review|repair) ;; *) return 1 ;; esac
+  [ -n "$input_id" ] || return 1
+  case "$catalog_digest" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#catalog_digest}" -eq 64 ] || return 1
   file="$(mcc_agent_review_file "$product_type" "$sales_code")" || return 1
   dir="${file%/*}"
   lock="${file}.lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    return 1
-  fi
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if mkdir "$lock" 2>/dev/null; then
+      lock_acquired=true
+      break
+    fi
+    sleep 0.05
+  done
+  [ "$lock_acquired" = true ] || return 1
   if [ -e "$file" ] && { [ ! -f "$file" ] || [ -L "$file" ]; }; then
     rmdir "$lock" 2>/dev/null || true
     return 1
@@ -377,13 +355,22 @@ mark_mcc_agent_review_issued() {
   if [ -f "$file" ]; then
     if ! jq -ce \
       --arg query "$query" \
-      --arg inputId "$input_id" '
-        if .schemaVersion != 1 or ((.entries // null) | type != "array") then
+      --arg inputId "$input_id" \
+      --arg phase "$phase" \
+      --arg catalogDigest "$catalog_digest" '
+        if .schemaVersion != 3 or ((.entries // null) | type != "array") then
           error("invalid MCC agent review state")
-        elif any(.entries[]; .query == $query and .inputId == $inputId) then
-          .
+        elif $phase == "review" and any(.entries[]; .inputId == $inputId) then
+          error("MCC agent review already started")
+        elif $phase == "repair" and (
+          (any(.entries[]; .query == $query and .inputId == $inputId and .phase == "review" and .catalogDigest == $catalogDigest) | not)
+          or any(.entries[]; .inputId == $inputId and .query != $query)
+          or any(.entries[]; .query == $query and .inputId == $inputId and .catalogDigest != $catalogDigest)
+          or any(.entries[]; .query == $query and .inputId == $inputId and (.phase == "repair" or .phase == "result"))
+        ) then
+          error("MCC agent repair is not allowed")
         else
-          .entries += [{query: $query, inputId: $inputId}]
+          .entries += [{query: $query, inputId: $inputId, phase: $phase, catalogDigest: $catalogDigest}]
         end
       ' "$file" >"$tmp" 2>/dev/null; then
       rm -f "$tmp" 2>/dev/null || true
@@ -394,7 +381,9 @@ mark_mcc_agent_review_issued() {
     if ! jq -cn \
       --arg query "$query" \
       --arg inputId "$input_id" \
-      '{schemaVersion: 1, entries: [{query: $query, inputId: $inputId}]}' \
+      --arg phase "$phase" \
+      --arg catalogDigest "$catalog_digest" \
+      '{schemaVersion: 3, entries: [{query: $query, inputId: $inputId, phase: $phase, catalogDigest: $catalogDigest}]}' \
       >"$tmp" 2>/dev/null; then
       rm -f "$tmp" 2>/dev/null || true
       rmdir "$lock" 2>/dev/null || true
@@ -407,21 +396,18 @@ mark_mcc_agent_review_issued() {
     return 1
   fi
   rmdir "$lock" 2>/dev/null || true
+  return 0
 }
 
-claim_mcc_semantic_retry() {
-  local product_type="$1" sales_code="$2" query="$3" input_id="$4" semantic_terms_json="$5"
-  local file dir lock entry original_query retry_count next_retry_count now tmp lock_acquired=false
-  local current_terms previous_terms missing_previous_terms new_terms
-  file="$(mcc_semantic_retry_file "$product_type" "$sales_code")" || return 2
+bind_mcc_agent_result() {
+  local product_type="$1" sales_code="$2" query="$3" input_id="$4" candidate_codes="$5" catalog_digest="$6"
+  local file dir lock tmp lock_acquired=false
+  [ -n "$input_id" ] || return 1
+  case "$catalog_digest" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#catalog_digest}" -eq 64 ] || return 1
+  file="$(mcc_agent_review_file "$product_type" "$sales_code")" || return 1
   dir="${file%/*}"
   lock="${file}.lock"
-  current_terms="$(printf '%s' "$semantic_terms_json" | jq -ce '
-    select(type == "array" and all(.[]; type == "string")) | unique | sort
-  ' 2>/dev/null)" || return 2
-
-  # Claim and persist one retry under a bounded private lock. Lock contention
-  # is treated as exhausted so a broken local state cannot cause a retry loop.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if mkdir "$lock" 2>/dev/null; then
       lock_acquired=true
@@ -429,165 +415,55 @@ claim_mcc_semantic_retry() {
     fi
     sleep 0.05
   done
-  [ "$lock_acquired" = true ] || return 2
-
-  if [ -e "$file" ]; then
-    if [ ! -f "$file" ] || [ -L "$file" ]; then
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    fi
-    now="$(date +%s 2>/dev/null)" || {
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    }
-    entry="$(jq -cr \
-      --arg inputId "$input_id" \
-      '
-        if .schemaVersion == 1
-          and ((.entries // null) | type == "array")
-          and all(.entries[];
-            type == "object"
-            and ((.inputId // null) | type == "string")
-            and ((.query // null) | type == "string")
-            and ((.count // null) | type == "number")
-            and (.count >= 0)
-            and ((.count | floor) == .count)
-            and ((.updatedAtEpoch // null) | type == "number")
-            and ((.semanticTerms // []) | type == "array")
-            and all((.semanticTerms // [])[]; type == "string")
-          )
-        then
-          ([.entries[] |
-            select(
-              .inputId == $inputId
-            ) |
-            {query, count, updatedAtEpoch, semanticTerms: (.semanticTerms // [])}
-          ] | sort_by(.updatedAtEpoch) | last) // null
-        else
-          error("invalid MCC semantic retry state")
-        end
-      ' "$file" 2>/dev/null)" || {
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    }
-  else
-    entry='null'
-  fi
-
-  if [ "$entry" = "null" ]; then
-    original_query="$query"
-    retry_count=0
-    previous_terms='[]'
-  else
-    original_query="$(printf '%s' "$entry" | jq -r '.query // empty' 2>/dev/null)" || original_query=""
-    retry_count="$(printf '%s' "$entry" | jq -r '.count // -1' 2>/dev/null)" || retry_count=-1
-    previous_terms="$(printf '%s' "$entry" | jq -c '.semanticTerms // []' 2>/dev/null)" || previous_terms=""
-    if [ "$original_query" != "$query" ]; then
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    fi
-    [ -n "$previous_terms" ] || {
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    }
-    missing_previous_terms="$(jq -nr \
-      --argjson previous "$previous_terms" \
-      --argjson current "$current_terms" \
-      '($previous - $current) | length' 2>/dev/null)" || {
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    }
-    new_terms="$(jq -nr \
-      --argjson previous "$previous_terms" \
-      --argjson current "$current_terms" \
-      '($current - $previous) | length' 2>/dev/null)" || {
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    }
-    if [ "$missing_previous_terms" -ne 0 ] || [ "$new_terms" -eq 0 ]; then
-      # A semantic retry must be cumulative and add at least one new term.
-      # Do not consume a retry budget for an unchanged or replaced term set.
-      rmdir "$lock" 2>/dev/null || true
-      return 3
-    fi
-  fi
-  case "$retry_count" in
-    ''|*[!0-9]*) retry_count="$MCC_SEMANTIC_RETRY_LIMIT" ;;
-  esac
-  if [ "$retry_count" -ge "$MCC_SEMANTIC_RETRY_LIMIT" ]; then
+  [ "$lock_acquired" = true ] || return 1
+  [ -f "$file" ] && [ ! -L "$file" ] || {
     rmdir "$lock" 2>/dev/null || true
-    return 2
-  fi
-  next_retry_count=$((retry_count + 1))
-  now="$(date +%s 2>/dev/null)" || {
-    rmdir "$lock" 2>/dev/null || true
-    return 2
+    return 1
   }
-  tmp="$(mktemp "$dir/.mcc-semantic-retries.XXXXXX" 2>/dev/null)" || {
+  tmp="$(mktemp "$dir/.mcc-agent-results.XXXXXX" 2>/dev/null)" || {
     rmdir "$lock" 2>/dev/null || true
-    return 2
+    return 1
   }
   chmod 600 "$tmp" 2>/dev/null || true
-  if [ -f "$file" ] && [ ! -L "$file" ]; then
-    if ! jq -ce \
-      --arg query "$original_query" \
-      --arg inputId "$input_id" \
-      --argjson count "$next_retry_count" \
-      --argjson now "$now" \
-      --argjson semanticTerms "$current_terms" '
-        if .schemaVersion != 1 or ((.entries // null) | type != "array") then
-          error("invalid MCC semantic retry state")
-        else
-          .entries = (
-            [.entries[] | select(.inputId != $inputId)]
-            + [{
-              query: $query,
-              inputId: $inputId,
-              count: $count,
-              updatedAtEpoch: $now,
-              semanticTerms: $semanticTerms
-            }]
-          )
-          | .entries |= sort_by(.updatedAtEpoch)
-        end
-      ' "$file" >"$tmp" 2>/dev/null; then
-      rm -f "$tmp" 2>/dev/null || true
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    fi
-  elif [ -e "$file" ]; then
-    rm -f "$tmp" 2>/dev/null || true
-    rmdir "$lock" 2>/dev/null || true
-    return 2
-  else
-    if ! jq -cn \
-      --arg query "$original_query" \
-      --arg inputId "$input_id" \
-      --argjson count "$next_retry_count" \
-      --argjson now "$now" \
-      --argjson semanticTerms "$current_terms" \
-      '{
-        schemaVersion: 1,
-        entries: [{
+  if ! jq -ce \
+    --arg query "$query" \
+    --arg inputId "$input_id" \
+    --arg catalogDigest "$catalog_digest" \
+    --argjson candidateCodes "$candidate_codes" '
+      if .schemaVersion != 3 or ((.entries // null) | type != "array") then
+        error("invalid MCC agent review state")
+      elif (any(.entries[];
+        .query == $query and .inputId == $inputId and .phase == "review" and .catalogDigest == $catalogDigest
+      ) | not) then
+        error("MCC agent review was not issued")
+      elif any(.entries[];
+        .query == $query and .inputId == $inputId and .phase == "result"
+        and .catalogDigest == $catalogDigest and .candidateCodes == $candidateCodes
+      ) then
+        .
+      elif any(.entries[]; .query == $query and .inputId == $inputId and .phase == "result") then
+        error("MCC agent result already bound")
+      else
+        .entries += [{
           query: $query,
           inputId: $inputId,
-          count: $count,
-          updatedAtEpoch: $now,
-          semanticTerms: $semanticTerms
+          phase: "result",
+          catalogDigest: $catalogDigest,
+          candidateCodes: $candidateCodes
         }]
-      }' >"$tmp" 2>/dev/null; then
-      rm -f "$tmp" 2>/dev/null || true
-      rmdir "$lock" 2>/dev/null || true
-      return 2
-    fi
+      end
+    ' "$file" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    rmdir "$lock" 2>/dev/null || true
+    return 1
   fi
   if ! mv "$tmp" "$file" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
     rmdir "$lock" 2>/dev/null || true
-    return 2
+    return 1
   fi
   rmdir "$lock" 2>/dev/null || true
-  printf '%s' "$next_retry_count"
+  return 0
 }
 
 get_mcc_tree() {
@@ -812,8 +688,9 @@ normalize_mcc_catalog() {
 }
 
 run_mcc_match_codes() {
-  local query="$1" product_type="$2" root_intent="$3" catalog="$4" semantic_terms_json="$5" agent_candidate_refs_json="${6:-}" runner_out runner_err runner_rc line resolution=""
-  local runner_error error_kind
+  local query="$1" product_type="$2" root_intent="$3" catalog="$4" agent_candidate_refs_json="${5:-}" input_id="${6:-}" agent_candidate_refs_provided="${7:-false}" runner_out runner_err runner_rc line resolution=""
+  local runner_error error_kind repair_payload semantic_status candidate_codes catalog_digest
+  catalog_digest="$(mcc_catalog_digest "$catalog")" || mcc_query_failed
   runner_out=$(mktemp "${TMPDIR:-/tmp}/mcc_match_out.XXXXXX") || { echo "❌ 创建临时文件失败"; exit 1; }
   runner_err=$(mktemp "${TMPDIR:-/tmp}/mcc_match_err.XXXXXX") || { rm -f "$runner_out"; echo "❌ 创建临时文件失败"; exit 1; }
   local node_args=(
@@ -821,10 +698,9 @@ run_mcc_match_codes() {
     --query "$query" \
     --product-type "$product_type" \
     --root-intent "$root_intent" \
-    --mcc-catalog-json "$catalog" \
-    --semantic-terms-json "$semantic_terms_json"
+    --mcc-catalog-json "$catalog"
   )
-  if [ -n "$agent_candidate_refs_json" ]; then
+  if [ "$agent_candidate_refs_provided" = true ]; then
     node_args+=(--agent-candidate-refs-json "$agent_candidate_refs_json")
   fi
   "${NODE_BINARY:-node}" "${node_args[@]}" >"$runner_out" 2>"$runner_err"
@@ -832,11 +708,31 @@ run_mcc_match_codes() {
   if [ "$runner_rc" -ne 0 ] || [ -s "$runner_out" ]; then
     runner_error="$(sed -n 's/^ONBOARDING_MESSAGE_ERROR://p' "$runner_err" | sed -n '1p')"
     error_kind="$(mcc_match_error_kind "$runner_error")"
-    if [ "$error_kind" = "INVALID_AGENT_CANDIDATE_REFS" ] && [ -n "$agent_candidate_refs_json" ]; then
+    if [ "$error_kind" = "INVALID_AGENT_CANDIDATE_REFS" ] && [ "$agent_candidate_refs_provided" = true ]; then
       rm -f "$runner_out" "$runner_err"
-      emit_control "MCC_AGENT_CANDIDATE_REFS_IGNORED=INVALID"
-      run_mcc_match_codes "$query" "$product_type" "$root_intent" "$catalog" "$semantic_terms_json"
-      return $?
+      if claim_mcc_agent_phase "$product_type" "$(product_sales_code "$product_type")" "$query" "$input_id" repair "$catalog_digest"; then
+        repair_payload=$(jq -cn \
+          --arg reason "$error_kind" \
+          --argjson catalog "$catalog" '
+            {
+              required: true,
+              attempt: 2,
+              maxAttempts: 2,
+              reason: $reason,
+              instructions: {
+                returnOnlyCatalogRefs: true,
+                deduplicate: true,
+                rankByRelevance: true,
+                maxCandidates: 8
+              },
+              catalog: ($catalog | map({ref: .mccRef, mccName, mccDescription}))
+            }
+          ') || mcc_query_failed
+        jq -cn --argjson agentRepair "$repair_payload" '{matchType:"REPAIR", agentRepair:$agentRepair}'
+        return 0
+      fi
+      emit_control "MCC_MATCH_ERROR=AGENT_REPAIR_EXHAUSTED"
+      mcc_query_failed
     fi
     rm -f "$runner_out" "$runner_err"
     emit_control "MCC_MATCH_ERROR=$error_kind"
@@ -850,21 +746,30 @@ run_mcc_match_codes() {
   done <"$runner_err"
   rm -f "$runner_out" "$runner_err"
   [ -n "$resolution" ] || mcc_query_failed
+  if [ "$agent_candidate_refs_provided" = true ]; then
+    semantic_status=$(printf '%s' "$resolution" | jq -r '.semanticStatus // ""' 2>/dev/null) || mcc_query_failed
+    if [ "$semantic_status" = "AGENT_CATALOG_REVIEW_USED" ]; then
+      candidate_codes=$(printf '%s' "$resolution" | jq -c '.agentCandidateCodes // []' 2>/dev/null) || mcc_query_failed
+      if ! bind_mcc_agent_result "$product_type" "$(product_sales_code "$product_type")" "$query" "$input_id" "$candidate_codes" "$catalog_digest"; then
+        emit_control "MCC_MATCH_ERROR=AGENT_RESULT_STATE_INVALID"
+        mcc_query_failed
+      fi
+    fi
+  fi
   printf '%s' "$resolution"
 }
 
 validate_mcc_selection_cache() {
-  local query="$1" product_type="$2" selection_receipt="$3" catalog="$4" semantic_terms_json="$5"
+  local query="$1" product_type="$2" selection_receipt="$3" catalog="$4"
   "${NODE_BINARY:-node}" "$ONBOARDING_RUNNER" mcc-validate-selection-cache \
     --query "$query" \
     --product-type "$product_type" \
     --selection-receipt "$selection_receipt" \
-    --mcc-catalog-json "$catalog" \
-    --semantic-terms-json "$semantic_terms_json" >/dev/null 2>&1
+    --mcc-catalog-json "$catalog" >/dev/null 2>&1
 }
 
 run_resolve_plan() {
-  local query="" product_type="" root_intent="" semantic_terms_json='[]' agent_candidate_refs_json="" select_value="" selection_receipt="" input_id="" sales_code tree rows tree_catalog resolution match_type semantic_status full_codes candidate_rows qualification_rows details catalog selection_cache="" used_selection_cache=false stale_selection=false resolved_semantic_terms='[]' retry_rc=0 next_retry_count=0 retry_reason="" retry_payload="" agent_review_required="false" agent_review_payload=""
+  local query="" product_type="" root_intent="" agent_candidate_refs_json="" agent_candidate_refs_provided=false select_value="" selection_receipt="" input_id="" sales_code tree rows tree_catalog tree_catalog_digest resolution match_type full_codes candidate_rows qualification_rows details catalog selection_cache="" used_selection_cache=false stale_selection=false agent_review_required="false" agent_review_payload="" agent_repair_required="false" agent_repair_payload=""
   shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -877,12 +782,9 @@ run_resolve_plan() {
       --root-intent)
         [ $# -ge 2 ] || { echo "❌ 缺少参数值: $1"; exit 1; }
         root_intent="$2"; shift 2 ;;
-      --semantic-terms-json)
-        [ $# -ge 2 ] || { echo "❌ 缺少参数值: $1"; exit 1; }
-        semantic_terms_json="$2"; shift 2 ;;
       --agent-candidate-refs-json)
         [ $# -ge 2 ] || { echo "❌ 缺少参数值: $1"; exit 1; }
-        agent_candidate_refs_json="$2"; shift 2 ;;
+        agent_candidate_refs_json="$2"; agent_candidate_refs_provided=true; shift 2 ;;
       --select)
         [ $# -ge 2 ] || { echo "❌ 缺少参数值: $1"; exit 1; }
         select_value="$2"; shift 2 ;;
@@ -907,12 +809,6 @@ run_resolve_plan() {
       exit 1
       ;;
   esac
-  semantic_terms_json=$(printf '%s' "$semantic_terms_json" | jq -ce '
-    select(type == "array" and length <= 12 and all(.[]; type == "string"))
-  ' 2>/dev/null) || {
-    echo "❌ --semantic-terms-json 必须是最多 12 项的 JSON 字符串数组"
-    exit 1
-  }
   sales_code=$(product_sales_code "$product_type") || {
     echo "❌ product-type 非法，仅支持 aipay|webpay|apppay"
     exit 1
@@ -925,7 +821,7 @@ run_resolve_plan() {
       candidate_rows=$(printf '%s' "$selection_cache" | jq -c '.candidateRows' 2>/dev/null) || mcc_query_failed
       details=$(printf '%s' "$selection_cache" | jq -c '.details' 2>/dev/null) || mcc_query_failed
       catalog=$(normalize_mcc_catalog "$candidate_rows" "$details" 2>/dev/null || true)
-      if [ -n "$catalog" ] && validate_mcc_selection_cache "$query" "$product_type" "$selection_receipt" "$catalog" "$semantic_terms_json"; then
+      if [ -n "$catalog" ] && validate_mcc_selection_cache "$query" "$product_type" "$selection_receipt" "$catalog"; then
         used_selection_cache=true
       else
         catalog=""
@@ -945,54 +841,29 @@ run_resolve_plan() {
     tree_catalog=$(normalize_mcc_tree_catalog "$rows") || {
       mcc_query_failed
     }
-    capture_or_exit resolution run_mcc_match_codes "$query" "$product_type" "$root_intent" "$tree_catalog" "$semantic_terms_json" "$agent_candidate_refs_json"
+    tree_catalog_digest="$(mcc_catalog_digest "$tree_catalog")" || mcc_query_failed
+    capture_or_exit resolution run_mcc_match_codes "$query" "$product_type" "$root_intent" "$tree_catalog" "$agent_candidate_refs_json" "$input_id" "$agent_candidate_refs_provided"
     match_type=$(printf '%s' "$resolution" | jq -r '.matchType // ""' 2>/dev/null) || mcc_query_failed
-    semantic_status=$(printf '%s' "$resolution" | jq -r '.semanticStatus // ""' 2>/dev/null) || mcc_query_failed
-    resolved_semantic_terms=$(printf '%s' "$resolution" | jq -c '.semanticTerms // []' 2>/dev/null) || mcc_query_failed
     agent_review_required=$(printf '%s' "$resolution" | jq -r '.agentReview.required // false' 2>/dev/null) || mcc_query_failed
-    if [ -n "$input_id" ] && [ -n "$agent_candidate_refs_json" ]; then
-      mark_mcc_agent_review_issued "$product_type" "$sales_code" "$query" "$input_id" || true
+    agent_repair_required=$(printf '%s' "$resolution" | jq -r '.agentRepair.required // false' 2>/dev/null) || mcc_query_failed
+    if [ "$agent_repair_required" = "true" ]; then
+      agent_repair_payload=$(printf '%s' "$resolution" | jq -c '.agentRepair' 2>/dev/null) || mcc_query_failed
+      emit_control "MCC_QUERY_RESULT=SUCCESS"
+      emit_control "MCC_AGENT_REPAIR_REQUIRED=$agent_repair_payload"
+      return 0
     fi
-    if [ "$agent_review_required" = "true" ] && [ -z "$agent_candidate_refs_json" ] && [ -n "$input_id" ]; then
-      agent_review_payload=$(printf '%s' "$resolution" | jq -c '.agentReview' 2>/dev/null) || mcc_query_failed
-      if ! mcc_agent_review_issued "$product_type" "$sales_code" "$input_id"; then
-        mark_mcc_agent_review_issued "$product_type" "$sales_code" "$query" "$input_id" || true
-        emit_control "MCC_QUERY_RESULT=SUCCESS"
-        emit_control "MCC_RESOLUTION=$(printf '%s' "$resolution" | jq -c 'del(.agentReview)' 2>/dev/null)"
-        emit_control "MCC_AGENT_REVIEW_REQUIRED=$agent_review_payload"
-        return 0
-      fi
-    fi
-    if [ "$match_type" = "NONE" ] \
-      && [ "$semantic_status" != "DYNAMIC_CATALOG_CODE_NOT_FOUND" ] \
-      && [ "$semantic_status" != "DYNAMIC_CATALOG_CODE_AMBIGUOUS" ]; then
-      if [ -n "$input_id" ]; then
-        next_retry_count="$(claim_mcc_semantic_retry \
-          "$product_type" "$sales_code" "$query" "$input_id" "$resolved_semantic_terms" 2>/dev/null)"
-        retry_rc=$?
-      else
-        # A retry without a message identity cannot be bound to one user input.
-        # Keep the bounded retry contract closed instead of sharing a placeholder.
-        retry_rc=2
-      fi
-      if [ "$retry_rc" -eq 0 ]; then
-        if [ "$semantic_terms_json" = "[]" ]; then
-          retry_reason="MISSING_SEMANTIC_TERMS"
-        else
-          retry_reason="NO_MATCH"
+    if [ "$agent_review_required" = "true" ]; then
+      if [ "$agent_candidate_refs_provided" != true ] && [ -n "$input_id" ]; then
+        agent_review_payload=$(printf '%s' "$resolution" | jq -c '.agentReview' 2>/dev/null) || mcc_query_failed
+        if claim_mcc_agent_phase "$product_type" "$sales_code" "$query" "$input_id" review "$tree_catalog_digest"; then
+          emit_control "MCC_QUERY_RESULT=SUCCESS"
+          emit_control "MCC_RESOLUTION=$(printf '%s' "$resolution" | jq -c 'del(.agentReview)' 2>/dev/null)"
+          emit_control "MCC_AGENT_REVIEW_REQUIRED=$agent_review_payload"
+          return 0
         fi
-        retry_payload=$(jq -cn \
-          --argjson attempt "$next_retry_count" \
-          --argjson maxAttempts "$MCC_SEMANTIC_RETRY_LIMIT" \
-          --argjson remainingAttempts "$((MCC_SEMANTIC_RETRY_LIMIT - next_retry_count))" \
-          --arg reason "$retry_reason" \
-          '{attempt: $attempt, maxAttempts: $maxAttempts, remainingAttempts: $remainingAttempts, reason: $reason}') \
-          || mcc_query_failed
-        emit_control "MCC_QUERY_RESULT=SUCCESS"
-        emit_control "MCC_RESOLUTION=$resolution"
-        emit_control "MCC_SEMANTIC_RETRY_REQUIRED=$retry_payload"
-        return 0
       fi
+      emit_control "MCC_MATCH_ERROR=AGENT_REVIEW_STATE_INVALID"
+      mcc_query_failed
     fi
     if [ "$match_type" = "NONE" ]; then
       catalog="$tree_catalog"
@@ -1019,27 +890,17 @@ run_resolve_plan() {
       fi
     fi
   fi
-  if [ -n "$agent_candidate_refs_json" ] && ! printf '%s' "$catalog" | jq -e \
-    --argjson refs "$agent_candidate_refs_json" '
-      ([.[] | .mccRef?] | map(select(type == "string"))) as $available |
-      ($refs | type == "array" and all(.[]; . as $ref | $available | index($ref) != null))
-    ' >/dev/null 2>&1; then
-    # An invalid Agent review may have already fallen back to local matches.
-    # Do not pass that invalid reference into the reduced final catalog.
-    agent_candidate_refs_json=""
-  fi
   node_args=(
     "$ONBOARDING_RUNNER" mcc-resolve-plan
     --query "$query"
     --product-type "$product_type"
     --root-intent "$root_intent"
     --mcc-catalog-json "$catalog"
-    --semantic-terms-json "$semantic_terms_json"
   )
   if [ -n "$input_id" ]; then
     node_args+=(--input-id "$input_id")
   fi
-  if [ -n "$agent_candidate_refs_json" ]; then
+  if [ "$agent_candidate_refs_provided" = true ]; then
     node_args+=(--agent-candidate-refs-json "$agent_candidate_refs_json")
   fi
   if [ "$stale_selection" = true ]; then
@@ -1065,7 +926,7 @@ run_resolve_plan() {
     local generated_selection_receipt
     generated_selection_receipt=$(sed -n 's/^ALIPAY_AIPAY_INTERNAL:MCC_SELECTION_RECEIPT=//p' "$runner_err")
     if [ "$(printf '%s\n' "$generated_selection_receipt" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" ]; then
-      write_mcc_selection_cache "$product_type" "$sales_code" "$query" "$generated_selection_receipt" "$resolved_semantic_terms" "$candidate_rows" "$details"
+      write_mcc_selection_cache "$product_type" "$sales_code" "$query" "$generated_selection_receipt" "$candidate_rows" "$details"
     fi
   fi
   emit_control "MCC_QUERY_RESULT=SUCCESS"
@@ -1079,7 +940,7 @@ case "${1:-}" in
     run_resolve_plan "$@"
     ;;
   *)
-    echo "用法: bash mcc.sh resolve-plan --query <经营描述|MCC编码> --product-type <aipay|webpay|apppay> --root-intent <onboarding_only|full_process> [--semantic-terms-json <JSON数组>] [--agent-candidate-refs-json <JSON数组>] [--select <MCC编码> --selection-receipt <receipt>] [--input-id <USER_INPUT_ID>]"
+    echo "用法: bash mcc.sh resolve-plan --query <经营描述|MCC编码> --product-type <aipay|webpay|apppay> --root-intent <onboarding_only|full_process> [--agent-candidate-refs-json <JSON数组>] [--select <MCC编码> --selection-receipt <receipt>] [--input-id <USER_INPUT_ID>]"
     exit 1
     ;;
 esac

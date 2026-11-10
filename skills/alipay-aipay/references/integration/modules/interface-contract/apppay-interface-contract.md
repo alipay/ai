@@ -4,9 +4,9 @@
 
 sourceUrl:
 
-- <https://aipay.alipay.com/docs/mobile-app-pay/app-pay-integration-guide-new.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-app-pay.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/sync-result.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/app-pay-integration-guide-new.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/alipay-trade-app-pay.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/sync-result.md>
 
 ## 默认范围
 
@@ -27,7 +27,7 @@ AI 移动应用收款必须覆盖：`alipay.trade.app.pay`、交易查询、退�
 | 字段 | 要求 |
 | --- | --- |
 | `method` | 固定 `alipay.trade.app.pay` |
-| `notify_url` | 生产或公网联调时传入；本地生产参数验收模式可临时不传，但通知处理代码必须存在 |
+| `notify_url` | 可选，生产也可省略；使用通知时传入商家公网 HTTPS 地址，不使用时由服务端可靠主动查单；通知处理代码仍须实现 |
 
 业务参数：
 

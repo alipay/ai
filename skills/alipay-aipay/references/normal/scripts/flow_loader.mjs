@@ -160,6 +160,15 @@ export function loadFlowBundle(flow, phase, { productType } = {}) {
   if (flow === 'integration' && phase === 'checklist') {
     if (!productType) throw new Error('integration checklist phase 缺少 product-type');
     blocks.push(`## 当前产品适用校验清单\n\n${checklistForProduct(productType).markdown}`);
+    if (productType === 'webpay') {
+      const catalog = JSON.parse(fs.readFileSync(path.join(scriptDir, '../json/customer-messages.json'), 'utf8'));
+      const field = catalog.messages.find((message) => message.messageId === 'integration.checklist.result')
+        ?.variables.find((variable) => variable.name === 'webpayExperienceResult');
+      if (!Array.isArray(field?.values) || field.values.length !== 3 || field.values.some((value) => typeof value !== 'string')) {
+        throw new Error('网页收款 checklist 缺少合法体验结果枚举');
+      }
+      blocks.push(`## WEBPAY 结果参数精确枚举\n\nwebpayExperienceResult 仅接受以下原值，按步骤 6 实际证据选择，不改写：\n${field.values.map((value) => `- ${JSON.stringify(value)}`).join('\n')}`);
+    }
   }
   return [
     `<!-- ALIPAY_AIPAY_REFERENCE_BUNDLE flow=${flow} phase=${phase}; 仅供内部执行，禁止对客 -->`,

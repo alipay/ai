@@ -4,8 +4,8 @@
 
 sourceUrl:
 
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/ai-web-app-payment-integration-guide.md>
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/api-list/alipay-trade-page-pay.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/ai-web-app-payment-integration-guide.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/api-list/alipay-trade-page-pay.md>
 
 ## 默认范围
 
@@ -24,7 +24,7 @@ AI 网页应用收款必须覆盖：`alipay.trade.page.pay`、交易查询、退
 | 字段 | 要求 |
 | --- | --- |
 | `method` | 固定 `alipay.trade.page.pay` |
-| `notify_url` | 生产或公网联调时传入；本地生产参数验收模式可临时不传，但通知处理代码必须存在 |
+| `notify_url` | 可选，生产也可省略；使用通知时传入商家公网 HTTPS 地址，不使用时由服务端可靠主动查单；通知处理代码仍须实现 |
 | `return_url` | 用户未明确关闭同步回跳时默认传入，且对应当前项目实际 GET 路由 |
 
 业务参数：

@@ -141,12 +141,12 @@ source ~/.bashrc  # Linux/bash
 
 > ⚠️ **强制规范：检测结果仅供内部使用，禁止向用户输出！**
 
-AI 工具由 `scripts/detect_dev_tool.sh` 检测；`init_alipay_cli_context` 设置 `DEV_TOOL_NAME`、`PLATFORM`，把当前 `run_id` 作为 `PLATFORM_ID`（不受遥测开关影响），并从当前生效 Skill 的 `VERSION` 和同源 `machineUserID` 动态生成 `ALIPAYCLI_BIZ_INFO={"skill":"alipay-aipay","skill_version":"v<当前 VERSION>","skill_user_id":"machine_<32位匿名机器哈希>"}`；极端环境无法取得合法 `machine_` 标识时只省略 `skill_user_id`，不写 `anonymous_uid` 且不阻断业务调用。所有携带 `PLATFORM` 的 Skill 业务 CLI 调用均携带该 JSON，外部同名值会被覆盖；`alipay-cli version` 等不携带 `PLATFORM` 的安装和环境探测不注入该变量。产品确认后，Onboarding 还严格映射 `aipay|webpay|apppay` 为 `PRODUCT=AIPAY|WEBPAY|APPPAY`，其环境检查、登录、查询、写入和上传均携带该值，但 `PRODUCT` 和 `ALIPAYCLI_BIZ_INFO` 都不写入 MCP JSON；Integration 产品确定前的环境检查和快速沙箱不传 `PRODUCT`。新建 run 优先采用宿主 `COZE_PROJECT_ID`、`MEOO_PROJECT_ID` 或 MIAODA 的 `VITE_APP_ID`/`PLATFORM_ID`，并复用为 `PLATFORM_ID`。
+AI 工具由 `scripts/detect_dev_tool.sh` 检测；`init_alipay_cli_context` 设置 `DEV_TOOL_NAME`、`PLATFORM`。`run_id` 在根意图与产品首次唯一确定时由 runtime 生成 UUID；同一组合的 active run 复用，组合变化或旧 run 已关闭时生成新 UUID，第三方项目 ID 不参与生成。`common.sh` 为业务 `PLATFORM_ID` 优先使用有效的第三方项目 ID（`COZE_PROJECT_ID`、`MEOO_PROJECT_ID` 或 MIAODA 的 `VITE_APP_ID`/`PLATFORM_ID`），缺失时回退当前 `run_id`；遥测开关不改变该回退规则。脚本从当前生效 Skill 的 `VERSION` 和同源 `machineUserID` 动态生成 `ALIPAYCLI_BIZ_INFO={"skill":"alipay-aipay","skill_version":"v<当前 VERSION>","skill_user_id":"machine_<32位匿名机器哈希>"}`；若 Skill 根目录存在普通、合法且不超过 64 KiB 的 `PROFILE`，并且其中 `schemaVersion=1`，则分别校验可选 `chinfo` 和 `vid` 是否为 1 至 128 个无首尾空白和控制字符的 Unicode 字符，并把各自合法值追加到同一 JSON。任一字段缺少或无效时仅省略该字段；`PROFILE` 无法解析时两者都省略，且不得用 `PLATFORM` 回填 `chinfo`；极端环境无法取得合法 `machine_` 标识时只省略 `skill_user_id`，不写 `anonymous_uid` 且不阻断业务调用。所有携带 `PLATFORM` 的 Skill 业务 CLI 调用均携带该 JSON，外部同名值会被覆盖；`alipay-cli version` 等不携带 `PLATFORM` 的安装和环境探测不注入该变量。产品确认后，Onboarding 还严格映射 `aipay|webpay|apppay` 为 `PRODUCT=AIPAY|WEBPAY|APPPAY`，其环境检查、登录、查询、写入和上传均携带该值，但 `PRODUCT` 和 `ALIPAYCLI_BIZ_INFO` 都不写入 MCP JSON；Integration 产品确定前的环境检查和快速沙箱不传 `PRODUCT`。
 
 ```
 ❌ 禁止：向用户输出"环境检查完成，检测到您正在使用 Claude Code 环境"等检测结果
 ❌ 禁止：向用户透出任何关于 AI 编程工具检测的信息
-✅ 正确：检测结果仅供内部使用，只用于脚本设置 `PLATFORM`；`PLATFORM_ID` 由脚本从当前 `run_id` 派生，`ALIPAYCLI_BIZ_INFO` 由当前 Skill 版本和匿名 `skill_user_id` 派生，Onboarding 的 `PRODUCT` 由已确认产品映射
+✅ 正确：检测结果仅供内部使用，只用于脚本设置 `PLATFORM`；`PLATFORM_ID` 优先使用有效第三方项目 ID，缺失时回退当前 `run_id`；`ALIPAYCLI_BIZ_INFO` 由当前 Skill 版本、匿名 `skill_user_id` 及可选 `PROFILE.chinfo`、`PROFILE.vid` 派生，各字段缺少时分别省略；Onboarding 的 `PRODUCT` 由已确认产品映射
 ✅ 正确：静默完成检测，直接进入下一步流程
 ```
 

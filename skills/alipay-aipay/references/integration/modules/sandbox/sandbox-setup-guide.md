@@ -14,7 +14,7 @@
 ### 1.2 Windows 用户注意事项
 **快速沙箱 CLI 工具暂不支持 Windows 系统**。
 
-Windows 普通代码开发或完整接入请求未明确要求当前配置沙箱时，记录 `sandboxConfigState=VERIFY_PENDING` 并继续代码实现，不展示资料收集消息。只有用户明确要求现在配置或恢复 Windows 沙箱时，才使用 `../../../normal/json/customer-messages.json` 的既有 `sandbox.windows.manual_setup`，引导用户前往支付宝 AI 付站点的“选择产品 → 一站式接入 → 技术集成”页面获取当前沙箱的 APPID、公私钥和账号信息；随后只处理用户针对本轮该消息提供的资料，完整时校验并写入目标项目实际使用的本地敏感配置，部分或错误时只补问对应字段。不得要求用户自行配置、理解 `sandbox_config.sh`、执行 Bash 或手工拼接 Skill 的规范化 JSON。该资料输入例外只适用于沙箱，生产环境应用私钥和密码禁止提供给 Agent；Agent 不得在回复、摘要或普通日志中复述收到的值。
+Windows 普通代码开发或完整接入请求未明确要求当前配置沙箱时，记录 `sandboxConfigState=VERIFY_PENDING` 并继续代码实现，不展示资料收集消息。只有用户明确要求现在配置或恢复 Windows 沙箱时，才使用 `../../../normal/json/customer-messages.json` 的既有 `sandbox.windows.manual_setup`，引导用户前往支付宝 AI 付站点的“选择产品 → 一站式接入 → 技术集成”页面获取当前沙箱的 APPID、公私钥和账号信息；随后只处理用户针对本轮该消息提供的资料，完整时校验并写入目标项目实际使用的本地敏感配置，部分或错误时只补问对应字段。不得要求用户自行配置、理解 `sandbox_config.sh`、执行 Bash 或手工拼接 Skill 的规范化 JSON。该资料输入例外只适用于沙箱，生产环境应用私钥和密码禁止提供给 Agent；除网页收款在登记摘要中展示已校验沙箱买家账号及两个密码外，Agent 不得在回复、摘要或普通日志中复述收到的值。
 
 ```bash
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-setup --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
@@ -67,7 +67,7 @@ Windows 手工沙箱：
 2. 用户明确要求配置且尚未提供资料时，才使用标准消息一次收集当前沙箱应用的 APPID、支付宝公钥、应用公钥、与已确认语言匹配的应用私钥和沙箱账号信息；缺失或校验失败时只补问对应字段。
 3. 按第 4 节校验资料，随后由 Agent 写入目标项目实际使用的本地敏感配置；不要求采用快速沙箱 `data` 的嵌套结构，不把值复制到源码或普通日志。
 4. 检查敏感配置未被 Git 跟踪，并已有适用于实际路径的版本控制忽略保护；能检查 Windows 文件访问控制时确认仅当前用户可访问，不能取得证据时标记为人工待验证。
-5. 只有 `READY` 时才输出第 5 节规定的摘要和 Windows 提醒并从实际本机配置映射到 SDK；Agent 不得在回复或摘要中复述用户提供的沙箱密钥和密码，生产环境应用私钥和密码禁止提供给 Agent。
+5. 只有 `READY` 时才输出第 5 节规定的摘要和 Windows 提醒并从实际本机配置映射到 SDK；仅网页收款登记摘要可展示已校验沙箱买家密码，其他沙箱密钥和密码不得在回复或摘要中复述，生产环境应用私钥和密码禁止提供给 Agent。
 
 Unix/macOS/Linux 快速沙箱的流程准备必须使用 integration flow 登记的 `sandbox_config.sh ensure` 入口：配置缺失时脚本内部创建，已存在时脚本内部复核；步骤 3 仅在首次准备为 `READY` 时执行 `reverify`，待配置时直接继续代码开发；代码开发完成且配置仍为 `READY` 后才使用 `summary` 展示摘要。`ensure|reverify` 会把既定重试耗尽转换为受控 `CREATE_PENDING|VERIFY_PENDING`，直接渲染统一消息并返回终态标记；Agent 不得直接选择创建分支、重复检查文件存在性或权限、读取字段结构、拼接沙箱 JSON、另写解析逻辑或自制摘要表。Windows 手工申领分支检查目标项目实际读取的本地配置，不把平台字段擅自改造成快速沙箱返回结构。
 
@@ -141,15 +141,17 @@ Unix/macOS/Linux 创建阶段把实际本机配置路径和 `FLOW:SANDBOX_CONFIG
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message windows-sandbox-summary --product-name "$PRODUCT_NAME" --config-path "$CONFIG_PATH" --environment-rows "$ENVIRONMENT_ROWS" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-`environmentRows` 的具体值严禁编造、猜测、补全，禁止使用示例值、占位值或历史对话值替代本轮已校验配置。Unix/macOS/Linux 必须由登记脚本直接读取同一配置并生成四行，Agent 不得手填或改写；Windows 的应用 ID 和买家测试账号必须取自步骤 1/3 已校验的同一本机配置，两个密码行的固定保存提示仅在实际确认密码已写入该文件后使用。任一必需字段缺失、为空、配置无法读取或来源无法确认时，停止摘要展示并按既有配置失败分支处理，禁止为凑齐四行补值。
+`environmentRows` 的具体值严禁编造、猜测、补全，禁止使用示例值、占位值或历史对话值替代本轮已校验配置。Unix/macOS/Linux 必须由登记脚本直接读取同一配置并生成四行，Agent 不得手填或改写；Windows 字段须来自步骤 1/3 已校验的同一本机配置；网页收款使用已校验沙箱买家密码明文，其他产品两个密码行仅在确认写入文件后使用固定保存提示。任一必需字段缺失、为空、配置无法读取或来源无法确认时，停止摘要展示并按既有配置失败分支处理，禁止为凑齐四行补值。
 
-摘要动态行固定依次为“沙箱支付宝应用ID（appID）”“沙箱买家测试账号”“沙箱买家登录密码”“沙箱买家支付密码”。Unix/macOS/Linux 分别从已校验配置的 `appIds[0].appId`、`sandboxAccounts.user.email`、`sandboxAccounts.user.logonPassword`、`sandboxAccounts.user.payPassword` 取值；不追加 pid、商家或买家 userId、sandboxId。只有 Unix/macOS/Linux 快速沙箱工具实际返回且已校验的沙箱登录密码和支付密码可以进入摘要行；Windows 前两行使用实际沙箱应用 ID 和买家登录账号，两个密码行只展示“已写入本地配置文件，默认不在对话中展开”，不得传入密码原文。两类例外都不得扩展到生产环境账号、私钥或密码。
+摘要动态行固定依次为“沙箱支付宝应用ID（appID）”“沙箱买家测试账号”“沙箱买家登录密码”“沙箱买家支付密码”。Unix/macOS/Linux 分别从已校验配置的 `appIds[0].appId`、`sandboxAccounts.user.email`、`sandboxAccounts.user.logonPassword`、`sandboxAccounts.user.payPassword` 取值；不追加 pid、商家或买家 userId、sandboxId。Unix/macOS/Linux 快速沙箱工具实际返回且已校验的沙箱登录密码和支付密码可以进入摘要行；Windows 网页收款同样展示已校验的沙箱买家密码明文，其他产品前两行使用实际沙箱应用 ID 和买家登录账号，两个密码行只展示“已写入本地配置文件，默认不在对话中展开”，不得传入密码原文。两类例外都不得扩展到生产环境账号、私钥或密码。
+
+上述为开发阶段摘要；最终 summary 仅网页收款保留【沙箱测试配置】，只输出沙箱买家测试账号、登录密码及支付密码三项，两个密码明文展示（含 Windows），不展示配置路径、appId 或密钥行；按量付费与 APP 支付不展示该区块。
 
 renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置不等于测试通过”的边界。禁止另写字段核对表、独立校验结论，或把表名、前后提示改成“沙箱环境校验通过”“沙箱测试通过”“沙箱环境测试通过”。
 
 ### 5.3 配置准备完成后提示（卡点）
 
-`sandbox.environment.summary` 后立即渲染 `sandbox.environment.reminder`：Unix/macOS/Linux 由 `sandbox_config.sh summary` 使用 `DEFAULT`，Windows 使用上方 `WINDOWS` 命令。该消息说明测试资金边界和配置位置；`DEFAULT` 另提醒代码开发阶段自动配置沙箱，正式上线前由用户替换为产品开通流程取得的线上应用配置。安全控制由脚本执行，详细生产配置与上线要求由步骤 7 的 `integration.safety.closeout` 输出。创建阶段不渲染，不维护文案副本。
+`sandbox.environment.summary` 后立即渲染 `sandbox.environment.reminder`：Unix/macOS/Linux 由 `sandbox_config.sh summary` 使用 `DEFAULT`，Windows 使用上方 `WINDOWS` 命令。该消息说明测试资金边界和配置位置；`DEFAULT` 另提醒代码开发阶段自动配置沙箱，正式上线前由用户替换为产品开通流程取得的线上应用配置。安全控制由脚本执行；三款产品的生产配置与上线要求统一在最终 summary 展示，步骤 7 仅 APP 支付使用 `integration.safety.closeout` 说明服务端与客户端的接入范围。创建阶段不渲染，不维护文案副本。
 
 ### 5.4 沙箱对客展示白名单
 
@@ -159,10 +161,10 @@ renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置�
 |---|---|---|
 | Unix/macOS/Linux 快速沙箱摘要 | `sandbox_config.sh summary` 实际渲染的应用 `appId`、买家 `email/logonPassword/payPassword`、配置文件目录 | `appPrivateKey`、`appPrivatePkcsKey`、`alipayPublicKey`、`appPublicKey`、原始 `.alipay-sandbox.json`、完整 MCP 响应 |
 | Unix/macOS/Linux 网站支付付款体验 | 已校验的沙箱买家登录账号、登录密码、支付密码，以及实际支付页面地址和启动命令 | 商家密码、任何公钥/私钥原文、完整支付表单、签名串 |
-| Windows 手工沙箱 | 配置文件目录、实际沙箱应用 ID 和买家登录账号、两个密码的本机保存提示、官方控制台获取与本机配置完成提示 | 用户提供的应用私钥、支付宝公钥、应用公钥、沙箱账号密码原文 |
+| Windows 手工沙箱 | 配置文件目录、实际沙箱应用 ID 和买家登录账号；网页收款登记摘要可展示已校验买家密码，其他产品只显示两个密码的本机保存提示 | 应用私钥、支付宝公钥、应用公钥；非网页收款摘要中的沙箱密码原文 |
 | 按量付费自动联调 | 受控结论、付款链接和沙箱买家可选体验入口 | `Payment-Proof`、`Payment-Validation` 原文、完整收银请求、临时产物路径中的敏感内容 |
 
-只有 `sandboxCredential` 类型变量可以承载快速沙箱买家登录密码和支付密码；该例外不适用于生产账号、生产密码、应用私钥、公钥、token、签名串或 Payment-Proof。
+仅登记的 `sandboxCredential`、沙箱摘要表格及其受控最终摘要变量可以承载已校验沙箱买家登录密码和支付密码；该例外不适用于生产账号、生产密码、应用私钥、公钥、token、签名串或 Payment-Proof。
 
 ### 5.5 网站支付沙箱付款提示（代码生成后、集成收尾前）
 
@@ -183,7 +185,7 @@ renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置�
 - **默认分支**：“付款后确认浏览器自动返回商户结果页，页面可正常展示并通过服务端查询呈现订单状态。”
 - **关闭分支**：“付款后不会自动返回商户网站；请手动返回商户订单查询页并刷新或查询订单状态。”
 
-两个分支都必须继续提醒：前台页面或同步回跳参数不是支付成功依据，最终结果以验签通过的异步通知或交易查询结果为准。异步通知只有在 `notify_url` 可被支付宝服务器公网访问时才能联调；当前仅有本地或局域网地址时，将该项标记为人工待验证，并明确当前结论属于“本地正式验收 / 本地生产参数验收模式”，不是生产上线完成。
+两个分支的内部验收要求保持：前台页面或同步回跳参数不是支付成功依据，最终结果以验签通过的异步通知或交易查询结果为准。付款指引不重复打印该实现要求，也不打印“用户暂不付款只记为待体验”等内部判定说明；支付结果依据统一在最终 summary 提醒。异步通知只有在 `notify_url` 可被支付宝服务器公网访问时才能联调；当前仅有本地或局域网地址时保留上线前提醒，不单独记为本轮人工待验证。生产可省略 `notify_url`，但必须验证服务端可靠主动查单、持久化幂等及后台重试；当前本地验收不等于生产上线完成。
 
 **下载渠道红线：**
 - 严禁声称 iOS 支持安装沙箱版支付宝。
@@ -200,7 +202,7 @@ renderer 固定输出唯一摘要表、密钥字段已落盘提示和“配置�
 2. 禁止用占位符或示例假数据冒充真实返回值。
 3. 禁止假设“工具返回的应该都有”而跳过逐项校验。
 4. 禁止字段不完整时使用当前配置、写入正式 `.alipay-sandbox.json`、执行配置后置校验或沙箱测试；允许继续不读取沙箱字段的代码实现，最终必须标记沙箱配置未完成。
-5. Windows 只允许用户在标准资料收集消息后提供当前沙箱密钥和账号信息，Agent 不得在回复、摘要或日志中复述；Unix/macOS/Linux 只允许按登记消息展示已校验的快速沙箱买家密码。禁止展示生产环境应用私钥、账号密码或把任何密钥长字段整段刷屏输出。
+5. Windows 只允许用户在标准资料收集消息后提供当前沙箱密钥和账号信息，仅网页收款登记摘要可展示已校验沙箱买家密码，其他原文不得在回复、摘要或日志中复述；Unix/macOS/Linux 只允许按登记消息展示已校验的快速沙箱买家密码。禁止展示生产环境应用私钥、账号密码或把任何密钥长字段整段刷屏输出。
 6. 禁止继续使用已被 Git 跟踪的沙箱敏感配置。Unix/macOS/Linux 快速沙箱还必须具备 `/.alipay-sandbox.json` 精确忽略规则；Windows 必须具备适用于实际本机敏感配置路径的忽略保护。
 
 ### 6.2 快速沙箱重复创建边界

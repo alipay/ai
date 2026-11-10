@@ -13,7 +13,7 @@ const alipaySdk = new AlipaySdk({
   appAuthToken: "<-- 请填写应用授权令牌 -->",
 });
 
-// 真实生产或公网联调时传入 notifyUrl；本地没有公网 HTTPS notifyUrl 时直接省略，不要向 SDK 传 undefined、空字符串或占位 URL。
+// 使用异步通知时传入 notifyUrl；生产也可省略并由服务端可靠主动查单。没有公网 HTTPS notifyUrl 时直接省略，不要向 SDK 传 undefined、空字符串或占位 URL。
 const notifyUrl = (process.env.ALIPAY_NOTIFY_URL || "").trim();
 const requestOptions = {
   bizContent: {

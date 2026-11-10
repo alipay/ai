@@ -4,14 +4,14 @@
 
 sourceUrl:
 
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/api-list/alipay-trade-query.md>
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/api-list/alipay-trade-refund.md>
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/api-list/alipay-trade-fastpay-refund-query.md>
-- <https://aipay.alipay.com/docs/ai-web-app-payment-qianyi/api-list/alipay-trade-close.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-query.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-refund.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-fastpay-refund-query.md>
-- <https://aipay.alipay.com/docs/mobile-app-pay/ai-app-pay/alipay-trade-close.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/api-list/alipay-trade-query.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/api-list/alipay-trade-refund.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/api-list/alipay-trade-fastpay-refund-query.md>
+- <https://aipay.alipay.com/docs/vibe-pay/ai-web-app-payment-qianyi/api-list/alipay-trade-close.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/alipay-trade-query.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/alipay-trade-refund.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/alipay-trade-fastpay-refund-query.md>
+- <https://aipay.alipay.com/docs/vibe-pay/mobile-app-pay/ai-app-pay/alipay-trade-close.md>
 
 网页应用付款和移动应用收款的查询、退款、退款查询、关闭文档当前内容一致，本 Skill 本地维护一份通用契约。
 

@@ -18,8 +18,10 @@ const policy = JSON.parse(fs.readFileSync(policyFile, "utf8"));
 if (/[\u0000-\u0020\u007f`()\[\]<>|]/.test(raw)) process.exit(1);
 let url;
 try { url = new URL(raw); } catch { process.exit(1); }
-const allowed = policy.temporaryUrlAllowlist[kind === "authorization" ? "authorization" : "publicKeyConfirmation"];
-if (!allowed || url.protocol !== "https:" || url.hostname !== allowed.host || url.pathname !== allowed.path || url.username || url.password || url.port || url.hash) process.exit(1);
+const entries = policy.temporaryUrlAllowlist[kind === "authorization" ? "authorization" : "publicKeyConfirmation"];
+const allowed = (Array.isArray(entries) ? entries : [entries]).find((entry) =>
+  entry && url.hostname === entry.host && url.pathname === entry.path);
+if (!allowed || url.protocol !== "https:" || url.username || url.password || url.port || url.hash) process.exit(1);
 if (kind === "authorization") {
   const required = allowed.requiredQueryParams;
   const optional = allowed.optionalQueryParams;

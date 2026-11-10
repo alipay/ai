@@ -2,6 +2,8 @@
 
 以下代码展示严格验付和幂等履约的完整控制流。生成项目代码时，请按当前项目结构拆分并绑定真实持久化实现。
 
+金额校验由商家服务端执行：验付返回非空金额时必须与本地持久化订单匹配；仅 SDK 网关严格为 `https://openapi-sandbox.dl.alipaydev.com/gateway.do` 且 `serviceId=api_mock_service_id` 的精确沙箱模式下，验付缺少金额才允许使用本地订单金额继续判断。生产缺少金额必须拒绝交付。自动沙箱联调脚本不直接比较这两个金额，脚本通过不能代替商家代码校验。
+
 ```python
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -10,7 +12,7 @@ A2M 智能收产品接入示例 - Python 版本
 
 本示例展示 A2M 核心协议、严格验付和幂等履约流程。
 必须通过 configure_order_repository 绑定项目真实持久化实现；
-端口未绑定时明确失败，不使用内存订单、固定资源或验付字段缺失兜底。
+端口未绑定时明确失败，不使用内存订单或固定资源；生产环境不使用验付字段缺失兜底。
 
 本文件演示 A2M 核心协议调用流程：
 1. 返回 402 Payment-Needed Header
@@ -167,7 +169,9 @@ def base64url_decode(data):
 
 
 def normalize_amount(value):
-    text = str(value or '').strip()
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        return None
+    text = str(value).strip()
     if not re.fullmatch(r'\d+(?:\.\d{1,2})?', text):
         return None
     return f'{Decimal(text):.2f}'
@@ -381,7 +385,8 @@ def verify_payment_and_deliver_resource(payment_proof):
         order = repository.find_by_out_trade_no(verify_out_trade_no) if verify_out_trade_no else None
         sandbox_mode = is_exact_sandbox_mode()
         verify_trade_no = returned_trade_no or (trade_no if sandbox_mode else '')
-        verify_amount = returned_amount or (order.get('amount') if sandbox_mode and order else '')
+        amount_missing = returned_amount is None or returned_amount == ''
+        verify_amount = order.get('amount') if amount_missing and sandbox_mode and order else returned_amount
         resource_id_verified = returned_resource_id or (order.get('resource_id') if sandbox_mode and order else '')
         
         print(f"支付凭证验证成功：tradeNo={verify_trade_no}, outTradeNo={verify_out_trade_no}")

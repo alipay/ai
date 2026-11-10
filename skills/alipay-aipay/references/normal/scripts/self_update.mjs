@@ -52,11 +52,25 @@ function packageManagerCommand(command, args) {
   if (!allowedCommands.has(command) || args.some((arg) => !safeToken.test(arg))) {
     throw new Error('unsafe Windows package-manager command');
   }
+  // A user-directory Node need not be present on the host PATH.
+  // Use its bundled toolchain and retain the existing cmd fallback otherwise.
+  const moduleName = command === 'npm' ? 'npm-cli.js' : 'npx-cli.js';
+  const bundled = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', moduleName);
+  if (isRegularFile(bundled)) return {command:process.execPath,args:[bundled,...args],detached:false};
   return {
     command: process.env.ComSpec || 'cmd.exe',
     args: ['/d', '/s', '/c', [`${command}.cmd`, ...args].join(' ')],
     detached: false,
   };
+}
+
+export function packageManagerEnvironment(env, {windows=process.platform==='win32',node=process.execPath} = {}) {
+  if (!windows) return env;
+  const child={...env};
+  const oldPath=Object.entries(child).find(([key])=>key.toLowerCase()==='path')?.[1] || '';
+  for (const key of Object.keys(child)) if (key.toLowerCase()==='path') delete child[key];
+  child.PATH=[path.dirname(node),oldPath].join(';');
+  return child;
 }
 
 function spawnPackageManager(command, args, { timeout, env = process.env }) {
@@ -73,7 +87,7 @@ function spawnPackageManager(command, args, { timeout, env = process.env }) {
     try {
       child = spawn(invocation.command, invocation.args, {
         detached: invocation.detached,
-        env,
+        env: packageManagerEnvironment(env),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
@@ -167,8 +181,13 @@ function parseArgs(argv) {
 function parseVersion(value) {
   const raw = value.trim().replace(/^v/u, '');
   const match = raw.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u);
-  if (!match) return null;
-  return { raw, major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease: match[4]?.split('.') || [] };
+  if (!match || raw.length > 256) return null;
+  const prerelease = match[4]?.split('.') || [];
+  const build = raw.includes('+') ? raw.split('+')[1].split('.') : [];
+  if (![match[1], match[2], match[3]].every((value) => Number.isSafeInteger(Number(value)))) return null;
+  if (prerelease.some((value) => !value || (/^\d+$/u.test(value) && value.length > 1 && value[0] === '0'))) return null;
+  if (build.some((value) => !value)) return null;
+  return { raw, major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease };
 }
 
 function compareIdentifiers(left, right) {
@@ -193,6 +212,25 @@ function compareVersions(left, right) {
     if (compared !== 0) return compared;
   }
   return 0;
+}
+
+export function skillVersionKind(value, channel) {
+  if (typeof value !== 'string') return null;
+  const parsed = parseVersion(value);
+  if (!parsed) return null;
+  const suffix = parsed.prerelease.join('.');
+  if (suffix === (channel === 'pre' ? 'pre' : '')) return 'release';
+  const pattern = channel === 'pre' ? /^pre-beta(?:\d+|\.\d+)?$/u : /^beta(?:\d+|\.\d+)?$/u;
+  return pattern.test(suffix) ? 'beta' : null;
+}
+
+function readVersionFile(skillDir) {
+  try {
+    const file = path.join(skillDir, 'VERSION');
+    return isRegularFile(file) ? parseVersion(fs.readFileSync(file, 'utf8')) : null;
+  } catch {
+    return null;
+  }
 }
 
 function readLocalVersion(skillDir) {
@@ -225,26 +263,41 @@ function packageManagerFailureKind(result) {
   return 'check';
 }
 
-async function npmLatest() {
+function readChannel(skillDir) {
+  const source = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
+  const declaredName = source.match(/^name:\s*(\S+)\s*$/m)?.[1];
+  const identity = declaredName === 'alipay-aipay-pre' ? 'pre' : 'stable';
+  const channelFile = path.join(skillDir, 'references', 'normal', 'json', 'release-channel.json');
+  if (!fs.existsSync(channelFile) && identity === 'stable') return 'stable';
+  if (!isRegularFile(channelFile)) throw new Error('invalid release channel');
+  const channel = JSON.parse(fs.readFileSync(channelFile, 'utf8')).channel;
+  if (!['stable', 'pre'].includes(channel) || channel !== identity) throw new Error('invalid release channel');
+  return channel;
+}
+
+async function npmLatest(channel) {
   if (selfUpdateNetworkRestricted()) return { ok: false, reason: 'skipped-network-restricted' };
   try {
-    const result = await spawnPackageManager('npm', ['view', '@alipay/alipay-aipay', 'version', '--json'], {
+    const result = await spawnPackageManager('npm', ['view', '@alipay/alipay-aipay@latest', 'version', 'alipayAipayChannels', '--json'], {
       timeout: npmQueryTimeoutMs,
     });
     if (result.status !== 0 || result.error) return { ok: false, reason: packageManagerFailureKind(result) };
     const decoded = JSON.parse(result.stdout);
-    const version = typeof decoded === 'string' ? parseVersion(decoded) : null;
-    return version ? { ok: true, version } : { ok: false, reason: 'check' };
+    const packageVersion = typeof decoded?.version === 'string' ? parseVersion(decoded.version) : null;
+    const value = decoded?.alipayAipayChannels?.[channel];
+    const version = typeof value === 'string' ? parseVersion(value) : null;
+    return packageVersion && version && skillVersionKind(version.raw, channel) === 'release' ? { ok: true, version, packageVersion } : { ok: false, reason: 'check' };
   } catch {
     return { ok: false, reason: 'check' };
   }
 }
 
-function transactionArtifacts(skillDir, transactionId) {
+function transactionArtifacts(skillDir, transactionId, channel) {
   const parent = path.dirname(skillDir);
+  const skillName = channel === 'pre' ? 'alipay-aipay-pre' : 'alipay-aipay';
   return {
-    staging: path.join(parent, `.alipay-aipay-install-${transactionId}`),
-    backup: path.join(parent, `.alipay-aipay-backup-${transactionId}`),
+    staging: path.join(parent, `.${skillName}-install-${transactionId}`),
+    backup: path.join(parent, `.${skillName}-backup-${transactionId}`),
   };
 }
 
@@ -252,29 +305,26 @@ function removeTransactionPath(target) {
   try { fs.rmSync(target, { recursive: true, force: true }); } catch {}
 }
 
-function reconcileInstallTransaction(skillDir, transactionId) {
-  const artifacts = transactionArtifacts(skillDir, transactionId);
-  let current = readLocalVersion(skillDir);
-  if (!current && isRecoverableSkillRoot(artifacts.backup)) {
+function reconcileInstallTransaction(skillDir, transactionId, channel) {
+  const artifacts = transactionArtifacts(skillDir, transactionId, channel);
+  if (isRecoverableSkillRoot(artifacts.backup)) {
     try {
       removeTransactionPath(skillDir);
       fs.renameSync(artifacts.backup, skillDir);
     } catch {}
-    current = readLocalVersion(skillDir);
   }
   removeTransactionPath(artifacts.staging);
-  if (isRecoverableSkillRoot(skillDir)) removeTransactionPath(artifacts.backup);
-  return current;
+  return { version: readLocalVersion(skillDir), backupPresent: fs.existsSync(artifacts.backup) };
 }
 
-async function installVersion(skillDir, version) {
+async function installVersion(skillDir, packageVersion, channel) {
   const transactionId = randomUUID();
   const timeout = installTimeoutBudget();
   let result;
   try {
     result = await spawnPackageManager(
       'npx',
-      ['-y', `@alipay/alipay-aipay@${version.raw}`, 'install-current'],
+      ['-y', `@alipay/alipay-aipay@${packageVersion.raw}`, 'install-current', '--channel', channel],
       {
         timeout,
         env: {
@@ -287,22 +337,47 @@ async function installVersion(skillDir, version) {
   } catch {
     result = { status: null, error: new Error('package manager check failed'), stdout: '', stderr: '' };
   }
+  let session=null;
+  if (process.platform==='win32' && result.status===0 && !result.error) {
+    const lines=result.stderr.split(/\r?\n/u).filter(line=>line.startsWith('ALIPAY_AIPAY_INTERNAL:SELF_UPDATE_SESSION_RESULT='));
+    if (lines.length===1) {
+      try {
+        const receipt=JSON.parse(lines[0].slice('ALIPAY_AIPAY_INTERNAL:SELF_UPDATE_SESSION_RESULT='.length));
+        const {verifySessionSkill}=await import('./session_skill.mjs');
+        session=verifySessionSkill(receipt,{channel,packageVersion:packageVersion.raw,targetDir:skillDir});
+      } catch { /* An invalid receipt never permits a session switch. */ }
+    }
+  }
+  const reconciled = reconcileInstallTransaction(skillDir, transactionId, channel);
   return {
     ok: result.status === 0 && !result.error,
     reason: result.status === 0 && !result.error ? 'ok' : packageManagerFailureKind(result),
-    version: reconcileInstallTransaction(skillDir, transactionId),
+    ...reconciled,
+    session,
   };
 }
 
 function reportOutcome(outcome) {
   const version = outcome.version ? `=${outcome.version.raw}` : '';
+  if (outcome.kind==='SESSION_READY') process.stderr.write(`ALIPAY_AIPAY_INTERNAL:SELF_UPDATE_SESSION_SKILL_DIR=${JSON.stringify(outcome.skillDir)}\n`);
   process.stderr.write(`SELF_UPDATE:${outcome.kind}${version}\n`);
 }
 
 export async function runSelfUpdateCli(argv = process.argv) {
   const skillDir = parseArgs(argv);
+  const channel = readChannel(skillDir);
+  if (fs.existsSync(path.join(skillDir,'.session-skill.json'))) {
+    const {readSessionSkill}=await import('./session_skill.mjs');
+    readSessionSkill(skillDir,{channel});
+    return {kind:'CURRENT',version:readLocalVersion(skillDir)};
+  }
   const local = readLocalVersion(skillDir);
-  const checked = await npmLatest();
+  const installedVersion = readVersionFile(skillDir);
+  const kind = skillVersionKind(installedVersion?.raw, channel);
+  // A developer-installed beta is pinned, including when its entry is damaged.
+  if (kind === 'beta') return local ? { kind: 'CURRENT', version: local } : { kind: 'VERIFY_FAILED' };
+  if (installedVersion && !kind) return { kind: 'CHECK_FAILED' };
+  const checked = await npmLatest(channel);
   if (!checked.ok) {
     const current = readLocalVersion(skillDir);
     if (current && (!local || compareVersions(current, local) > 0)) return { kind: 'UPDATED', version: current };
@@ -314,9 +389,13 @@ export async function runSelfUpdateCli(argv = process.argv) {
   const latest = checked.version;
   if (local && compareVersions(local, latest) >= 0) return { kind: 'CURRENT', version: local };
 
-  const installed = await installVersion(skillDir, latest);
+  const installed = await installVersion(skillDir, checked.packageVersion, channel);
+  if (installed.session && installed.session.version===latest.raw) {
+    return {kind:'SESSION_READY',version:latest,skillDir:installed.session.skillDir};
+  }
+  if (installed.backupPresent) return { kind: 'INSTALL_FAILED' };
   const updated = installed.version || readLocalVersion(skillDir);
-  if (updated && compareVersions(updated, latest) >= 0) return { kind: 'UPDATED', version: updated };
+  if (installed.ok && updated && readChannel(skillDir) === channel && compareVersions(updated, latest) >= 0) return { kind: 'UPDATED', version: updated };
   if (installed.reason === 'network') return { kind: 'RETRY_WITH_NETWORK' };
   if (installed.reason === 'local') return { kind: 'CHECK_FAILED' };
   return { kind: installed.ok ? 'VERIFY_FAILED' : 'INSTALL_FAILED' };
