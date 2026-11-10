@@ -1,0 +1,11 @@
+.agents/
+.claude/
+.iflow/
+.superpower/
+.idea/
+.vscode/
+skills/
+**/.json
+.DS_Store
+**/.DS_Store
+*.zip
