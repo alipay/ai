@@ -1,0 +1,50 @@
+{
+  "created_at" : "2026-11-10T06:44:40Z",
+  "entries" : 
+  [
+    {
+      "hash" : "01b953c46be554fc5564c454d89ffab2abc55a96b7df19da531c3d2a9ac025d8",
+      "path" : "references/402-payment.md",
+      "signed" : true,
+      "size" : 5976
+    },
+    {
+      "hash" : "4924773e9a1ece4fade2c6204a5256b0449cfe3495d2b7d36ec26cf6bed28c12",
+      "path" : "references/cashier-payment.md",
+      "signed" : true,
+      "size" : 2665
+    },
+    {
+      "hash" : "3f6a7fbca6812cae78e3d43a8aaee292d28d03da6fefafd0694f2f9d18dcc2d8",
+      "path" : "references/command-recovery.md",
+      "signed" : true,
+      "size" : 905
+    },
+    {
+      "hash" : "a1591424386c5e74bd6f5c6f9839f02651338eaa0c1dae00f52539cc72ff5345",
+      "path" : "references/feedback.md",
+      "signed" : true,
+      "size" : 1728
+    },
+    {
+      "hash" : "67a95dd6f6862bf6c3409d0fc18bf32c31e9de4710906f96c169bc4e3ed3b568",
+      "path" : "references/security.md",
+      "signed" : true,
+      "size" : 2649
+    },
+    {
+      "hash" : "4db2863fbf844da35c73270f057219154587d54d3c1a409141b749e0d9c49826",
+      "path" : "SKILL.md",
+      "signed" : true,
+      "size" : 6707
+    }
+  ],
+  "manifest_hash" : "306650dc2cf9875d72448a8f1bbc27e81f6fcb8480a98fed1b325f47b39dd966",
+  "skill_description" : "\u652f\u4ed8\u5b9d\u6536\u94f6\u53f0\u652f\u4ed8\u3001HTTP 402 \u652f\u4ed8\u53ca\u652f\u4ed8\u95ee\u9898\u53cd\u9988\u3002\u7528\u6237\u8868\u8fbe\u4ed8\u6b3e/\u4e70\u5355/\u7ed3\u8d26\u610f\u56fe\uff0c\u6216\u4e0a\u4e0b\u6587\uff08\u542b\u5de5\u5177\u7ed3\u679c\uff09\u51fa\u73b0 cashier*.alipay.com\u3001excashier.alipay.com\u3001qr.alipay.com\u3001tbapi* \u94fe\u63a5\u3001\u652f\u4ed8\u5b9d\u8ba2\u5355\u53f7/\u8ba2\u5355\u4e32\u3001\u201c\u8bf7\u4f7f\u7528\u652f\u4ed8\u5b9d\u652f\u4ed8\u201d\u6307\u5f15\u3001HTTP 402 \u6216 Payment-Needed/amtPaymentLink \u65f6\u4f7f\u7528\u3002\u5bf9\u5e94\u64cd\u4f5c MCP \u4f18\u5148\uff0cCLI \u8865\u9f50\u3002",
+  "skill_id" : "alipay-payment-skill",
+  "skill_name" : "alipay-payment-skill",
+  "skill_version" : "1.0.17",
+  "total_files" : 6,
+  "total_size" : 20630,
+  "version" : "1.0"
+}

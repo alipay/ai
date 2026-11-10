@@ -15,9 +15,13 @@ This repository is an AI-powered payment capability development resource hub con
 ```
 ai-payment/
 ├── README.md              # 项目说明
-└── skills/                # Skill 包集合
-    ├── alipay-payment-integration
-    ├── alipay-pay-for-service
-    ├── alipay-payment-feedback
-    └── ...
+├── skills/                # Skill 包集合
+│   ├── alipay-aipay/                      
+│   ├── alipay-authenticate-wallet/        
+│   ├── alipay-delegation-pay/            
+│   ├── alipay-enterprise-scenario-integration/  
+│   └── alipay-payment-skill/             
+└── code_example/          # 代码示例
+    ├── aipay-402-example/                
+    └── page-pay-demo-with-agentpay/       
 ```
