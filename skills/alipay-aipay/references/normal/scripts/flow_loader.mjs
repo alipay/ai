@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -106,19 +107,47 @@ function declaredProducts(block) {
   return new Set(products);
 }
 
-function filterProductSections(source, productType) {
+const branchFiles = Object.freeze({
+  aipay: 'machine-pay/flow.md',
+  webpay: 'vibe-pay/web-pay.md',
+  apppay: 'vibe-pay/app-pay.md'
+});
+
+function readBranchSection(flow, product, section) {
+  const source = fs.readFileSync(path.join(referencesDir, flow, branchFiles[product]), 'utf8');
+  const start = `<!-- ALIPAY_AIPAY_SECTION:${section}:START -->`;
+  const end = `<!-- ALIPAY_AIPAY_SECTION:${section}:END -->`;
+  if (countOccurrences(source, start) !== 1 || countOccurrences(source, end) !== 1 ||
+      source.indexOf(end) < source.indexOf(start)) {
+    throw new Error(`产品片段缺失或重复：${flow}/${product}/${section}`);
+  }
+  return source.slice(source.indexOf(start) + start.length, source.indexOf(end)).trim();
+}
+
+// Share the owning product flow's authorization tuple with the dispatch guard.
+export function acquiringAuthorization(product) {
+  if (!productTypes.has(product)) throw new Error('未知收单产品');
+  const row = readBranchSection('onboarding', product, 'MAPPING');
+  const [name, id, variant, salesCode, scope] = row.split('|').slice(1, -1).map(value => value.trim());
+  if (id !== product || variant !== id.toUpperCase() || !name || !salesCode || !scope) throw new Error('收单产品授权映射无效');
+  return { name, salesCode, scope };
+}
+
+function filterProductSections(source, productType, flow) {
   const sectionPattern = /<!-- ALIPAY_AIPAY_PRODUCT:([a-z,]+):START -->([\s\S]*?)<!-- ALIPAY_AIPAY_PRODUCT:END -->/gu;
   const filtered = source.replace(sectionPattern, (_, list, body) => {
     const products = list.split(',');
     if (products.some((product) => !productTypes.has(product))) throw new Error('flow 产品区块声明非法');
-    return !productType || products.includes(productType) ? body.trim() : '';
+    if (productType && !products.includes(productType)) return '';
+    return body.trim().replace(/<!-- ALIPAY_AIPAY_BRANCH:([A-Z0-9_]+) -->/gu,
+      (_, section) => readBranchSection(flow, products[0], section));
   });
   if (/ALIPAY_AIPAY_PRODUCT:/u.test(filtered)) throw new Error('flow 产品区块 marker 不完整或发生嵌套');
   return filtered;
 }
 
-function cleanDirectives(block, productType, sharedGuard) {
-  return filterProductSections(block, productType)
+function cleanDirectives(block, productType, sharedGuard, flow) {
+  return filterProductSections(block, productType, flow)
     .replace(/<!-- GENERATED:([A-Z0-9-]+):START -->([\s\S]*?)<!-- GENERATED:\1:END -->/gu,
       (_, name, body) => name !== sharedGuard && name.startsWith('ONBOARDING-GUARDS-') ? body.trim() : '')
     .replace(/<!-- ALIPAY_AIPAY_PRODUCTS:[a-z,]+ -->/gu, '')
@@ -162,12 +191,12 @@ export function loadFlowBundle(flow, phase, { productType } = {}) {
     blocks.push(`## 当前产品适用校验清单\n\n${checklistForProduct(productType).markdown}`);
     if (productType === 'webpay') {
       const catalog = JSON.parse(fs.readFileSync(path.join(scriptDir, '../json/customer-messages.json'), 'utf8'));
-      const field = catalog.messages.find((message) => message.messageId === 'integration.checklist.result')
-        ?.variables.find((variable) => variable.name === 'webpayExperienceResult');
-      if (!Array.isArray(field?.values) || field.values.length !== 3 || field.values.some((value) => typeof value !== 'string')) {
+      const values = catalog.messages.find(message => message.messageId === 'integration.checklist.result')
+        ?.variables.find(variable => variable.name === 'webpayExperienceResult')?.values;
+      if (!Array.isArray(values) || values.length !== 3 || values.some(value => typeof value !== 'string')) {
         throw new Error('网页收款 checklist 缺少合法体验结果枚举');
       }
-      blocks.push(`## WEBPAY 结果参数精确枚举\n\nwebpayExperienceResult 仅接受以下原值，按步骤 6 实际证据选择，不改写：\n${field.values.map((value) => `- ${JSON.stringify(value)}`).join('\n')}`);
+      blocks.push(`## WEBPAY 结果参数精确枚举\n\nwebpayExperienceResult 仅接受以下原值，按步骤 6 实际证据选择，不改写：\n${values.map(value => `- ${JSON.stringify(value)}`).join('\n')}`);
     }
   }
   return [
@@ -176,7 +205,7 @@ export function loadFlowBundle(flow, phase, { productType } = {}) {
     productType && definition.productGuards?.[productType]
       ? extractGeneratedBlock(source, definition.productGuards[productType])
       : '',
-    ...blocks.map((block) => cleanDirectives(block, productType, definition.sharedGuard)).filter(Boolean)
+    ...blocks.map((block) => cleanDirectives(block, productType, definition.sharedGuard, flow)).filter(Boolean)
   ].filter(Boolean).join('\n\n');
 }
 
@@ -226,17 +255,17 @@ export function runFlowCli(argv = process.argv) {
   if (!flow || !phase) throw new Error('用法: flow_loader.mjs <integration|onboarding> <phase> [阶段参数]');
   const options = parseOptions(argv);
   const productType = options['product-type'];
+  if (!productTypes.has(productType)) throw new Error('必须提供已确定的收单 --product-type');
   if (flow === 'integration' && phase === 'checklist') {
     const projectPath = options['project-path'];
     if (!projectPath) throw new Error('integration checklist phase 缺少 --project-path');
-    if (!productType) throw new Error('integration checklist phase 缺少 --product-type');
     process.stderr.write(`ALIPAY_AIPAY_INTERNAL:CHECKLIST_SCOPE_RECEIPT=${createChecklistScopeReceipt(productType, projectPath)}\n`);
   }
   const source = flowSource(flow);
   process.stdout.write(`${loadFlowBundle(flow, phase, { productType })}\n`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     runFlowCli();
   } catch (error) {

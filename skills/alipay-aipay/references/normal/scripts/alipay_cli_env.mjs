@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 
+const windowsEnvironmentRunner = process.platform === 'win32'
+  ? (await import('./windows/prepare.mjs')).runEnvironment
+  : null;
+
+import { isMainModule } from './is_main_module.mjs';
 import process from 'node:process';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { checkCliEnvironment, isWindowsPlatform } from './platform_compat.mjs';
 
 export function runAlipayCliEnvCli(argv = process.argv) {
+  if (windowsEnvironmentRunner && !(argv[2] === 'integration-check' && ['LEGACY', 'CODE_ONLY'].includes(process.env.ALIPAY_AIPAY_WINDOWS_ROUTE))) {
+    process.exitCode = windowsEnvironmentRunner(argv.slice(2));
+    return;
+  }
+
   const mode = argv[2];
   if (!['check', 'integration-check'].includes(mode) || argv.length !== 3) {
     console.error('用法: node alipay_cli_env.mjs <check|integration-check>');
@@ -29,6 +37,6 @@ export function runAlipayCliEnvCli(argv = process.argv) {
   console.log(`CLI_ENV_MISSING=${missing.join(',')}`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runAlipayCliEnvCli();
 }

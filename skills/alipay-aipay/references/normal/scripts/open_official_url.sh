@@ -6,6 +6,12 @@ KIND="${1:-}"
 IFS= read -r URL || URL=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLICY_FILE="${SCRIPT_DIR}/../json/policy-rules.json"
+case "$(uname -s)" in
+  MINGW*|MSYS*)
+    source "$SCRIPT_DIR/windows/shell_helpers.sh" || exit 78
+    POLICY_FILE=$(cygpath -m "$POLICY_FILE") || exit 78
+    ;;
+esac
 
 case "$KIND" in authorization|public-key-confirmation) ;; *) echo "OPEN_FAILED"; exit 1 ;; esac
 command -v node >/dev/null 2>&1 || { echo "OPEN_FAILED"; exit 1; }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -405,7 +406,7 @@ function validateUrl(value, policy, urlKind, expected = {}) {
     if (parsed.searchParams.get('from') !== 'alipay-aipay-skill') {
       throw new Error('windowsOnboardingRedirect URL from 无效');
     }
-    if (parsed.searchParams.get('reason') !== 'alipay-aipay-skill-onboarding-not-support-windows') {
+    if (parsed.searchParams.get('reason') !== 'alipay-aipay-skill-onboarding-site-redirect') {
       throw new Error('windowsOnboardingRedirect URL reason 无效');
     }
     if (/[\u0000-\u001f\u007f,^=]/u.test(parsed.searchParams.get('platform_id'))) {
@@ -481,7 +482,7 @@ export function buildWindowsOnboardingRedirectUrl(platformId) {
   }
   const url = new URL('https://aipay.alipay.com/');
   url.searchParams.set('from', 'alipay-aipay-skill');
-  url.searchParams.set('reason', 'alipay-aipay-skill-onboarding-not-support-windows');
+  url.searchParams.set('reason', 'alipay-aipay-skill-onboarding-site-redirect');
   url.searchParams.set('platform_id', platformId);
   const value = url.toString();
   validateUrl(value, loadJson(policyPath), 'windowsOnboardingRedirect');
@@ -648,7 +649,7 @@ function applicationCandidateTable(variantName, candidates) {
   if (variantName === 'PENDING_ONLY') return table(pending, false).join('\n');
   const lines = table(online, true);
   if (pending.length > 0) {
-    lines.push('', '另有以下尚未上线的同类型应用，当前不可复用：', '', ...table(pending, false), '', '新建前请结合以上状态避免重复创建。');
+    lines.push('', '另有以下尚未上线的同类型应用，当前不可复用：', '', ...table(pending, false));
   }
   return lines.join('\n');
 }
@@ -784,6 +785,10 @@ function validateSandboxEnvironmentRows(variables) {
       || rows.some((row, index) => !row || row.label !== expectedLabels[index] || !row.value.trim())) {
     throw new Error('sandbox.environment.summary 必须按固定顺序传入四项已校验沙箱字段');
   }
+  if (variables.productName !== 'AI 网页应用收款' &&
+      rows.slice(2).some(row => row.value !== '已写入本地配置文件，默认不在对话中展开')) {
+    throw new Error('非网页收款摘要不得展示买家密码');
+  }
 }
 
 function validateWriteConfirmation(variantName, variables, normalized) {
@@ -838,14 +843,13 @@ function sandboxReplayBlock(original, productName, sandboxConfigState) {
 function productionConfigSourceLines() {
   return [
     '1、确认上线条件：',
-    '- 前往支付宝 AI 付站点（https://aipay.alipay.com/?from=alipay-aipay-skill）→ 一站式接入，查看产品开通情况。',
-    '- 如本次流程新建支付宝应用，进入一站式接入 → 选择产品 → 密钥配置，确认新建的支付宝应用“已上线”；使用其他生产应用时，也需确认该应用已上线。',
+    '- 前往支付宝 AI 付站点（https://aipay.alipay.com/open-flow/products ）选择目标产品，在“产品开通”节点查看开通情况。',
+    '- 前往支付宝 AI 付站点（https://aipay.alipay.com/open-flow/products ）选择目标产品，在“密钥配置”节点确认新建的支付宝应用已上线。',
     '',
     '2、生产环境的支付宝应用配置替换到项目中：',
     '- 修改项目中的支付宝网关为 https://openapi.alipay.com/gateway.do。',
-    '- 把生产环境支付宝应用配置写入业务系统生产环境变量、受保护配置文件或密钥管理系统。',
-    '- appId、支付宝公钥、应用私钥需要配到项目中。应用私钥不要泄露、不要暴露给 Agent；应用公钥用于在支付宝侧配置，无需额外配到项目中。',
-    '- 确保应用公钥与应用私钥配对，appId、该应用公钥及对应的支付宝公钥与目标生产应用配置一致，不混用沙箱或其他应用的配置。',
+    '- 将同一生产应用的 appId、支付宝公钥和应用私钥写入项目的生产环境变量或受保护配置中，勿混用沙箱或其他应用配置。',
+    '- 应用公钥只需配置在支付宝侧，并须与应用私钥配对；请勿向 Agent 提供应用私钥。',
   ];
 }
 
@@ -854,21 +858,12 @@ function productionSpecificLines(productName) {
     return [
       '', '3、AI 按量付费服务配置：',
       '- 把沙箱 `api_mock_service_id` 替换为真实 `serviceId`。获取方式：登录支付宝 AI 付站点（https://aipay.alipay.com/?from=alipay-aipay-skill）→ 控制台 → 服务管理 → 复制审核已通过的目标服务 ID。',
-      '- `seller_id`/`seller_unique_id` 填收款商户 PID/2088，`seller_app_id` 填生产 `appId`。PID 获取方式：登录支付宝商家平台（https://b.alipay.com/page/portal/home）→ 点击头像 → 复制账户名下方 2088 开头的商家 ID。',
+      '- `seller_id`/`seller_unique_id` 填收款商户 2088 开头的商户号，`seller_app_id` 填生产环境支付宝应用的 AppID。商户号请前往支付宝商家平台账号中心获取（https://b.alipay.com/page/store-management/infomanage ）。',
     ];
   }
-  const mobile = productName === 'AI 移动应用收款';
-  return [
-    '', `3、${productName}支付结果确认：`,
-    '- `notify_url` 用于商家服务端接收支付宝发来的支付结果异步通知，不是前端页面或支付宝生成的 URL。',
-    '- 如使用异步通知，下单时传入 `notify_url`；它应是商家已部署、支付宝服务端可通过公网访问的 HTTPS 通知接口地址。',
-    '- 如不配置 `notify_url`，不会触发该地址的异步通知；商家服务端需通过 `alipay.trade.query` 主动查单。',
-    mobile
-      ? '- 支付结果以验签通过的异步通知或服务端交易查询结果为准；APP 客户端支付结果不能单独作为付款成功依据。'
-      : '- 支付结果以验签通过的异步通知或 `alipay.trade.query` 查询结果为准；同步回跳或前台页面不能作为付款成功依据。',
-    '- 项目正式对客前，请完成生产环境支付验证。',
-    ...(mobile ? [] : ['', '4、AI 网页应用收款限制：', '- 如需解除 AI 网页应用收款的收款限制，请前往支付宝商家平台 → 签约管理补全收款信息：https://b.alipay.com/page/ar-center/ar-manage'])
-  ];
+  return productName === 'AI 网页应用收款'
+    ? ['', '3、AI 网页应用收款限制：', '- 如需解除 AI 网页应用收款的收款限制，请前往支付宝商家平台 → 签约管理补全收款信息：https://b.alipay.com/page/ar-center/ar-manage']
+    : [];
 }
 
 function summaryItems(value) {
@@ -887,7 +882,9 @@ function summaryItems(value) {
 function validateChecklistItemClassification(variables, fields) {
   const notifyReminders = new Set([
     '公网 HTTPS notify_url 联调人工待验证：上线前配置公网通知地址并完成验签联调',
-    '公网 HTTPS notify_url 联调待部署后验证'
+    '公网 HTTPS notify_url 联调待部署后验证',
+    '公网 HTTP/HTTPS notify_url 联调人工待验证：上线前配置公网通知地址并完成验签联调',
+    '公网 HTTP/HTTPS notify_url 联调待部署后验证'
   ]);
   for (const field of fields) {
     const value = variables[field];
@@ -911,7 +908,7 @@ function productionReadinessBlock(productName, context) {
     statusLines.push('- 还不能正式收款，产品签约、服务市场或应用发布仍有上表待办。');
   }
   if (context.integrationResult === '不在本轮执行范围') {
-    statusLines.push('- 本轮只完成产品开通流程收口，不代表业务系统已经具备收款代码；先完成支付产品-代码开发、项目部署和生产参数验收。');
+    statusLines.push('- 本轮只完成产品开通流程收口，不代表业务系统已经具备收款代码；需要完成支付产品-代码开发、项目部署和生产参数验收。');
   } else if (context.integrationResult === '部分完成，沙箱配置待完成') {
     statusLines.push('- 沙箱配置尚未完成，相关测试未执行；后续上线条件按生产配置和实际验证结果另行确认。');
   } else if (context.integrationResult === '部分完成，人工待验证') {
@@ -939,7 +936,12 @@ function productionReadinessBlock(productName, context) {
     '【上线前有以下关键点】', '',
     ...productionConfigSourceLines(), ...productionSpecificLines(productName), ...manualLines, '',
     '【提示】',
-    '- 如找不到项目上线前生产配置的替换位置，可以试试对 Agent 说：“我要上线了，帮我找一下项目里支付宝生产配置要改哪些地方”。让 Agent 帮助您定位文件/变量名，但不要把生产应用私钥、账号密码、支付凭证或未脱敏通知内容直接发给 Agent。'
+    '- 不知道上线前要替换哪些配置？问问 Agent：“帮我找出项目中需要替换为生产的支付宝配置。”',
+    '- 替换生产配置的时候不知道“支付宝公钥”保存到哪了？也可以问问 Agent。',
+    ...(['AI 网页应用收款', 'AI 移动应用收款'].includes(productName) ? [
+      '- 沙箱测试反复受阻？可以在代码开发+产品开通完成后，替换项目配置为生产，直接在生产环境用小金额（如：0.01元）进行业务测试。可预留“退款接口”为测试交易进行退款。',
+      '- 此外，请注意，生产环境的付款方支付宝账号不能和收款方一致。'
+    ] : [])
   ].join('\n');
 }
 
@@ -1111,27 +1113,27 @@ const managedEntrypoints = {
     allowedCallers: ['auth.sh']
   },
   'error.mcp.auth': {
-    command: '由 onboarding modules/scripts/error_handler.sh 根据实际认证错误和 logout 结果托管输出',
+    command: '由 onboarding modules/error-handling/error_handler.sh 根据实际认证错误和 logout 结果托管输出',
     reason: 'error_handler.sh 托管。',
     allowedCallers: ['error_handler.sh']
   },
   'error.mcp.service': {
-    command: '由 onboarding modules/scripts/error_handler.sh 根据实际服务错误托管输出',
+    command: '由 onboarding modules/error-handling/error_handler.sh 根据实际服务错误托管输出',
     reason: 'error_handler.sh 托管。',
     allowedCallers: ['error_handler.sh']
   },
   'error.backend': {
-    command: '由 onboarding modules/scripts/error_handler.sh 根据实际后端错误托管输出',
+    command: '由 onboarding modules/error-handling/error_handler.sh 根据实际后端错误托管输出',
     reason: 'error_handler.sh 托管。',
     allowedCallers: ['error_handler.sh']
   },
   'error.service.unstable': {
-    command: '由 onboarding modules/scripts/error_handler.sh 根据实际服务错误托管输出',
+    command: '由 onboarding modules/error-handling/error_handler.sh 根据实际服务错误托管输出',
     reason: 'error_handler.sh 托管。',
     allowedCallers: ['error_handler.sh']
   },
   'error.cli': {
-    command: '由 onboarding modules/scripts/error_handler.sh 根据实际 CLI 错误托管输出',
+    command: '由 onboarding modules/error-handling/error_handler.sh 根据实际 CLI 错误托管输出',
     reason: 'error_handler.sh 托管。',
     allowedCallers: ['error_handler.sh']
   },
@@ -1208,6 +1210,8 @@ export function getMessageSchema(messageId, variantName = 'DEFAULT') {
     const expectedStatus = {
       INITIAL: '待补充',
       SERVICE_INITIAL: '待补充',
+      SIGNING_WEB_INITIAL: '待补充',
+      SIGNING_APP_INITIAL: '待补充',
       APP_WEB_INITIAL: '待补充',
       APP_MOBILE_INITIAL: '待补充',
       PARTIAL: '部分已提供，待补充',
@@ -1220,6 +1224,12 @@ export function getMessageSchema(messageId, variantName = 'DEFAULT') {
       setVariableRule(inputVariables, 'categoryName', { values: ['服务资料'] });
       setVariableRule(inputVariables, 'missingFields', { values: ['服务名称、服务描述、服务地址、服务单价、请求示例JSON'] });
       variantRules.push('SERVICE_INITIAL 只允许 categoryName=服务资料 且收集全部五项服务资料。');
+    } else if (variantName === 'SIGNING_WEB_INITIAL' || variantName === 'SIGNING_APP_INITIAL') {
+      setVariableRule(inputVariables, 'categoryName', { values: ['签约材料'] });
+      setVariableRule(inputVariables, 'missingFields', { values: variantName === 'SIGNING_APP_INITIAL'
+        ? ['APP名称', '首页截图', '商品页截图', '支付页截图', '特殊资质材料']
+        : ['首页截图', '商品页截图', '支付页截图', '特殊资质材料'] });
+      variantRules.push('只收集当前缺失的签约材料，截图说明按缺失项展示。');
     } else if (variantName === 'APP_WEB_INITIAL') {
       setVariableRule(inputVariables, 'categoryName', { values: ['应用资料'] });
       setVariableRule(inputVariables, 'missingFields', { values: ['应用公钥'] });
@@ -1405,7 +1415,19 @@ export function validateCatalog() {
   return errors;
 }
 
-export function renderMessage(messageId, variantName, variables, telemetryContext = {}) {
+export async function renderPlanMessage(messageId, variantName, variables, telemetryContext = {}) {
+  const url = loadJson(policyPath).officialUrls.supportGroupConfig;
+  let qrCodes;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (response.ok) qrCodes = await response.json();
+  } catch {
+    // Optional support links must not block the merchant's plan.
+  }
+  return renderMessage(messageId, variantName, variables, telemetryContext, qrCodes);
+}
+
+export function renderMessage(messageId, variantName, variables, telemetryContext = {}, qrCodes) {
   const catalog = loadJson(catalogPath);
   const policy = loadJson(policyPath);
   const message = catalog.messages.find((entry) => entry.messageId === messageId);
@@ -1569,6 +1591,11 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
           ? '代码开发自动校验已完成，仍有人工待验证项；本轮继续产品开通。'
           : '代码开发校验通过后将自动进入支付产品-产品开通；未通过时停留在代码开发。';
     if (variables.nextFlowReminder !== expectedReminder) throw new Error('代码开发执行模式与后续衔接不一致');
+    if (variables.executionMode === '完整接入' && process.platform === 'win32'
+        && process.env.ALIPAY_AIPAY_WINDOWS_ROUTE === 'CODE_ONLY'
+        && !hasBlockingDefect && ['通过', '部分通过'].includes(variables.overallResult)) {
+      normalized.nextFlowReminder = derivedCatalogText(definitions, 'windowsCodeOnlyReminder');
+    }
     if (variables.overallResult === '通过' && (hasFailedItems || hasManualItems)) {
       throw new Error('代码开发结果为通过时不得存在未通过项或人工待验证项');
     }
@@ -1605,12 +1632,10 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
     if (variantName === 'WEBPAY' && variables.overallResult === '通过' && variables.webpayExperienceResult === '未提供浏览器付款入口或完整操作指引，需先补齐') {
       throw new Error('AI 网页应用收款未交付付款入口时不得标记代码开发通过');
     }
-    normalized.checklistDetails = variables.executionMode === '仅代码开发'
-      ? ''
-      : [
-        ...(hasFailedItems ? [`未完成项：${normalized.failedItems}`] : []),
-        ...(hasManualItems ? [`人工待验证：${normalized.manualItems}`] : [])
-      ].join('\n');
+    const gaps = [];
+    if (hasFailedItems) gaps.push('未完成项：' + normalized.failedItems);
+    if (hasManualItems) gaps.push('人工待验证：' + normalized.manualItems);
+    normalized.checklistDetails = variables.executionMode === '完整接入' ? gaps.join('\n') : '';
     const productName = { AIPAY: 'AI 按量付费', WEBPAY: 'AI 网页应用收款', APPPAY: 'AI 移动应用收款' }[variantName];
     normalized.launchGuidance = variables.executionMode === '仅代码开发'
       ? productionReadinessBlock(productName, {
@@ -1626,6 +1651,8 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
     const expectedStatus = {
       INITIAL: '待补充',
       SERVICE_INITIAL: '待补充',
+      SIGNING_WEB_INITIAL: '待补充',
+      SIGNING_APP_INITIAL: '待补充',
       APP_WEB_INITIAL: '待补充',
       APP_MOBILE_INITIAL: '待补充',
       PARTIAL: '部分已提供，待补充',
@@ -1633,6 +1660,21 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
     }[variantName];
     if (!expectedStatus || variables.currentStatus !== expectedStatus) {
       throw new Error('materials.category.collect variant 与材料状态不匹配');
+    }
+    if (variantName === 'SIGNING_WEB_INITIAL' || variantName === 'SIGNING_APP_INITIAL') {
+      const fields = variables.missingFields.split('、');
+      const allowedFields = variantName === 'SIGNING_APP_INITIAL'
+        ? ['APP名称', '首页截图', '商品页截图', '支付页截图', '特殊资质材料']
+        : ['首页截图', '商品页截图', '支付页截图', '特殊资质材料'];
+      if (variables.categoryName !== '签约材料'
+          || fields.some(field => !allowedFields.includes(field))) {
+        throw new Error(`${variantName} 只适用于首次收集当前产品缺失的签约材料`);
+      }
+      normalized.missingFields = allowedFields.filter(field => fields.includes(field)).join('、');
+      normalized.signingRequestLine = variantName === 'SIGNING_WEB_INITIAL'
+        && normalized.missingFields === '首页截图、商品页截图、支付页截图'
+        ? '- 请在同一条回复中依次提供三张截图：首页截图、商品页截图、支付页截图。'
+        : `- 请在同一条回复中依次提供：${normalized.missingFields}。`;
     }
     const isServiceInitial = variantName === 'SERVICE_INITIAL';
     if (isServiceInitial && (
@@ -1656,9 +1698,13 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
       '应用平台和对应资料',
       '平台字段（IOS=bundleId；ANDROID=appPackage+appSign；ALL=bundleId+appPackage+appSign）'
     );
-    normalized.paymentPageHint = variables.missingFields.split('、').includes('支付页截图')
-      ? definitions.get('paymentPageHint')?.values?.[0] || ''
-      : '';
+    const signingScreenshots = variables.categoryName === '签约材料';
+    const requestedFields = variables.missingFields.split('、');
+    for (const [field, hint] of [['首页截图', 'homePageHint'], ['商品页截图', 'productPageHint'], ['支付页截图', 'paymentPageHint']]) {
+      normalized[hint] = signingScreenshots && requestedFields.includes(field)
+        ? '- ' + derivedCatalogText(definitions, hint)
+        : '';
+    }
     normalized.serviceUrlHint = variantName === 'INVALID'
       && variables.categoryName === '服务资料'
       && variables.missingFields.split('、').includes('服务地址')
@@ -1687,7 +1733,6 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
     if (onboardingOnly !== (variables.nextFlowReminder === onboardingReminder)) {
       throw new Error('process.partial_result 的代码开发结果与后续衔接不一致');
     }
-    normalized.nextFlowReminderLine = onboardingOnly ? `后续衔接：${normalized.nextFlowReminder}` : '';
     const hasManualVerificationItems =
       typeof variables.manualVerificationItems === 'string' &&
       variables.manualVerificationItems !== '' &&
@@ -1750,6 +1795,15 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
   if (messageId === 'service.create.summary') validateServiceCreateSummary(variantName, variables, normalized);
   if (messageId === 'onboarding.write.confirm') validateWriteConfirmation(variantName, variables, normalized);
   let rendered = variant.templateLines.join('\n').replace(placeholderPattern, (_, name) => normalized[name]);
+  if (qrCodes) {
+    const { intro, labels } = catalog.supportGroups;
+    const links = [];
+    for (const [key, label] of Object.entries(labels)) {
+      const url = qrCodes[key];
+      if (typeof url === 'string' && /^https?:\/\/[^\s]+$/iu.test(url)) links.push(label + url);
+    }
+    if (links.length) rendered += '\n\n' + [intro, ...links].join('\n');
+  }
   if (messageId === 'application.operation.result' || messageId === 'process.partial_result' || messageId === 'integration.checklist.result' || messageId === 'sandbox.environment.summary' || messageId === 'error.backend' || messageId === 'error.cli') {
     rendered = normalizeProcessPartialResultSpacing(rendered);
   }
@@ -1777,7 +1831,8 @@ export function renderMessage(messageId, variantName, variables, telemetryContex
     if (!hint) throw new Error(`缺少 ${hintKey}`);
     rendered = `${rendered}\n\n${hint}`;
   }
-  emitMessageMetric(messageId, variantName, variables, telemetryContext);
+  // The checklist runner commits its evidence and coding outcome before the terminal summary.
+  if (messageId !== 'integration.checklist.result') emitMessageMetric(messageId, variantName, variables, telemetryContext);
   return rendered;
 }
 
@@ -1878,7 +1933,7 @@ export async function runRenderCustomerMessageCli(argv = process.argv) {
   console.log(renderMessageWithFallback(messageId, variant, variables));
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runRenderCustomerMessageCli().catch((error) => {
     console.error('当前步骤的标准消息无法安全生成，已停止后续动作。请按 MESSAGE_RENDER_ERROR 的具体原因修正输入；若消息目录或脚本缺失，再检查 Skill 文件完整性。');
     console.error(`MESSAGE_RENDER_ERROR:${error.message}`);

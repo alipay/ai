@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -205,7 +206,7 @@ export async function runManagedJqCli(argv = process.argv) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runManagedJqCli().then((code) => {
     process.exitCode = code;
   }).catch((error) => {

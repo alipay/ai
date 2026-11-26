@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { isMainModule } from './is_main_module.mjs';
+import { spawn as nativeSpawn } from 'node:child_process';
+const { spawn } = process.platform === 'win32'
+  ? await import('./windows/execution.mjs')
+  : { spawn: nativeSpawn };
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -10,11 +14,11 @@ import { currentRunContext, emitStageMetric, telemetryEnabled } from './telemetr
 
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const onboardingScriptsDir = path.resolve(scriptDir, '../../onboarding/modules/scripts');
+const onboardingDir = path.resolve(scriptDir, '../../onboarding');
 const scriptPaths = Object.freeze({
-  signing: path.join(onboardingScriptsDir, 'query_sign_status.sh'),
-  service: path.join(onboardingScriptsDir, 'service.sh'),
-  application: path.join(onboardingScriptsDir, 'app.sh')
+  signing: path.join(onboardingDir, 'modules/product-sign/query_sign_status.sh'),
+  service: path.join(onboardingDir, 'machine-pay/service-registration/service.sh'),
+  application: path.join(onboardingDir, 'modules/app-release/app.sh')
 });
 const productSalesCodes = Object.freeze({
   aipay: 'I1080300001000160457',
@@ -169,7 +173,7 @@ function parseArray(value) {
 function runScript(script, args) {
   return new Promise((resolve) => {
     const child = spawn('bash', [script, ...args], {
-      cwd: onboardingScriptsDir,
+      cwd: path.dirname(script),
       env: { ...process.env, ALIPAY_AIPAY_SUPPRESS_AUTH_LOGOUT: '1' },
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -180,15 +184,25 @@ function runScript(script, args) {
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', (error) => resolve({ status: null, stdout, stderr, spawnError: error }));
-    child.on('close', (status) => resolve({ status, stdout, stderr, spawnError: null }));
+    child.on('close', (status, signal) => resolve({ status, signal, stdout, stderr, spawnError: null }));
   });
 }
 
-function failedBranch(result, extra = {}) {
+export function failedBranch(result, extra = {}) {
+  // Never copy raw CLI output, paths or exception messages into diagnostics.
+  const errorCode = result.spawnError?.code;
+  const diagnostic = {
+    exit_code: Number.isInteger(result.status) ? result.status : null,
+    signal: /^SIG[A-Z0-9]+$/u.test(result.signal || '') ? result.signal : null,
+    spawn_error_code: /^E[A-Z0-9_]+$/u.test(errorCode || '') ? errorCode : null,
+    failure_stage: result.spawnError ? 'PROCESS_START'
+      : result.status !== 0 || result.signal ? 'PROCESS_EXECUTION' : 'RESULT_VALIDATION'
+  };
   return {
     query_status: 'QUERY_FAILED',
     ...extra,
-    customer_output: result.stdout.trim() ? true : false
+    customer_output: result.stdout.trim() ? true : false,
+    diagnostic
   };
 }
 
@@ -301,19 +315,16 @@ async function runDiscovery(args) {
   if (salesCode !== productSalesCodes[productType]) throw new Error('sales-code 与 product-type 不匹配');
   const reusedSigning = reusedSigningBranch(args, productType);
 
-  const signingPromise = reusedSigning
-    ? Promise.resolve(null)
-    : runScript(scriptPaths.signing, ['--sales-code', salesCode, '--product-type', productType]);
-  const servicePromise = productType === 'aipay'
-    ? runScript(scriptPaths.service, ['list'])
-    : Promise.resolve(null);
-  const applicationPromise = runScript(scriptPaths.application, [
+  // The CLI shares login state between processes. Concurrent calls can return
+  // auth_required despite a valid session, so serialize the guarded queries.
+  const signingResult = reusedSigning
+    ? null
+    : await runScript(scriptPaths.signing, ['--sales-code', salesCode, '--product-type', productType]);
+  const serviceResult = productType === 'aipay'
+    ? await runScript(scriptPaths.service, ['list'])
+    : null;
+  const applicationResult = await runScript(scriptPaths.application, [
     'list', '--product-type', productType, '--sales-code', salesCode
-  ]);
-  const [signingResult, serviceResult, applicationResult] = await Promise.all([
-    signingPromise,
-    servicePromise,
-    applicationPromise
   ]);
 
   const executedResults = [signingResult, serviceResult, applicationResult].filter(Boolean);
@@ -374,7 +385,7 @@ export async function runOnboardingDiscoveryCli(argv = process.argv) {
   process.exitCode = await runDiscovery(args);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runOnboardingDiscoveryCli().catch((error) => {
     process.stderr.write(`${internalPrefix}DISCOVERY_RUNNER_ERROR=${String(error?.message || error).replace(/[\r\n]/gu, ' ')}\n`);
     process.exitCode = 1;

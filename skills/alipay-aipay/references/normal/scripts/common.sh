@@ -5,6 +5,10 @@
 # 调用前置: 无
 #=============================================================================
 
+case "$(uname -s)" in
+  MINGW*|MSYS*) source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/windows/shell_helpers.sh" || exit 78 ;;
+esac
+
 case "${HOME:-}" in
   /*)
     user_bin="$HOME/.local/bin"
@@ -39,6 +43,9 @@ ALIPAY_AIPAY_LOCAL_CONFIG_PERMISSION_EXIT_CODE=77
 ALIPAY_AIPAY_LOCAL_CONFIG_ACCESS_CONFIRMED=false
 
 alipay_cli_credentials_dir() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*) cygpath -u "$ALIPAY_WINDOWS_CREDENTIALS_DIR"; return $? ;;
+  esac
   case "${HOME:-}" in
     /*) [ "$HOME" != "/" ] || return "$ALIPAY_CLI_LOCAL_STATE_PERMISSION_EXIT_CODE" ;;
     *) return "$ALIPAY_CLI_LOCAL_STATE_PERMISSION_EXIT_CODE" ;;
@@ -47,6 +54,9 @@ alipay_cli_credentials_dir() {
 }
 
 alipay_cli_logs_dir() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*) cygpath -u "$ALIPAY_WINDOWS_LOGS_DIR"; return $? ;;
+  esac
   local data_home="${XDG_DATA_HOME:-}"
   if [ -z "$data_home" ]; then
     case "${HOME:-}" in
@@ -67,7 +77,7 @@ alipay_cli_has_local_state_permission_error() {
   [ -n "$raw" ] || return 1
 
   permission_pattern='permission denied|operation not permitted|(^|[^[:alnum:]_])(EACCES|EPERM)([^[:alnum:]_]|$)'
-  private_state_pattern='poll_state\.enc\.tmp|session\.enc|\.alipay-cli[/\\]credentials|alipay-cli[/\\]logs'
+  private_state_pattern='poll_state\.enc\.tmp|session\.enc|\.alipay-cli[/\\]credentials|alipay-cli[/\\](data[/\\])?logs'
   local_state_failure_pattern='写入临时文件失败|删除凭据文件失败|can.?t rename log file'
 
   printf '%s' "$raw" | grep -qiE "$local_state_failure_pattern" && return 0
@@ -259,17 +269,11 @@ init_alipay_cli_biz_info() {
 
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   skill_dir="$(cd "${common_dir}/../../.." && pwd)"
-  version_file="${skill_dir}/VERSION"
-  if [ ! -f "$version_file" ]; then
-    echo "❌ 无法读取当前 alipay-aipay Skill 版本" >&2
+  version="$(node "${common_dir}/profile.mjs" read-version --skill-dir "$skill_dir")" || {
+    echo 'ALIPAY_AIPAY_INTERNAL:CLI_CONTEXT_ERROR={"reason":"PROFILE_VERSION_UNAVAILABLE","operation":"read-version"}' >&2
+    echo "❌ 无法读取当前 Skill 的 PROFILE.version" >&2
     return 1
-  fi
-  version="$(<"$version_file")"
-
-  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-    echo "❌ 当前 alipay-aipay Skill VERSION 不是合法 SemVer" >&2
-    return 1
-  fi
+  }
 
   skill_user_id="$(machine_user_id_for_biz_info "$common_dir" || true)"
   profile_script="${common_dir}/profile.mjs"
@@ -350,12 +354,18 @@ emit_stage_metric() {
   local stage="${1:-}"
   local run_id="${ALIPAY_AIPAY_TELEMETRY_RUN_ID:-}"
   local history_count="${ALIPAY_AIPAY_TELEMETRY_HISTORY_COUNT:-null}"
-  local common_dir telemetry_script telemetry_switch
+  local common_dir telemetry_script telemetry_switch legacy_telemetry_switch
   [ -n "$stage" ] || return 0
   [ -n "$run_id" ] || return 0
-  telemetry_switch="$(printf '%s' "${ALIPAY_AIPAY_TELEMETRY:-}" | tr '[:upper:]' '[:lower:]')"
-  case "$telemetry_switch" in
-    0|false|off|no) return 0 ;;
+  case "$stage" in
+    integration_summary|onboarding_summary|all_summary) ;; # Always close the business run.
+    *)
+      telemetry_switch="$(printf '%s' "${ALIPAY_AIPAY_TELEMETRY-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      legacy_telemetry_switch="$(printf '%s' "${ALIPAY_AIPAY_NEW_TELEMETRY-local}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      case "$telemetry_switch" in 0|false|off|no) return 0 ;; esac
+      case "$legacy_telemetry_switch" in 0|false|off|no) return 0 ;; esac
+      if [ "${ALIPAY_AIPAY_TELEMETRY+x}" != x ] && [ "$legacy_telemetry_switch" != local ]; then return 0; fi
+      ;;
   esac
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   telemetry_script="${common_dir}/telemetry.mjs"

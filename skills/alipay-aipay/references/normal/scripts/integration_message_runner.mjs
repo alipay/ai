@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -8,9 +9,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { configuredPath } from './telemetry_config.mjs';
+import { isCliPreparationDirectory } from './alipay_cli_preparation.mjs';
 import { isWindowsPlatform } from './platform_compat.mjs';
-import { renderMessage } from './render_customer_message.mjs';
-import { currentRunContext, emitStageMetric, startTelemetryRun, telemetryEnabled } from './telemetry.mjs';
+import { renderMessage, renderPlanMessage } from './render_customer_message.mjs';
+import { currentRunContext, emitStageMetric, startTelemetryRun, telemetryStoragePaths } from './telemetry.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const inspectorPath = path.join(scriptDir, 'project_route_inspector.sh');
@@ -56,6 +59,12 @@ const skippedProjectDirs = new Set([
   '__pycache__',
   'build',
   'coverage',
+  '.nyc_output',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.parcel-cache',
+  '.turbo',
+  'obj',
   'dist',
   'logs',
   'node_modules',
@@ -65,21 +74,6 @@ const skippedProjectDirs = new Set([
   'vendor'
 ]);
 const sourceFileExtensions = new Set(['.java', '.kt', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.php', '.cs']);
-const snapshotConfigExtensions = new Set([
-  '.config', '.conf', '.csproj', '.fsproj', '.ini', '.properties', '.sln', '.toml', '.vbproj', '.xml', '.yaml', '.yml'
-]);
-const snapshotConfigNames = new Set([
-  ...projectMarkerNames,
-  '.alipay-sandbox.json',
-  '.gitignore',
-  'composer.lock',
-  'dockerfile',
-  'gemfile',
-  'gemfile.lock',
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'yarn.lock'
-].map((name) => name.toLowerCase()));
 const webpayMarker = 'alipay\\.trade\\.page\\.pay|AlipayTradePagePay(Request|Model|Response)';
 const apppayMarker = 'alipay\\.trade\\.app\\.pay|AlipayTradeAppPay(Request|Model|Response)';
 const tradeQueryMarker = 'alipay\\.trade\\.query|AlipayTradeQuery(Request|Model|Response)|alipay_trade_query_response';
@@ -458,7 +452,39 @@ function isReadableDirectory(directory) {
   }
 }
 
-function projectFiles(projectPath) {
+function configuredStateDirectory(projectPath) {
+  const configured = configuredPath(process.env, 'TELEMETRY_DIR');
+  if (!configured || !fs.existsSync(configured)) return null;
+  const state = fs.realpathSync(configured);
+  const relative = path.relative(state, projectPath);
+  if (!relative || relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative)) {
+    throw new Error('运行状态目录须与工程隔离，请选择独立目录，不能使用工程根目录或其上级');
+  }
+  const inside = path.relative(projectPath, state);
+  return inside.split(path.sep)[0] === '..' || path.isAbsolute(inside) ? null : state;
+}
+
+// A misplaced state directory must never hide merchant source, config or fixtures.
+function assertDedicatedStateDirectory(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const name = entry.name;
+    if (entry.isDirectory() && name.endsWith('.json.cli-preparation')
+        && isCliPreparationDirectory(path.join(directory, name))) continue;
+    if (entry.isDirectory() && (['outbox', 'conversations'].includes(name) || name.endsWith('.json.checks'))) continue;
+    if (entry.isFile()) {
+      if (name === 'upload-status.json' || /\.json\.(?:handoff|lock)$/u.test(name) || /^\..+\.\d+\.tmp$/u.test(name) || /\.json\.handoff\.[a-f0-9-]{36}\.tmp$/u.test(name)) continue;
+      if (name.endsWith('.json')) {
+        let state;
+        try { state = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')); }
+        catch (error) { if (error.code === 'ENOENT') continue; }
+        if (state?.schema_ver === 2 && state.run_id && state.root_intent && state.product_type) continue;
+      }
+    }
+    throw new Error('工程内的运行状态目录含有其他文件，请使用独立状态目录后重新检查工程');
+  }
+}
+
+function projectFiles(projectPath, stateDirectory = null) {
   const files = [];
   const stack = [projectPath];
   while (stack.length > 0) {
@@ -466,7 +492,9 @@ function projectFiles(projectPath) {
     for (const entry of safeReaddir(directory)) {
       const entryPath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (!entry.isSymbolicLink() && !skippedProjectDirs.has(entry.name)) stack.push(entryPath);
+        if (entryPath === stateDirectory) {
+          assertDedicatedStateDirectory(entryPath);
+        } else if (!entry.isSymbolicLink() && !skippedProjectDirs.has(entry.name)) stack.push(entryPath);
         continue;
       }
       if (entry.isSymbolicLink() || !entry.isFile()) continue;
@@ -480,12 +508,32 @@ function sourceFiles(projectPath, files = projectFiles(projectPath)) {
   return files.filter((file) => sourceFileExtensions.has(path.extname(file).toLowerCase()));
 }
 
-function isSnapshotConfigFile(file) {
-  const basename = path.basename(file).toLowerCase();
-  return snapshotConfigNames.has(basename)
-    || /^\.env(?:\.|$)/u.test(basename)
-    || /^(?:appsettings(?:\.[^.]+)*|config|jsconfig|launchsettings|settings|tsconfig(?:\.[^.]+)*)\.json$/u.test(basename)
-    || snapshotConfigExtensions.has(path.extname(basename));
+function isRuntimeSqliteFile(projectPath, file) {
+  const relative = path.relative(projectPath, file).split(path.sep).join('/');
+  const parts = relative.split('/');
+  const databaseName = parts.at(-1).replace(/-(?:wal|shm|journal)$/u, '');
+  if (!/\.(?:db|sqlite|sqlite3)$/iu.test(databaseName)) return false;
+  // Do not ignore data/ wholesale or honor arbitrary .gitignore rules: either can
+  // contain implementation, configuration, migrations or test inputs.
+  if (parts.length === 1 ? databaseName !== 'db.sqlite3'
+    : !['data', 'instance', 'storage', 'var'].includes(parts[0])) return false;
+  if (/(?:^|[/_.-])(?:tests?|specs?|fixtures?|seeds?|migrations?|schemas?)(?:$|[/_.-])/iu.test(relative)) return false;
+  const database = path.join(path.dirname(file), databaseName);
+  let fd;
+  try {
+    if (!fs.lstatSync(database).isFile()) return false;
+    fd = fs.openSync(database, 'r');
+    const header = Buffer.alloc(16);
+    return fs.readSync(fd, header, 0, header.length, 0) === header.length
+      && header.equals(Buffer.from('SQLite format 3\0'));
+  } catch (error) {
+    // A runtime file can disappear during checkpoint/shutdown. An orphan sidecar
+    // with no identifiable SQLite database is still treated as an ordinary input.
+    if (error.code === 'ENOENT') return !fs.existsSync(file);
+    throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 function projectSnapshot(projectPath) {
@@ -493,22 +541,32 @@ function projectSnapshot(projectPath) {
     throw new Error('项目快照路径必须是可访问的绝对目录');
   }
   const canonicalPath = fs.realpathSync(projectPath);
-  const files = projectFiles(canonicalPath);
+  const files = projectFiles(canonicalPath, configuredStateDirectory(canonicalPath))
+    .filter(file => !isRuntimeSqliteFile(canonicalPath, file));
   const sources = sourceFiles(canonicalPath, files);
-  const tracked = new Set([...sources, ...files.filter(isSnapshotConfigFile)]);
+  const sourceSet = new Set(sources);
   const hash = crypto.createHash('sha256');
   const contents = new Map();
   hash.update(`project=${canonicalPath}\n`);
-  for (const file of [...tracked].sort((left, right) => left.localeCompare(right))) {
-    const stat = fs.statSync(file);
+  const chunk = Buffer.allocUnsafe(65536);
+  for (const file of files) {
     const relative = path.relative(canonicalPath, file);
-    const content = fs.readFileSync(file);
-    contents.set(file, content);
+    const stat = fs.statSync(file);
     hash.update(`${relative}\0${stat.size}\0`);
-    hash.update(content);
+    if (sourceSet.has(file)) {
+      const content = fs.readFileSync(file);
+      contents.set(file, content);
+      hash.update(content);
+    } else {
+      const fd = fs.openSync(file, 'r');
+      try {
+        let n;
+        while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, n));
+      } finally { fs.closeSync(fd); }
+    }
     hash.update('\n');
   }
-  return { canonicalPath, sources, contents, fingerprint: hash.digest('hex') };
+  return { canonicalPath, files, sources, contents, fingerprint: hash.digest('hex') };
 }
 
 function projectSnapshotFingerprint(projectPath) {
@@ -752,8 +810,7 @@ export function inspectImplementation(variant, projectPath, snapshot = null) {
     .localeCompare(`${right.code}:${right.path || ''}:${right.line || 0}`));
   for (const finding of findings) {
     finding.id = crypto.createHash('sha256')
-      .update(JSON.stringify([variant, currentSnapshot.fingerprint, finding]))
-      .digest('hex');
+      .update(JSON.stringify([variant, currentSnapshot.fingerprint, finding])).digest('hex');
   }
   return { projectPath: canonicalPath, variant, findings };
 }
@@ -1180,7 +1237,7 @@ function startConfirmationFacts(args) {
 }
 
 function renderStartConfirmation(facts) {
-  return renderMessage('integration.start.confirm', facts.variant, {
+  return renderPlanMessage('integration.start.confirm', facts.variant, {
     productName: facts.productName,
     projectPath: facts.projectPath,
     projectOriginLabel: facts.route.projectOriginLabel,
@@ -1202,9 +1259,12 @@ export function createChecklistScopeReceipt(productType, projectPath) {
   const variant = productVariants[productType]?.variant;
   if (!variant) throw new Error('checklist scope product-type 非法');
   const snapshot = projectSnapshot(projectPath);
+  const run = requireChecklistRun(variant);
+  importSnapshotChecks(run, snapshot);
   return encodeReceipt({
     schema_ver: 1,
     kind: receiptKinds.checklist,
+    run_id: run.run_id,
     variant,
     project_path: snapshot.canonicalPath,
     project_fingerprint: snapshot.fingerprint
@@ -1214,7 +1274,8 @@ export function createChecklistScopeReceipt(productType, projectPath) {
 function validateChecklistScopeReceipt(receipt, expectedVariant, expectedProjectPath, snapshot) {
   const payload = decodeReceipt(receipt, receiptKinds.checklist);
   const canonicalExpectedPath = fs.realpathSync(expectedProjectPath);
-  return payload.variant === expectedVariant
+  return payload.run_id === requireChecklistRun(expectedVariant).run_id
+    && payload.variant === expectedVariant
     && payload.project_path === canonicalExpectedPath
     && snapshot.canonicalPath === canonicalExpectedPath
     && snapshot.fingerprint === payload.project_fingerprint;
@@ -1329,7 +1390,7 @@ function runServiceNotReady(args) {
 
 function runSafetyCloseout(args) {
   const variant = required(args, 'variant');
-  if (variant !== 'APPPAY') throw new Error('步骤 7 提醒仅适用于 APPPAY；AIPAY、WEBPAY 直接进入最终 checklist，上线提醒由最终 summary 输出');
+  if (variant !== 'APPPAY') throw new Error('safety-closeout 仅适用于 APPPAY；其他产品使用最终收口提醒');
   return requireCustomerMessageDelivery('integration.safety.closeout', renderMessage('integration.safety.closeout', variant, {}));
 }
 
@@ -1395,16 +1456,337 @@ function checklistInputFromArgs(args) {
   return input;
 }
 
+// Source and build inputs are fingerprinted before and after each actual project check.
+// A retry replaces only the result of that command. A passing command cannot mask a different failure.
+function requireChecklistRun(variant) {
+  const run = currentRunContext();
+  if (!run || run.terminal || run.product_type !== variant || !['integration_only', 'full_process'].includes(run.root_intent)) {
+    throw new Error('checklist 需要与本会话、任务和产品匹配的活动开发任务');
+  }
+  return run;
+}
+
+function checkDirectory(run, snapshot) {
+  const project = crypto.createHash('sha256').update(snapshot.canonicalPath).digest('hex');
+  return path.join(telemetryStoragePaths().run_state_file + '.checks', run.run_id, run.product_type, project);
+}
+
+function resultFiles(directory) {
+  try { return fs.readdirSync(directory).filter(name => name.endsWith('.json')); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+
+// review.5 recorded only the snapshot (which hashes the canonical project path).
+// Adopt records only when their original scope is unambiguous.
+function importSnapshotChecks(run, snapshot) {
+  const oldDir = path.join(telemetryStoragePaths().run_state_file + '.checks', run.run_id, snapshot.fingerprint);
+  const directory = checkDirectory(run, snapshot);
+  for (const name of resultFiles(oldDir)) {
+    if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    try { fs.renameSync(path.join(oldDir, name), path.join(directory, name.slice(0, -5) + '.legacy.' + snapshot.fingerprint + '.json')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+
+function readProjectChecksOnce(run, snapshot) {
+  importSnapshotChecks(run, snapshot);
+  const directory = checkDirectory(run, snapshot);
+  const records = [];
+  for (const name of resultFiles(directory)) {
+    let record;
+    try { record = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    const [key, owner, id] = name.split('.');
+    if (owner === 'legacy') record.fingerprint = id;
+    if (record.state === 'pending') {
+      try { process.kill(Number(owner), 0); }
+      catch (error) { if (error.code === 'ESRCH') record.state = 'failed'; }
+    }
+    records.push({ ...record, key, file: path.join(directory, name) });
+  }
+  return records;
+}
+
+function readProjectChecks(run, snapshot) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try { return readProjectChecksOnce(run, snapshot); }
+    catch (error) {
+      if (attempt === 1) throw new Error('当前工程检查证据无法可靠读取，已尝试恢复；请恢复本机检查记录后重试当前步骤。依赖该证据的步骤已暂停。', { cause: error });
+    }
+  }
+}
+
+function coveredCheck(previous, key, plan) {
+  if (previous.key === key) return true;
+  // Only explicitly enumerated Node test files have provable set coverage here.
+  // A package script or implicit test discovery may select a different target.
+  return previous.nodeTestFiles?.length && plan.nodeTestFiles
+    && previous.nodeTestFiles.every(file => plan.nodeTestFiles.includes(file));
+}
+
+function projectCheckPlan(argv, snapshot) {
+  const [executable, ...args] = argv;
+  const name = path.basename(executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/u, '');
+  const python = /^(?:py|python(?:3(?:\.\d+)?)?)$/u.test(name);
+  const files = new Set(snapshot.files.map(f => path.relative(snapshot.canonicalPath, f).split(path.sep).join('/')));
+  const isProjectFile = arg => files.has(path.relative(snapshot.canonicalPath, path.resolve(snapshot.canonicalPath, arg)).split(path.sep).join('/'));
+  const testFile = arg => isProjectFile(arg) && /(?:^|[/\\._-])(?:tests?|specs?)(?:[/\\._-]|$)|(?:Test|Tests|Spec|Specs)\.[^.]+$/u.test(arg);
+  const hasTests = [...files].some(testFile);
+  let manifest = {};
+  if (files.has('package.json')) {
+    try { manifest = JSON.parse(fs.readFileSync(path.join(snapshot.canonicalPath, 'package.json'), 'utf8')); } catch { /* Invalid project manifest cannot establish a script target. */ }
+  }
+  const scripts = manifest.scripts || {};
+  function projectTestScript(key, body) {
+    if (typeof body !== 'string' || !body.trim()) return false;
+    // A named package target must lead to a real test runner or a project test entry.
+    // Complex shell logic and execution-suppressing options are indeterminate here.
+    if (/[;|\n]/u.test(body) || /(?:^|\s)(?:--help|--version|--listTests|--showConfig|--collect-only|--dry-run|--passWithNoTests)(?:\s|$)/u.test(body)) return false;
+    return body.split(/\s*&&\s*/u).some(segment => {
+      const parts = segment.trim().split(/\s+/u);
+      const tool = path.basename(parts[0]);
+      if (tool === 'node' && parts[1] === '--test') return hasTests || parts.slice(2).some(testFile);
+      if (['jest','vitest','mocha','ava','tap','pytest','phpunit'].includes(tool)) return hasTests;
+      if (parts.length === 2 && ['node','python','python3','php','bash','sh'].includes(tool)) {
+        const entry = parts[1].replace(/^["']|["']$/gu, '');
+        return testFile(entry) || isProjectFile(entry) && /test|verify/iu.test(key) && /test|verify/iu.test(path.basename(entry));
+      }
+      return false;
+    });
+  }
+  const testScript = key => projectTestScript(key, scripts[key]);
+  const packageHasTests = Object.keys(scripts).some(testScript);
+  const requiresTest = hasTests || packageHasTests;
+  if ((name === 'node' || name === 'npm' || name === 'dotnet') && args[0] === '-v') return {};
+  if (args.some(a => ['--help','-h','--version','--collect-only','--listTests','--showConfig','--dry-run','-DskipTests','-Dmaven.test.skip=true'].includes(a))) return {};
+  if (name === 'node') {
+    if (args[0] === '--test' && args.length === 1 && hasTests) return { level: 'test' };
+    if (args[0] === '--test' && args.length > 1 && args.slice(1).every(testFile)) {
+      const nodeTestFiles = args.slice(1).map(file => crypto.createHash('sha256')
+        .update(JSON.stringify([executable, path.resolve(snapshot.canonicalPath, file)])).digest('hex'));
+      return { level: 'test', nodeTestFiles };
+    }
+    if (args.length === 2 && ['--check','-c'].includes(args[0]) && isProjectFile(args[1]) && /\.(?:[cm]?js)$/iu.test(args[1])) return { level:'static', requiresTest };
+  }
+  if (['npm','pnpm','yarn'].includes(name)) {
+    const target = args[0] === 'run' ? args[1] : args[0];
+    if (testScript(target)) return { level:'test' };
+    if (typeof scripts[target] === 'string' && /^(?:tsc|eslint|vite\s+build|next\s+build|webpack|biome\s+check|node\s+--check)(?:\s|$)/u.test(scripts[target].trim()) && !/[;|]/u.test(scripts[target]) && !/(?:--version|--help)(?:\s|$)/u.test(scripts[target])) return { level:'static', requiresTest };
+  }
+  const isPython = python;
+  const testRunner = isPython && args[0] === '-m' ? args[1] : name;
+  if (['pytest','unittest'].includes(testRunner) && (hasTests || files.has('pytest.ini') || files.has('pyproject.toml'))) return { level:'test' };
+  if (isPython && args[0] === '-m' && args[1] === 'py_compile' && args.length > 2 && args.slice(2).every(isProjectFile)) return { level:'static', requiresTest };
+  if (name === 'php' && args.length === 2 && args[0] === '-l' && isProjectFile(args[1])) return { level:'static', requiresTest };
+  if (name === 'phpunit' && (files.has('composer.json') || hasTests)) return { level:'test' };
+  if (['mvn','mvnw'].includes(name) && files.has('pom.xml') && args.some(a => ['test','verify'].includes(a))) return { level:'test' };
+  if (['gradle','gradlew'].includes(name) && ['build.gradle','build.gradle.kts'].some(f => files.has(f)) && args.some(a => /(?:^|:)(?:test|check)$/u.test(a))) return { level:'test' };
+  if (name === 'dotnet' && ['test','build'].includes(args[0]) && [...files].some(f => /\.(?:csproj|sln)$/iu.test(f))) return { level:args[0] === 'test' ? 'test' : 'static', requiresTest };
+  if (name === 'tsc' && files.has('tsconfig.json') && args.includes('--noEmit')) return { level:'static', requiresTest };
+  if (name === 'go' && args[0] === 'test' && files.has('go.mod')) return { level:'test' };
+  if (['make','gmake'].includes(name)) {
+    const makefile = ['Makefile','makefile','GNUmakefile'].find(f => files.has(f));
+    const target = args.find(a => !a.startsWith('-'));
+    if (makefile && target && /^[A-Za-z0-9_./-]+$/u.test(target)) {
+      const rules = fs.readFileSync(path.join(snapshot.canonicalPath, makefile),'utf8').split(/\r?\n/u);
+      const idx = rules.findIndex(line => line.includes(':') && line.split(':',1)[0].split(/\s+/u).includes(target));
+      if (idx >= 0) {
+        const recipe = [];
+        for (const line of rules.slice(idx+1)) {
+          if (!line.trim() || line.trimStart().startsWith('#')) continue;
+          if (!line.startsWith('\t')) break;
+          recipe.push(line.trim().replace(/^[@+-]+/u, ''));
+        }
+        if (recipe.some(command => projectTestScript(target, command))) return { level:'test' };
+        if (recipe.some(command => /^(?:tsc|eslint|dotnet build|node --check|php -l)(?:\s|$)/u.test(command))) return { level:'static', requiresTest };
+      }
+    }
+  }
+  // Some projects use an actual test file as their runner without a package script.
+  if (args.length === 1 && (name === 'node' || isPython || name === 'php')) {
+    const target = args[0];
+    if (testFile(target)) return { level:'test' };
+  }
+  if (name === 'composer' && files.has('composer.json')) {
+    let composer;
+    try { composer = JSON.parse(fs.readFileSync(path.join(snapshot.canonicalPath, 'composer.json'), 'utf8')); } catch { return {}; }
+    const target = args[0] === 'run-script' || args[0] === 'run' ? args[1] : args[0];
+    const body = composer.scripts?.[target];
+    if (body && projectTestScript(target, Array.isArray(body) ? body.join(' && ') : body)) return { level:'test' };
+  }
+  return {};
+}
+
+export function executeProjectCheck(argv, cwd, { platform = process.platform, env = process.env, execute = spawnSync } = {}) {
+  const options = { cwd, env, shell:false, stdio:'inherit', timeout:120000, windowsHide:true };
+  const [program,...args] = argv;
+  if (platform !== 'win32') return execute(program, args, options);
+  const name = path.win32.basename(program).toLowerCase().replace(/\.(?:exe|com|bat|cmd)$/u, '');
+  if (/^npm(?:\.cmd)?$/iu.test(program)) {
+    const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    if (fs.existsSync(npmCli)) return execute(process.execPath, [npmCli,...args], options);
+  }
+  let executable = program;
+  if (['npm', 'pnpm', 'yarn', 'bun'].includes(name) && !/[/\\]/u.test(program)) {
+    const search = Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] || '';
+    const pathExt = Object.entries(env).find(([key]) => key.toLowerCase() === 'pathext')?.[1] || '.COM;.EXE;.BAT;.CMD';
+    const extensions = path.extname(program) ? [''] : pathExt.split(';').filter(ext => /^\.(?:com|exe|bat|cmd)$/iu.test(ext));
+    const candidates = search.split(';').filter(Boolean).flatMap(directory => extensions.map(extension =>
+      path.resolve(cwd, directory.replace(/^"(.*)"$/u, '$1'), program + extension.toLowerCase())));
+    executable = candidates.find(file => {
+      try { return fs.statSync(file).isFile(); }
+      catch { return false; }
+    }) || program;
+  }
+  if (/\.(?:bat|cmd)$/iu.test(executable)) {
+    // cmd scripts need the Windows command interpreter. Only simple literal tokens
+    // can cross that boundary. Native .exe commands retain argument-array semantics.
+    const batch = path.isAbsolute(executable) ? executable : path.resolve(cwd, executable);
+    if (/["%\r\n]/u.test(batch) || args.some(arg => /["%&|^<>!()\r\n]/u.test(arg))) throw new Error('该 Windows 脚本参数包含命令解释字符，请使用原生可执行工具或已声明的工程目标');
+    if (!fs.existsSync(batch)) throw new Error('Windows 工程脚本需要实际项目路径或绝对路径');
+    const line = [batch,...args].map(arg => '"' + arg + '"').join(' ');
+    return execute(path.join(env.SystemRoot || 'C:\\Windows','System32','cmd.exe'),
+      ['/d','/v:off','/s','/c','"' + line + '"'], { ...options, windowsVerbatimArguments:true });
+  }
+  return execute(executable, args, options);
+}
+
+function runProjectCheck(args) {
+  const variant = required(args, 'variant');
+  const run = requireChecklistRun(variant);
+  // Re-entering verification supersedes its previous terminal result, including
+  // attempts rejected for a stale scope before a command can run.
+  clearFullProcessDecision(run);
+  const project = required(args, 'project-path');
+  const snapshot = projectSnapshot(project);
+  if (!validateChecklistScopeReceipt(required(args, 'scope-receipt'), variant, project, snapshot)) {
+    throw new Error('工程检查需要当前开发任务和工程版本的 checklist 范围');
+  }
+  let argv;
+  try { argv = JSON.parse(required(args, 'argv-json')); } catch { throw new Error('检查命令须为 JSON 参数数组'); }
+  if (!Array.isArray(argv) || !argv.length || argv.length > 128 || argv.some(a => typeof a !== 'string' || a.includes('\0')) || !argv[0]) {
+    throw new Error('检查命令须为可执行程序及其参数');
+  }
+  const key = crypto.createHash('sha256').update(JSON.stringify(argv)).digest('hex');
+  const plan = projectCheckPlan(argv, snapshot);
+  if (!plan.level) throw new Error('需要与当前工程关联的本地测试、构建或静态检查命令');
+  const directory = checkDirectory(run, snapshot);
+  const file = path.join(directory, key + '.' + process.pid + '.' + crypto.randomUUID() + '.json');
+  // Keep command arguments (which may include credentials) out of local receipts.
+  // Hashed targets can be matched to files still present in the current project.
+  const rawTool = path.basename(argv[0]).toLowerCase().replace(/\.(?:exe|cmd|bat)$/u, '');
+  const tool = /^(?:py|python(?:3(?:\.\d+)?)?)$/u.test(rawTool) ? 'python' : rawTool;
+  const explicitFiles = new Set(argv.slice(1).filter(arg => !arg.startsWith('-'))
+    .map(arg => path.resolve(snapshot.canonicalPath, arg)));
+  const targetRefs = snapshot.files.filter(file => explicitFiles.has(file)).map(file =>
+    projectFileId(snapshot.canonicalPath, file));
+  const record = { ...plan, tool, targetRefs, fingerprint: snapshot.fingerprint,
+    nodeTestGroup: tool === 'node' && argv.length === 2 && argv[1] === '--test' };
+  writeLocalResult(file, { ...record, state: 'pending' });
+  try {
+    // Resolve only results that were already known when this retry began.
+    // A concurrent failure remains pending remediation even if this attempt succeeds.
+    const previous = readProjectChecks(run, snapshot).filter(check =>
+      check.state !== 'pending' && coveredCheck(check, key, plan));
+    const result = executeProjectCheck(argv, snapshot.canonicalPath);
+    if (projectSnapshotFingerprint(project) !== snapshot.fingerprint || currentRunContext()?.run_id !== run.run_id) {
+      throw new Error('运行检查时任务或工程已变化，请重新取得当前范围');
+    }
+    if (result.error || result.status !== 0) throw new Error('本地工程检查未通过或未能运行，已记录结果');
+    writeLocalResult(file, { ...record, state: 'passed' });
+    for (const check of previous) fs.rmSync(check.file, { force: true });
+    process.stderr.write(internalPrefix + 'PROJECT_CHECK=passed\n');
+  } catch (error) {
+    writeLocalResult(file, { ...record, state: 'failed' });
+    throw error;
+  }
+}
+
+function projectFileId(root, file) {
+  return crypto.createHash('sha256').update(path.relative(root, file)).digest('hex');
+}
+
+function projectCheckFindings(checks, snapshot) {
+  const findings = [];
+  const unfinished = checks.some(c => c.state !== 'passed');
+  if (unfinished) findings.push({ code: 'PROJECT_CHECK_FAILED', message: '请复核未通过或仍在执行的工程检查' });
+  // Native JS sources can be parsed offline without loading merchant application code.
+  // Scope the built-in check to the payment implementation and its module format.
+  const files = implementationSourceFiles(snapshot.canonicalPath, snapshot.sources, snapshot.contents);
+  const paymentModules = files.filter(file => /\.(?:mjs|cjs|js)$/iu.test(file) && /alipay|Payment-(?:Needed|Proof)|notify_url/iu.test(snapshot.contents.get(file).toString('utf8')));
+  for (const file of paymentModules) {
+    const result = spawnSync(process.execPath, ['--check', file], { cwd: snapshot.canonicalPath, shell: false, stdio: 'ignore', timeout: 10000 });
+    if (result.error || result.status !== 0) findings.push(auditFinding(snapshot.canonicalPath, 'PROJECT_SYNTAX_FAILED', '支付代码未通过 Node 语法检查', { file }));
+  }
+  if (!unfinished && !checks.some(c => c.fingerprint === snapshot.fingerprint && c.state === 'passed' && (c.level === 'test' || !c.requiresTest))) findings.push({ code: 'PROJECT_CHECK_MISSING', message: '缺少本轮实际运行的适用工程检查结果，按当前工程运行定向检查后再判断' });
+  return findings;
+}
+
+// One low-sensitivity receipt per session. A fresh checklist invalidates the prior decision.
+function handoffPath() {
+  return telemetryStoragePaths().run_state_file + '.handoff';
+}
+
+export function clearFullProcessDecision(run) {
+  if (run?.root_intent === 'full_process') fs.rmSync(handoffPath(), { force: true });
+}
+
+export function recordFullProcessDecision(run, product, input, snapshot) {
+  if (!run || run.terminal || run.root_intent !== 'full_process' || run.product_type !== product.toUpperCase()) return;
+  let result = '未通过';
+  if (input.executionMode === '完整接入' && input.blockingDefectState === 'NONE') {
+    if (input.overallResult === '通过' && input.sandboxConfigState === 'READY' && input.failedItems === '无' && input.manualItems === '无') result = '已完成';
+    if (input.overallResult === '部分通过' && ['CREATE_PENDING', 'VERIFY_PENDING'].includes(input.sandboxConfigState)) result = '部分完成，沙箱配置待完成';
+    if (input.overallResult === '部分通过' && input.sandboxConfigState === 'READY' && input.failedItems === '无' && input.manualItems !== '无') result = '部分完成，人工待验证';
+  }
+  const decision = { run: run.run_id, product: product.toLowerCase(), result, sandbox: input.sandboxConfigState, entered: false,
+    project: snapshot.canonicalPath, fingerprint: snapshot.fingerprint };
+  writeHandoff(decision);
+}
+
+function writeHandoff(decision) {
+  writeLocalResult(handoffPath(), decision);
+}
+
+function writeLocalResult(file, value) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const tmp = file + '.' + crypto.randomUUID() + '.tmp';
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+      fs.renameSync(tmp, file);
+      return;
+    } catch (error) {
+      if (attempt === 1) throw new Error('当前工程检查或交接证据无法保存，已尝试恢复；请恢复本机状态目录后重试当前步骤。依赖该证据的步骤已暂停。', { cause: error });
+    } finally {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* Keep the original evidence error and retry budget. */ }
+    }
+  }
+}
+
+export function checkFullProcessDecision(product, { result, sandbox, enter = false } = {}) {
+  const run = currentRunContext();
+  let d;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try { d = JSON.parse(fs.readFileSync(handoffPath(), 'utf8')); break; }
+    catch { /* Retry once; unavailable evidence cannot authorize handoff. */ }
+  }
+  if (!d || !run || run.terminal || run.root_intent !== 'full_process' || d.run !== run.run_id || d.product !== product
+    || run.product_type !== product.toUpperCase() || d.result === '未通过' || (result === undefined ? !d.entered : d.result !== result || d.sandbox !== sandbox)) {
+    throw new Error('没有同一 run 和产品的可衔接 checklist 终态；不得进入 Onboarding。请恢复本机交接证据，或重新完成当前项目校验后再继续开通。');
+  }
+  // The checklist already validated the project and its checks. Handoff consumes
+  // that terminal result without reopening the project or recomputing a snapshot.
+  // Starting another checklist/project check revokes the previous decision.
+  if (enter) writeHandoff({ ...d, entered: true });
+}
+
 async function runChecklistResult(args) {
   const variant = required(args, 'variant');
   if (!['AIPAY', 'WEBPAY', 'APPPAY'].includes(variant)) throw new Error('variant 非法，仅支持 AIPAY、WEBPAY、APPPAY');
-  if (telemetryEnabled()) {
-    const run = currentRunContext();
-    if (!run?.run_id || run.terminal || run.product_type !== variant.toUpperCase()
-      || !['integration_only', 'full_process'].includes(run.root_intent)) {
-      throw new Error('checklist 必须在当前产品匹配的 active integration run 内执行');
-    }
-  }
+  clearFullProcessDecision(currentRunContext());
+  const run = requireChecklistRun(variant);
   if (Object.prototype.hasOwnProperty.call(args, 'implementation-audit-receipt')) {
     throw new Error('implementation-audit-receipt 已废弃');
   }
@@ -1420,27 +1802,35 @@ async function runChecklistResult(args) {
   }
   const input = checklistInputFromArgs(args) || await readStdin();
   const audit = inspectImplementation(variant, projectPath, snapshot);
-  const findings = reviewedAuditFindings(audit, args['audit-review'], snapshot);
-  if (findings.length === 0 && finalizesAuditFindings) {
+  if (input.executionMode !== (run.root_intent === 'full_process' ? '完整接入' : '仅代码开发')) {
+    throw new Error('校验结果的任务类型与当前任务不一致');
+  }
+  const checks = readProjectChecks(run, snapshot);
+  const reviewed = reviewedAuditFindings(audit, args['audit-review'], snapshot);
+  audit.findings = reviewed;
+  if (input.overallResult !== '未通过') audit.findings.push(...projectCheckFindings(checks, snapshot));
+  if (audit.findings.length === 0 && finalizesAuditFindings && input.overallResult !== '未通过') {
     throw new Error('finalize-audit-findings 仅用于收口实际 audit findings');
   }
-  if (findings.length > 0) {
+  if (audit.findings.length > 0) {
     if (args['finalize-audit-findings'] !== 'true') {
       process.stderr.write(`${internalPrefix}CHECKLIST_AUDIT=${JSON.stringify({
         state: 'REPAIR_REQUIRED',
-        findings
+        findings: audit.findings
       })}\n`);
       return null;
     }
     input.overallResult = '未通过';
     input.blockingDefectState = 'PRESENT';
-    input.failedItems = mergeAuditItems(input.failedItems, findings);
+    input.failedItems = mergeAuditItems(input.failedItems, audit.findings);
     if (input.executionMode === '完整接入') {
       input.nextFlowReminder = '代码开发校验通过后将自动进入支付产品-产品开通；未通过时停留在代码开发。';
     }
   }
-  emitStageMetric('integration.complete_coding');
   const rendered = renderMessage('integration.checklist.result', variant, input);
+  recordFullProcessDecision(run, variant, input, snapshot);
+  if (input.overallResult !== '未通过' && input.blockingDefectState === 'NONE') emitStageMetric('integration.complete_coding');
+  emitStageMetric('integration_summary');
   return requireCustomerMessageDelivery('integration.checklist.result', rendered);
 }
 
@@ -1512,15 +1902,16 @@ export async function runIntegrationMessageCli(argv = process.argv) {
     console.log(runWindowsSandboxSummary(args));
     return;
   }
+  if (command === 'project-check') return runProjectCheck(args);
   if (command === 'checklist-result') {
     const rendered = await runChecklistResult(args);
     if (rendered !== null) console.log(rendered);
     return;
   }
-  throw new Error('用法: integration_message_runner.mjs <resolve-project|locate-projects|framework-resolve|start-confirm|a2m-execution-guard|a2m-execution-result|context-required|product-clarify|product-unsupported|windows-sandbox-setup|local-acceptance-notice|a2m-test-start|sandbox-android-client|service-not-ready|safety-closeout|windows-sandbox-summary|checklist-result> ...');
+  throw new Error('用法: integration_message_runner.mjs <resolve-project|locate-projects|framework-resolve|start-confirm|a2m-execution-guard|a2m-execution-result|context-required|product-clarify|product-unsupported|windows-sandbox-setup|local-acceptance-notice|a2m-test-start|sandbox-android-client|service-not-ready|safety-closeout|windows-sandbox-summary|project-check|checklist-result> ...');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runIntegrationMessageCli().catch((error) => {
     console.error(`INTEGRATION_MESSAGE_ERROR:${error.message}`);
     process.exitCode = 1;

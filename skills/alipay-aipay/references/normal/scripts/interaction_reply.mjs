@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -130,7 +131,7 @@ export function runInteractionReplyCli(argv = process.argv) {
   if (decision === 'REJECTED') process.exitCode = 2;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isMainModule(import.meta.url)) {
   try {
     runInteractionReplyCli();
   } catch (error) {

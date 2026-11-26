@@ -1,0 +1,11 @@
+{
+  "name": "alipay-subscription-sandbox-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Subscription sandbox CLI for AI-assisted merchant integration",
+  "engines": { "node": ">=18.17" },
+  "bin": { "alipay-subscription-sandbox": "bin/sandbox.mjs" },
+  "files": ["bin", "lib", "README.md", "VERIFICATION.md"],
+  "scripts": { "test": "node --test", "check": "node --check bin/sandbox.mjs && node --check lib/cli.mjs && node --check lib/client.mjs && node --check lib/payment-link.mjs" }
+}

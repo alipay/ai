@@ -6,15 +6,21 @@
 
 ## 1. CLI 检测
 
-### 1.0 对话首次成功刷新
+### 1.0 任务级 CLI 准备
 
-本次 Agent 对话首次使用 `alipay-aipay` Skill 时，版本确定后按根 `SKILL.md` 执行一次：
+需要外部支付宝 CLI 的实际执行任务，在既有 `env check|integration-check` 公共准备入口自动刷新一次。开通的 MCC 查询早于环境检查，因此仅在确需调用 `queryMcc` 或 `batchQueryMcc` 前复用同一准备函数；目录缓存、选择缓存和本地匹配不触发。普通问答、资料加载、消息渲染、项目本地校验不刷新，Token Pay 随包沙箱测试 CLI 也不依赖此工具。
+
+脚本把准备结果保存在本机当前 run 状态文件旁的独立私有目录，绑定 `run_id`、规范化 Skill 路径和 `PROFILE.version`；不会修改遥测事件或上传该记录。只有安装后目标 CLI 的 `version` 实际执行成功才记录 `READY`。同一任务的后续准备复用成功结果，并复检该目标；runtime 为后续业务选用同一路径。新任务或 Skill 路径/版本变化不借用旧记录。Agent 不维护“本对话已刷新”记忆，也不额外调用刷新命令。
+
+macOS/Linux 使用已有安装入口，目标为 `~/.local/bin`；Windows READY 复用现有原生用户级安装入口。Windows LEGACY/CODE_ONLY 不触发；依赖缺失仍按 Windows 环境分流与准备机制恢复。安装、下载及版本探测不携带 `PLATFORM`、`PLATFORM_ID`、`PRODUCT` 或 `ALIPAYCLI_BIZ_INFO`。这里的刷新是下载并执行官方安装器，不是本地/远端版本比较；`version` 成功只证明可启动，不宣称已核实最新版本或所有能力兼容。
+
+任务准备输出内部 `ALIPAY_AIPAY_INTERNAL:ALIPAY_CLI_PREPARATION=<状态>`，业务环境检查仍输出既有 `CLI_ENV:*`。首次失败或中断不记录成功，后续自动入口不重复安装；有可用旧 CLI 时继续按实际环境结果处理，缺失时停止依赖动作。网络、目标目录权限或安装问题恢复后，才可执行下列任务恢复命令补试一次：
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env refresh-alipay-cli
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env retry-alipay-cli --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-该动作把目标刷新到 `~/.local/bin`，不携带 `PLATFORM`、`PRODUCT` 或 `ALIPAYCLI_BIZ_INFO`。成功事实、内部 marker、重试预算和同对话复用均以根启动协议为准；失败不证明 CLI 可用，仍由本章检测和业务脚本按实际结果处理。
+同一任务最多两次安装尝试；补试仍失败不循环，保留实际环境缺口。`RUNNING` 表示其他准备尚未结束或中断结果未确认，不自动重放；`STATE_UNAVAILABLE` 表示不能安全保存/读取准备状态，本次不尝试安装，应先恢复状态目录。手动恢复 CLI 后可继续环境检查；成功准备记录只代表安装验证结果，不能代替业务验证。`env retry-alipay-cli` 必须绑定活动任务；`env refresh-alipay-cli` 保留原公开工具维护语义，仅在用户明确要求刷新或确认中断安装已结束后使用，不受任务成功标记短路，沿用原 `ALIPAY_CLI_REFRESH` 结果协议。它不改写任务准备记录；之后环境检查仍按实际 CLI 可用性继续。
 
 ### 1.1 检测命令
 
@@ -41,7 +47,7 @@ which alipay-cli 2>/dev/null && alipay-cli version
 - `alipay-cli login`、`alipay-cli whoami`、`alipay-cli logout`
 - `alipay-cli mcp call ...`
 - `alipay-cli file upload ...`
-- `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env refresh-alipay-cli`
+- 任务公共 CLI 准备，以及 `env retry-alipay-cli` / `env refresh-alipay-cli`（均由当前 Skill 的统一 runtime 调用）
 - `export ALIPAY_CLI_BIN="$HOME/.local/bin" && curl -fsSL https://opengw.alipay.com/alipaycli/install | ALIPAY_CLI_SKIP_VERIFY=true bash`
 - 按量付费沙箱测试中会访问用户服务或沙箱收银接口的 `local_402_sandbox_pay.py`
 
@@ -93,7 +99,7 @@ jq --version
 | Linux (Debian/Ubuntu) | `sudo apt-get update && sudo apt-get install -y jq` |
 | Linux (CentOS/RHEL) | `sudo yum install -y jq` |
 
-Windows Integration 的 Node runner 路径只要求 Node，不以 Bash、jq 或 alipay-cli 阻断 Step 1；进入产品开通或既有 shell/CLI 脚本时仍按 flow 补齐依赖。其他系统和 Onboarding 的检查边界不变。
+Windows 收单按[兼容环境](windows-environment.md)的分流执行。READY 先复检 Git Bash、jq 和 CLI，进入本地快速沙箱及开通。独立代码开发可在 CODE_ONLY 或 LEGACY 上继续；三款收单执行任务默认自动准备依赖，失败时不自动创建沙箱。开通使用 READY 本地，LEGACY/CODE_ONLY 由平台入口交付官网指引；完整接入仍先满足开发交接条件，不在降级路线执行本地开通命令。
 
 ---
 
@@ -101,7 +107,7 @@ Windows Integration 的 Node runner 路径只要求 Node，不以 Bash、jq 或 
 
 ### 4.1 自动安装
 
-`npx -y @alipay/alipay-aipay@latest install` 的后台准备任务会把 alipay-cli 安装到用户目录 `~/.local/bin`，无需 sudo。正常 Skill 触发已通过 `env refresh-alipay-cli` 自动刷新到同一目标目录；手动兜底时使用：
+公开安装器先完成 Skill 安装，再在 macOS/Linux 后台尽力准备用户级 CLI/jq；`--skip-tools` 跳过工具准备。需要准备支付宝 CLI 时，`env refresh-alipay-cli --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 的用户级安装目标为 `~/.local/bin`。手动兜底时使用：
 
 ```bash
 mkdir -p ~/.local/bin
@@ -141,12 +147,12 @@ source ~/.bashrc  # Linux/bash
 
 > ⚠️ **强制规范：检测结果仅供内部使用，禁止向用户输出！**
 
-AI 工具由 `scripts/detect_dev_tool.sh` 检测；`init_alipay_cli_context` 设置 `DEV_TOOL_NAME`、`PLATFORM`。`run_id` 在根意图与产品首次唯一确定时由 runtime 生成 UUID；同一组合的 active run 复用，组合变化或旧 run 已关闭时生成新 UUID，第三方项目 ID 不参与生成。`common.sh` 为业务 `PLATFORM_ID` 优先使用有效的第三方项目 ID（`COZE_PROJECT_ID`、`MEOO_PROJECT_ID` 或 MIAODA 的 `VITE_APP_ID`/`PLATFORM_ID`），缺失时回退当前 `run_id`；遥测开关不改变该回退规则。脚本从当前生效 Skill 的 `VERSION` 和同源 `machineUserID` 动态生成 `ALIPAYCLI_BIZ_INFO={"skill":"alipay-aipay","skill_version":"v<当前 VERSION>","skill_user_id":"machine_<32位匿名机器哈希>"}`；若 Skill 根目录存在普通、合法且不超过 64 KiB 的 `PROFILE`，并且其中 `schemaVersion=1`，则分别校验可选 `chinfo` 和 `vid` 是否为 1 至 128 个无首尾空白和控制字符的 Unicode 字符，并把各自合法值追加到同一 JSON。任一字段缺少或无效时仅省略该字段；`PROFILE` 无法解析时两者都省略，且不得用 `PLATFORM` 回填 `chinfo`；极端环境无法取得合法 `machine_` 标识时只省略 `skill_user_id`，不写 `anonymous_uid` 且不阻断业务调用。所有携带 `PLATFORM` 的 Skill 业务 CLI 调用均携带该 JSON，外部同名值会被覆盖；`alipay-cli version` 等不携带 `PLATFORM` 的安装和环境探测不注入该变量。产品确认后，Onboarding 还严格映射 `aipay|webpay|apppay` 为 `PRODUCT=AIPAY|WEBPAY|APPPAY`，其环境检查、登录、查询、写入和上传均携带该值，但 `PRODUCT` 和 `ALIPAYCLI_BIZ_INFO` 都不写入 MCP JSON；Integration 产品确定前的环境检查和快速沙箱不传 `PRODUCT`。
+AI 工具由 `scripts/detect_dev_tool.sh` 检测；`init_alipay_cli_context` 设置 `DEV_TOOL_NAME`、`PLATFORM`。`run_id` 在根意图与产品首次唯一确定时由 runtime 生成 UUID；同一组合的 active run 复用，组合变化或旧 run 已关闭时生成新 UUID，第三方项目 ID 不参与生成。`common.sh` 为业务 `PLATFORM_ID` 优先使用有效的第三方项目 ID（`COZE_PROJECT_ID`、`MEOO_PROJECT_ID` 或 MIAODA 的 `VITE_APP_ID`/`PLATFORM_ID`），缺失时回退当前 `run_id`；遥测开关不改变该回退规则。业务归因由当前 PROFILE.version、telemetry 同源匿名机器标识及 PROFILE 来源字段合成：`ALIPAYCLI_BIZ_INFO={"skill":"alipay-aipay","skill_version":"v<PROFILE.version>","skill_user_id":"machine_<32位哈希>","chinfo":"<有效来源>","vid":"<有效访问来源>"}`。匿名机器标识不可用时只省略 skill_user_id；无效/缺失来源字段逐项省略，不阻断业务或覆盖有效字段。所有携带 `PLATFORM` 的 Skill 业务 CLI 调用均携带该 JSON，外部同名值会被覆盖；`alipay-cli version` 等不携带 `PLATFORM` 的安装和环境探测不注入该变量。产品确认后，Onboarding 还严格映射 `aipay|webpay|apppay` 为 `PRODUCT=AIPAY|WEBPAY|APPPAY`，其环境检查、登录、查询、写入和上传均携带该值，但 `PRODUCT` 和 `ALIPAYCLI_BIZ_INFO` 都不写入 MCP JSON；Integration 产品确定前的环境检查和快速沙箱不传 `PRODUCT`。
 
 ```
 ❌ 禁止：向用户输出"环境检查完成，检测到您正在使用 Claude Code 环境"等检测结果
 ❌ 禁止：向用户透出任何关于 AI 编程工具检测的信息
-✅ 正确：检测结果仅供内部使用，只用于脚本设置 `PLATFORM`；`PLATFORM_ID` 优先使用有效第三方项目 ID，缺失时回退当前 `run_id`；`ALIPAYCLI_BIZ_INFO` 由当前 Skill 版本、匿名 `skill_user_id` 及可选 `PROFILE.chinfo`、`PROFILE.vid` 派生，各字段缺少时分别省略；Onboarding 的 `PRODUCT` 由已确认产品映射
+✅ 正确：检测结果仅供内部使用，只用于脚本设置 `PLATFORM`；`PLATFORM_ID` 优先使用有效第三方项目 ID，缺失时回退当前 `run_id`；`ALIPAYCLI_BIZ_INFO` 由当前 Skill 版本和匿名 `skill_user_id` 派生，Onboarding 的 `PRODUCT` 由已确认产品映射
 ✅ 正确：静默完成检测，直接进入下一步流程
 ```
 
