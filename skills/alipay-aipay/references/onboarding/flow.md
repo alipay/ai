@@ -1,6 +1,10 @@
 <!-- ALIPAY_AIPAY_FLOW:ONBOARDING_CORE:START -->
 # 支付产品-产品开通流程说明
 
+Windows `CODE_ONLY` 表示本地工具不可用于自动办理；三款收单产品的平台入口只交付官网指引，不运行本地开通动作。完整接入仍须先通过原开发交接校验；独立改变根意图时重新执行当前任务的 `windows-entry`。
+
+Windows 的 READY/LEGACY 取根入口唯一分流，或 Windows 环境文档明确修复后唯一、根意图匹配的新 READY 事实；BLOCKED 停在环境恢复点，不进入本 flow。后续 runtime 命令追加当前有效的 `--windows-route`。READY 通过兼容层执行本 flow 原授权、查询、材料、写操作和收口；LEGACY 执行原站点引导；CODE_ONLY 在平台入口复用官网引导，不能加载或执行后续本地开通阶段。环境检查失败不修改业务状态、遥测开关或会话采集选择。业务调用前若返回非零及 `WINDOWS_BUSINESS_BLOCKED=ENVIRONMENT_UNAVAILABLE`，停止依赖该环境的动作，不重放写入；修复后按 Windows 环境文档有限复检，再按原只读查询核验实际状态。未知业务结果仍沿用原恢复规则。
+
 > ⚠️ **前置声明**：本 flow 仅支持 **AI 网页应用收款、AI 移动应用收款、AI 按量付费**三种产品的产品开通。原有“网站支付”“APP 支付”“按量付费”仍作为输入别名和资源目录名。**其他产品（当面付、订单码支付、JSAPI支付、预授权支付、商家扣款等）暂不支持**，如需开通请前往[支付宝商家平台](https://b.alipay.com/page/portal/home)完成。
 
 ---
@@ -13,7 +17,7 @@
 
 步骤顺序固定为方案展示后自动授权，再执行适用只读查询，最后处理独立分支。查询失败只阻断对应分支，不当作空列表；其他成功分支可继续。
 
-方案展示前只按本轮 `mcc.sh resolve-plan` 结果陈述 MCC 名称、描述和特殊资质。合法 MCC 编码和规范化后的完整类目名称由 runner 确定性匹配；其他自然语言由 Agent 对同一次 `queryMcc` 返回的当前产品完整 MCC 名称和描述做一次受限目录判断。Agent 只能返回目录引用，runner 再映射并校验为当前动态目录中的候选。`ar-support.queryMcc`、按需 `mccsearchservice.batchQueryMcc` 及候选快照的完整执行和失效规则见步骤 2；无查询依据的结论禁止推断。
+方案展示前只按本轮 `mcc.sh resolve-plan` 结果陈述 MCC 名称、描述和特殊资质。Agent 可从用户原始经营描述提炼有依据的行业概念和同义表达；对非编码且非完整类目名称的自然语言，runner 会把同一次 `queryMcc` 返回的当前产品 MCC 名称和描述以一次性目录复核 marker 交给 Agent，Agent 只能返回目录引用，runner 再映射并校验为当前动态目录中的候选。`ar-support.queryMcc`、按需 `mccsearchservice.batchQueryMcc` 及候选快照的完整执行和失效规则见步骤 2；无查询依据的结论禁止推断。
 
 ---
 
@@ -27,7 +31,7 @@
 
 ### 耗时事件规则
 
-`start-run` 已确定 `RUN_ID`；stage 由登记动作在前台固定 event/c4 并执行最长 3 秒的同步上传，Agent 不重复手工上报。每个会生成 stage 的命令前回顾当前可见用户消息得到 `HISTORY_COUNT`，并传入下文登记的 gateway 内部参数；无法可靠回顾时用 `null`。遥测失败不改变业务、卡点或对客交付；诊断只按需读 `../normal/telemetry.md`。
+`start-run` 已确定 `RUN_ID`；stage 由登记动作按全局遥测设置记录和交付，Agent 不重复手工上报。每个会生成 stage 的命令前回顾当前可见用户消息得到 `HISTORY_COUNT`，并传入下文登记的 gateway 内部参数；无法可靠回顾时用 `null`。遥测失败不改变业务、卡点或对客交付；诊断只按需读 `../normal/telemetry.md`。
 
 ---
 
@@ -56,13 +60,13 @@ Step 1: 方案规划 → Step 2: 环境检查 → Step 3: 登录授权
 <!-- GENERATED:ONBOARDING-GUARDS-SHARED:START -->
 共享护栏：`P-MCP-CONTRACT-FROZEN` 仅用已验证脚本；禁推断或尝试近似方法；`P-AUTH-BEFORE-ONBOARDING` 登录/scope/MCC 未通过前禁查询和写入；`P-SENSITIVE-STATE` 公钥限当前 app 调用且禁复述/保存；敏感值禁入回复/摘要/日志/状态/宽权限文件；临时 URL 仅由登记动作展示；`P-CUSTOMER-OUTPUT-EXCLUSIVE` 登记 stdout 原文是唯一正文；阻塞送达后立即等待；`P-ONBOARDING-CONTROL-CHANNEL` 内部行禁对客；正文为空按唯一终态转移；`P-DETERMINISTIC-HANDOFF` 仅执行登记命令并按唯一终态转移；禁追加解析；失败只走登记恢复。
 <!-- GENERATED:ONBOARDING-GUARDS-SHARED:END -->
-环境检查、产品/MCC 澄清或方案展示前先执行平台入口。`onboarding_only` 正常由 `onboarding-bootstrap --root-intent onboarding_only [--product-type "$PRODUCT_TYPE"]` 包含本动作和 entry 加载；仅原子 fallback 或 `full_process` 衔接时执行：
+已明确产品和开通任务后，先做平台判断，再澄清 MCC、展示方案。`onboarding-bootstrap` 和完整接入的 `full-process-handoff` 已执行平台入口并按同一 `--product-type "$PRODUCT_TYPE"` 加载 entry，不要重复；仅在原子恢复流程尚未做平台判断时执行：
 
 ```bash
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message platform-entry --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-- Windows：runner 优先从正式 run 取 `run_id` 生成 `platform_id`，没有正式 run 时退回当前会话可用的平台标识；禁止 Agent 传入或拼接；消息渲染会在有正式 run 时终结 run，送达唯一 stdout 后停止 Onboarding；`full_process` 保留 Integration 结果。
+- Windows READY：平台入口复检通过且 stdout 为空时继续本地 Onboarding。Windows LEGACY/CODE_ONLY：runner 依次使用现有平台项目 ID、正式 run_id；本地运行状态意外缺少稳定标识时，停止并恢复同一会话的已确认业务任务。禁止 Agent 传入或拼接；沿用原消息遥测映射，不额外生成 summary 或关闭 run；送达唯一 stdout 后停止 Onboarding；`full_process` 保留 Integration 结果。
 - 非 Windows：成功且 stdout 为空即继续；失败或输出不唯一时停止核对，禁止手写引导。
 
 用户明确要用企业账号通过 Skill 开通时执行下列消息并停止 Onboarding；不得主动询问账号类型，也不得从 MCC、营业执照或“公司”等描述推断。
@@ -79,9 +83,9 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message ente
 
 | 产品 | productType | CLI `PRODUCT` | salesCode | scope | 资料采集要求 |
 |------|-------------|---------------|-----------|-------|-------------|
-| AI 按量付费 | aipay | AIPAY | I1080300001000160457 | app:all,machine_pay:write,agmnt:write | 无需截图 |
-| AI 网页应用收款 | webpay | WEBPAY | I1080300001000041203 | app:all,fast_instant_trade_pay:write | 需要3张网站截图 |
-| AI 移动应用收款 | apppay | APPPAY | I1080300001000041313 | app:all,auth_alipay_apppay:write | 未签约时需要 APP 名称和 3 张 APP 界面截图，签约状态固定按 `OFFLINE` 提交；选择新建应用时在 Step 4 前置采集移动平台信息，Step 5.3 才用于创建 |
+<!-- ALIPAY_AIPAY_PRODUCT:aipay:START --><!-- ALIPAY_AIPAY_BRANCH:MAPPING --><!-- ALIPAY_AIPAY_PRODUCT:END -->
+<!-- ALIPAY_AIPAY_PRODUCT:webpay:START --><!-- ALIPAY_AIPAY_BRANCH:MAPPING --><!-- ALIPAY_AIPAY_PRODUCT:END -->
+<!-- ALIPAY_AIPAY_PRODUCT:apppay:START --><!-- ALIPAY_AIPAY_BRANCH:MAPPING --><!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 ## Step 详解
 
@@ -89,43 +93,35 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message ente
 
 **产品匹配规则**：
 
-| 场景关键词 | 推荐产品 |
-|-----------|----------|
-| AI、智能体、大模型、Agent、MCP | AI 按量付费 |
-| 网站、网页、PC、电脑、电商、商城、H5 | AI 网页应用收款 |
-| APP、应用内支付、手机 APP | AI 移动应用收款 |
-
-已有描述能唯一映射时直接使用；否则只执行下列命令，原文送达 stdout 后等待明确产品。仍不唯一时重复同一消息，禁止自由补问或推定。
-
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message product-clarify --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+沿用入口已确定的唯一产品。若办理场景变化，回到根入口核实新的产品与任务；未确认前不启动签约。
 
 产品明确但无经营描述/MCC：执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message mcc-clarify --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。该命令必须先创建或复用正式 telemetry run 并记录 `clarify_intent`；缺少或非法 `ROOT_INTENT` 时停止，不得继续 MCC 或授权。
 
-已有经营描述、二级类目名称或编码时，以原话作为 `MCC_SEARCH_QUERY` 进入唯一 MCC 解析/方案入口。合法 MCC 编码或规范化后与完整二级类目名称相等时由 runner 直接匹配，不调用 Agent。其他自然语言由 runner 输出一次 `MCC_AGENT_REVIEW_REQUIRED`，其中包含当前动态目录的稳定引用、名称、描述及固定判断约束；Agent 阅读用户完整原话和完整目录，只返回按匹配度排序的 0 到 8 个目录引用。用户明确提供的行业、商品、服务对象、经营方式和场景都是筛选条件，与明确条件冲突的候选必须排除；用户没有说明的细分维度保持开放，不能擅自排除或补充经营范围。候选超过 8 项时只保留最相关的 8 项。禁止业务词到 MCC 的硬编码点映射、自由提交 MCC code、远程语义或额外网络调用。
+已有经营描述、二级类目名称或编码时，以原话作为 `MCC_SEARCH_QUERY` 进入唯一 MCC 解析/方案入口。合法编码或规范化后的完整类目名称由 runner 直接匹配。其他自然语言必须由 Agent 根据本次 `queryMcc` 返回的当前产品完整 MCC 名称与描述做一次受限目录判断，考虑主营业务、否定与排除条件。runner 的字词评分及可选 `--semantic-terms-json` 只提供辅助线索，不直接形成最终候选，也不限定 Agent 可看的目录范围。收到 `MCC_AGENT_REVIEW_REQUIRED` 后，Agent 返回最多 8 个本轮目录引用，以同一 query、语义词及 `USER_INPUT_ID` 追加 `--agent-candidate-refs-json` 重跑。脚本校验引用后，以该集合为准，不合入字词检索候选；明确 `[]` 是本轮无匹配，与未判断严格区分，不再语义扩充重试。无合法复核结果、复核预算耗尽或缓存故障时停止匹配并说明需恢复目录判断，不能以字词结果替代。不得硬编码业务词到 MCC、编造引用或增加网络语义调用。目录复核不增加用户确认。
 
-同一 `run + 产品 + USER_INPUT_ID + 原始 MCC_SEARCH_QUERY + 动态目录摘要` 的自然语言判断只允许一次；同一 `USER_INPUT_ID` 不得通过改写 query 重新发起判断。Agent 返回非 JSON 字符串数组、目录外或重复引用、超过 8 项等协议错误时，runner 只输出一次 `MCC_AGENT_REPAIR_REQUIRED`；Agent 必须基于 marker 中的同一目录和明确错误原因，只修正格式、去重、排序或裁剪为最多 8 项，再用同一 query、`USER_INPUT_ID` 和 `--agent-candidate-refs-json` 原样重跑。修复不得重新解释用户意图、扩大经营范围、重新查询目录或改变用户原话。第二次仍非法、判断或修复状态重复、动态目录变化、状态不可安全记录时立即输出既有 MCC 暂时无法处理正文并停止，不回退字符匹配、不再次调用 Agent、不进入授权或签约。合法空数组表示当前目录无匹配，直接输出既有无匹配文案并等待用户补充描述，不触发修复。
+同一 `run + 产品 + USER_INPUT_ID + 原始 MCC_SEARCH_QUERY + 动态目录摘要` 的自然语言判断只允许一次；同一 `USER_INPUT_ID` 不得通过改写 query 重新发起判断。Agent 返回非 JSON 字符串数组、目录外或重复引用、超过 8 项等协议错误时，runner 只输出一次 `MCC_AGENT_REPAIR_REQUIRED`；Agent 必须基于 marker 中的同一目录和明确错误原因，只修正格式、去重、排序或裁剪为最多 8 项，再用同一 query、语义词、`USER_INPUT_ID` 和 `--agent-candidate-refs-json` 原样重跑。修复不得重新解释用户意图、扩大经营范围、重新查询目录或改变用户原话。第二次仍非法、判断或修复状态重复、动态目录变化、状态不可安全记录时立即输出既有 MCC 暂时无法处理正文并停止，不回退字符匹配、不再次调用 Agent、不进入授权或签约。合法空数组表示当前目录无匹配，直接输出既有无匹配文案并等待用户补充描述，不触发修复。
 
-`queryMcc` 树和多候选快照使用默认 1800 秒、本轮 run 私有缓存；无有效 run 不缓存。快照绑定产品、salesCode、原查询、选择回执、候选树事实及按需取得的资格详情；有效命中原样复用，失效才重查。两种 MCP 请求体不变；`batchQueryMcc` 最多一次，只传 Agent 最终候选中 `needSpecialQual=true` 的编码。
+`queryMcc` 树和多候选快照使用默认 1800 秒、本轮 run 私有缓存；无有效 run 不缓存。快照只保存官方候选目录、资格要求、选择回执和过期时间依据。回执在本机用本次查询、语义词、产品、run 和目录重新校验；复核与重试只保存按此 run 和用户消息绑定的摘要及次数。经营描述和衍生自由词仅用于当前匹配，不写缓存或诊断。有效命中原样复用，失效才重查。runner 只接受最多 12 项、单项 2 到 40 字符、总计不超过 240 字符的 JSON 字符串数组并拒绝 MCC 编码；Agent 参数错误时基于原话更正或省略，不要求用户重述。两种 MCP 请求体不变；`batchQueryMcc` 最多一次，只传树内命中且 `needSpecialQual=true` 的候选编码。
 
 ```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" [--agent-candidate-refs-json "$MCC_AGENT_CANDIDATE_REFS_JSON"] --input-id "$USER_INPUT_ID" [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" [--semantic-terms-json "$MCC_SEMANTIC_TERMS_JSON"] [--agent-candidate-refs-json "$MCC_AGENT_CANDIDATE_REFS_JSON"] --input-id "$USER_INPUT_ID" [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"] --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-只收唯一 `ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=SUCCESS` 与适用的内部结果。若同时收到唯一 `MCC_AGENT_REVIEW_REQUIRED` 且 stdout 为空，Agent 按上面的判断约束返回 0 到 8 个当前目录引用并原样重跑一次；若收到唯一 `MCC_AGENT_REPAIR_REQUIRED` 且 stdout 为空，只做一次协议修复并原样重跑。两个 marker 和中间状态都不得展示给用户。`UNIQUE` 恰一项，并有唯一 `CUSTOMER_MESSAGE_DELIVERY_REQUIRED=onboarding.plan.confirm`、`MCC_CONTEXT_RECEIPT`；先把 stdout 作为可见进行中消息原文送达，随后同一回合进入 `execute`，不等待回复。`MULTIPLE` 送候选后等待；合法 `NONE` 送既有无匹配文案后等待用户重新描述。禁止旧 `mcc-search`/`mcc-candidates`、手写候选或近似追问。
+只收唯一 `ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=SUCCESS` 与适用的内部结果。若收到唯一 `MCC_AGENT_REVIEW_REQUIRED` 且 stdout 为空，按上文立即完成一次目录判断；若收到唯一 `MCC_AGENT_REPAIR_REQUIRED` 且 stdout 为空，只做一次协议修复，以同一 query、语义词和 `USER_INPUT_ID` 重跑。两个 marker 和中间状态不得对客展示为候选。`UNIQUE` 恰一项，并有唯一 `CUSTOMER_MESSAGE_DELIVERY_REQUIRED=onboarding.plan.confirm`、`MCC_CONTEXT_RECEIPT`；先原文送达 stdout，随后同一回合进入 execute，不等待回复。`MULTIPLE` 送候选后等待选择；Agent 明确无匹配时送既有无匹配文案后等待用户补充或调整经营描述。
 
 `MCC_FLOW:RETRY_WITH_NETWORK`：联网后原样重试同一 `mcc resolve-plan`。`CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION` 且 stdout 空：给同命令 CLI 私有状态目录权限后原样重试。失败停 MCC；禁无匹配兜底或进方案/授权/签约。
 
-`ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=FAILED` 且无 `MCC_FLOW:RETRY_WITH_NETWORK`：送 stdout，停 MCC；非无匹配，禁候选/方案/授权/签约。只有用户按 stdout 指引重新发送经营描述后才开始新一轮匹配：先按统一前置规则计数，把该聊天消息原话作为新的 `MCC_SEARCH_QUERY`，使用该消息新的 `USER_INPUT_ID` 调用 `mcc resolve-plan`；不得复用上次的目录引用、修复 marker 或选择回执。即使用户原样重发经营描述，新 `USER_INPUT_ID` 也允许重新匹配。Agent 不得在没有新用户消息时自动发起第二轮，也不得因再次失败循环重试。
+`MCC_MATCH_ERROR=CONSENT_CONTEXT_UNAVAILABLE` 或 `SESSION_CONTEXT_UNAVAILABLE` 表示本机上下文未正确读取。先核对同一宿主会话、账号采集偏好及显式目录覆盖，恢复已有选择和业务任务后原样重试；不要要求用户重新描述经营内容、重新授权采集或新建任务来绕过故障。仍无法可靠读取时仅暂停依赖该上下文的 MCC 步骤，说明恢复条件；不改判为无匹配或匹配器崩溃。
 
-`MULTIPLE` 还须取得唯一 `MCC_SELECTION_RECEIPT`。用户回复序号、当前候选完整名称或编码时，以原始 `MCC_SEARCH_QUERY` 重跑同一入口：`node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" --select "$SELECTED_MCC_CODE" --selection-receipt "$MCC_SELECTION_RECEIPT" --input-id "$USER_INPUT_ID" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。有效详情快照直接生成方案，不再调用 `queryMcc` 或 `batchQueryMcc`；runner 仍校验当前 run、产品、原话、候选和事实哈希。receipt 或快照失效时不得沿用或自动套用旧选择，必须基于完整当前产品目录重新判断并至少重新展示一次当前候选。
+`ALIPAY_AIPAY_INTERNAL:MCC_QUERY_RESULT=FAILED` 且无上述网络、权限或上下文恢复标记：送stdout，停MCC；非无匹配，禁候选/方案/授权/签约。只有用户按 stdout 指引重新发送经营描述后才开始新一轮匹配：先按统一前置规则计数，把该聊天消息原话作为新的 `MCC_SEARCH_QUERY`，使用该消息新的 `USER_INPUT_ID` 调用 `mcc resolve-plan`；不得复用上次的目录引用、修复 marker 或选择回执。即使用户原样重发经营描述，新 `USER_INPUT_ID` 也允许重新匹配。Agent 不得在没有新用户消息时自动发起第二轮，也不得因再次失败循环重试。
+
+`MULTIPLE` 还须取得唯一 `MCC_SELECTION_RECEIPT`。用户回复序号、当前候选完整名称或编码时，以原始 `MCC_SEARCH_QUERY` 和首次检索使用的同一 `MCC_SEMANTIC_TERMS_JSON` 重跑同一入口：`node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" mcc resolve-plan --query "$MCC_SEARCH_QUERY" --product-type "$PRODUCT_TYPE" --root-intent "$ROOT_INTENT" [--semantic-terms-json "$MCC_SEMANTIC_TERMS_JSON"] --select "$SELECTED_MCC_CODE" --selection-receipt "$MCC_SELECTION_RECEIPT" --input-id "$USER_INPUT_ID" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。有效详情快照直接生成方案，不再调用 `queryMcc` 或 `batchQueryMcc`；runner 仍校验当前 run、产品、原话、规范化语义词、候选和事实哈希。receipt 或快照失效时不得沿用或自动套用旧选择，必须基于完整当前产品目录重新召回并至少重新展示一次当前候选。
 
 用户指定的 MCC 不在候选中时，按该 MCC 重新查询，不沿用旧候选回执，也不要要求用户换类目。
 
 `salesCode`、`scope` 和基础材料只取“产品映射”。方案只由 `mcc resolve-plan` 或已有唯一 MCC 事实时的 `onboarding-message plan-confirm --root-intent "$ROOT_INTENT" --mcc-context-receipt ... [--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"]` 生成，展示产品/scope、MCC、特殊资质、企业账号边界及商家平台链接。已有 active run 时必须传 telemetry 参数；如果该命令首次创建 run，则尚无 marker，省略参数并由同一进程把本次 plan stage 的 history 固定为 0，命令返回后取得后续使用的 `RUN_ID`。`ROOT_INTENT` 取当前路线根意图，只能是 `onboarding_only` 或 `full_process`。特殊资质只来自 `qualificationGroups`：多个 group 是 OR 关系；同一 group 内多个 qualifications 是 AND 关系；`attaType` 为空或 null 的 qualification 只展示 `qualName`，不生成上传项。禁止补充模板外资格或审核规则。
 
-不得保留“先运行旧字符串搜索，无匹配后再临时让 Agent 猜”的两阶段流程，或重复询问已知信息；自然语言只允许完整动态目录上的一次受限 Agent 判断和一次协议修复，二者预算由本轮私有状态原子固定。唯一事实校验通过、方案 marker 唯一且 stdout 已送达后，执行 `onboarding-execute-ready --product-type "$PRODUCT_TYPE"`；缺值/冲突/非唯一继续澄清，产品/MCC 变更重渲染。`execute` loader 只继承 `clarify_intent` 已记录的正式 run 事实，不再单独记录 stage，不代表新增用户回复，禁手工上报；Agent 在收到每条聊天框用户消息时，必须先按 `runtime-entry.md` 的统一前置命令计数，不按是否与 Skill 相关筛选，`summary` 收口后不再计入当前 run，`full_process` 不重置。
+本地匹配仅作辅助；目录判断须使用完整当前目录，不能只查看本地召回子集。Agent 已返回合法候选后禁止再次补回字词命中，明确空结果禁止继续语义扩充。唯一事实校验通过、方案 marker 唯一且 stdout 已送达后，执行 `onboarding-execute-ready --product-type "$PRODUCT_TYPE"`；缺值/冲突/非唯一继续澄清，产品/MCC 变更重渲染。MCC 只有实际远端查询前才自动进入本任务公共 CLI 准备，缓存命中与本地解析不刷新；后续 `env check` 复用同一记录。`execute` loader 只继承 `clarify_intent` 已记录的正式 run 事实，不再单独记录 stage，不代表新增用户回复，禁手工上报；Agent 在收到每条聊天框用户消息时，必须先按 `runtime-entry.md` 的统一前置命令计数，不按是否与 Skill 相关筛选，`summary` 收口后不再计入当前 run，`full_process` 不重置。
 
 <!-- ALIPAY_AIPAY_FLOW:ONBOARDING_ENTRY:END -->
 
@@ -148,18 +144,19 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-execute-read
 ```
 
 - 唯一 `CLI_ENV:READY`：直接进入 Step 3，不读取完整安装文档。
+- Windows 环境不就绪：停止本地业务，依照 `../normal/windows-environment.md` 有限恢复；不执行下面的 Unix 包管理器安装链。
 - `CLI_ENV:NEEDS_SETUP`：此时才读取 `../normal/alipay-cli-env.md`。若唯一 `CLI_ENV_MISSING` 含 `jq`，先以所需网络和 `~/.local/bin` 写权限执行一次 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env prepare-jq --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；唯一 `ALIPAY_AIPAY_INTERNAL:JQ_PREPARE=READY` 后原样重跑 `env check`。`FAILED|UNSUPPORTED`，或 `READY` 后复检仍缺 jq 时，由 Agent 按环境文档执行当前系统首选包管理器兜底并再次复检；macOS 必须从清华镜像开始，明确失败后才依次选阿里云、中科大和直连，不并发、不回到 `prepare-jq`。其他缺失项按既有安装、PATH、联网权限和验证规则补齐后重跑同一检查；不得重复执行 `prepare-jq` 或新增确认，未取得 `CLI_ENV:READY` 不得进 Step 3。
 - 其他输出、非 0 或 marker 冲突：停在本步骤核对脚本，不得猜测环境已就绪。
 
 若组合动作本身不可用，原子 fallback 固定为先执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding execute --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`，再执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" env check --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；fallback 不得重复 stage 或重复环境检查。
 
-签约脚本仍通过 `error_handler.sh -> common.sh` 初始化 `DEV_TOOL_NAME`、`PLATFORM`、优先取有效第三方项目 ID、缺失时取当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 版本、匿名 `skill_user_id` 及合法 `PROFILE` 中可选 `chinfo`、`vid` 的 `ALIPAYCLI_BIZ_INFO`，以及当前产品 `PRODUCT`。缺少 `chinfo` 或 `vid` 时分别保持省略，不以 `PLATFORM` 回填。有任务工具时只内部记录实际阶段，不维护任务数量；只保留当前对话最小上下文，不创建业务进度文件。
+签约脚本仍通过 `error_handler.sh -> common.sh` 初始化 `DEV_TOOL_NAME`、`PLATFORM`、优先取有效第三方项目 ID、缺失时取当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 名与版本 的 `ALIPAYCLI_BIZ_INFO`，以及当前产品 `PRODUCT`。有任务工具时只内部记录实际阶段，不维护任务数量；只保留当前对话最小上下文，不创建业务进度文件。
 
 本步骤成功时不输出“环境检查完成”“任务已创建”等对客消息，直接进 Step 3；只有安装失败、权限不足或缺工具时才输出实际问题和恢复动作。工具能力差异不得省略任务、步骤或完成状态。
 
 ### Step 3: 登录授权
 
-产品和唯一 MCC 事实已校验、方案送达且 Step 2 环境就绪后，只调用本节 `auth.sh init|open|wait|confirm|mismatch` 动作；脚本异常需要核对授权业务语义时才读取 `modules/authorization.md`。禁止直调 `alipay-cli login`、解析原始输出或展示 `verification_url`。
+产品和唯一 MCC 事实已校验、方案送达且 Step 2 环境就绪后，只调用本节 `auth.sh init|open|wait|confirm|mismatch` 动作；脚本异常需要核对授权业务语义时才读取 `modules/authorization/guide.md`。禁止直调 `alipay-cli login`、解析原始输出或展示 `verification_url`。
 
 方案送达后，`execute` loader 已继承 `clarify_intent` 的 flow start 事实；`auth.sh init` 在固定授权上下文机器校验通过后继续授权流程。两者都不替代登录、scope 或 MCC 完成条件，也不表示额外用户回复；不得另行执行 telemetry 造成重复事件。
 
@@ -221,7 +218,7 @@ Step 1 的产品/MCC 唯一事实校验和方案送达、Step 2 的环境 READY 
 
 开始执行任一签约、应用或服务只读查询时，只使用本步骤登记的 discovery runner；runner 会在子查询启动前记录一次 discovery 相关内部事实，不得另行执行 telemetry 命令。
 
-授权成功后执行全部适用只读查询，不增加确认。直接从本 flow 目录执行唯一 discovery runner；runner 在内部并发调用现有只读脚本、解析查询语义并隔离普通分支失败，正常成功路径不再预读 `product-sign.md`、`service-registration.md` 或 `app-release.md` 查询章节。不得拆回 Agent 手工并发、改写底层命令或自行合并 MCP：
+授权成功后执行全部适用只读查询，不增加确认。直接从本 flow 目录执行唯一 discovery runner；runner 在内部串行调用现有只读脚本，避免 CLI 共享登录态的并发冲突，解析查询语义并隔离普通分支失败，正常成功路径不再预读 `product-sign.md`、`service-registration.md` 或 `app-release.md` 查询章节。不得拆回 Agent 手工并发、改写底层命令或自行合并 MCP：
 
 ```bash
 # auth.sh 已提供合法 AUTH_SIGN_REUSE_RECEIPT 时，优先原样追加 --reuse-sign-receipt；否则不传。
@@ -230,19 +227,19 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-discovery ru
 
 该查询只能在当前产品匹配且未收口的 `onboarding_only|full_process` active run 内执行；telemetry 开启时缺少或不匹配 run 会直接停止，禁止完成查询后静默丢失 `onboarding.confirm_signing`。
 
-只接受唯一 `ALIPAY_AIPAY_INTERNAL:DISCOVERY_RESULT=<json>`。runner stdout 保留底层受控错误，并在无全局授权阻断或本地权限恢复时追加原 `onboarding.discovery.summary`；必须原文送达，不得手写、压缩或重放摘要。envelope 中每个分支只允许 `SUCCESS|QUERY_FAILED|NOT_APPLICABLE`；服务/应用成功时 `candidates` 必须是数组，应用还须有合法 `application_type`，否则不得当空列表。`global_blocker=AUTHORIZATION_INVALID` 必须唯一携带 `auth_recovery_action=INIT|MISMATCH`：任一子查询为 `SCOPE_MISMATCH|MCC_MISMATCH` 时固定 `MISMATCH` 并执行 Step 3 第 4 项，否则 `AUTH_REQUIRED` 固定 `INIT` 并执行第 1 项；随后停止查询且不进入 Step 4。字段非法、缺失或与该优先级矛盾时停止核对，禁止猜测。无授权阻断且任一子查询命中 CLI 私有状态权限证据时，runner 只输出一个 `ALIPAY_AIPAY_INTERNAL:DISCOVERY_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION`，不输出摘要或网络 marker；否则仅在 DNS、连接、timeout、socket/TLS、`fetch failed`、`network_error`、`网络连接失败` 或连接前沙箱禁网强证据下至多输出一个 `ALIPAY_AIPAY_INTERNAL:DISCOVERY_FLOW:RETRY_WITH_NETWORK`。支付宝侧服务异常、业务错误、裸 `permission denied` 或结构异常不得触发二者。
+只接受唯一 `ALIPAY_AIPAY_INTERNAL:DISCOVERY_RESULT=<json>`。runner stdout 保留底层受控错误，并在无全局授权阻断或本地权限恢复时追加原 `onboarding.discovery.summary`；必须原文送达，不得手写、压缩或重放摘要。envelope 中每个分支只允许 `SUCCESS|QUERY_FAILED|NOT_APPLICABLE`；失败分支的内部 `diagnostic` 保留实际退出码、信号、启动错误码和失败环节，不含原始错误正文，不对客展示；服务/应用成功时 `candidates` 必须是数组，应用还须有合法 `application_type`，否则不得当空列表。`global_blocker=AUTHORIZATION_INVALID` 必须唯一携带 `auth_recovery_action=INIT|MISMATCH`：任一子查询为 `SCOPE_MISMATCH|MCC_MISMATCH` 时固定 `MISMATCH` 并执行 Step 3 第 4 项，否则 `AUTH_REQUIRED` 固定 `INIT` 并执行第 1 项；随后停止查询且不进入 Step 4。字段非法、缺失或与该优先级矛盾时停止核对，禁止猜测。无授权阻断且任一子查询命中 CLI 私有状态权限证据时，runner 只输出一个 `ALIPAY_AIPAY_INTERNAL:DISCOVERY_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION`，不输出摘要或网络 marker；否则仅在 DNS、连接、timeout、socket/TLS、`fetch failed`、`network_error`、`网络连接失败` 或连接前沙箱禁网强证据下至多输出一个 `ALIPAY_AIPAY_INTERNAL:DISCOVERY_FLOW:RETRY_WITH_NETWORK`。支付宝侧服务异常、业务错误、裸 `permission denied` 或结构异常不得触发二者。
 
 命中 `DISCOVERY_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION` 时 stdout 必须为空；宿主支持时只允许当前同一 discovery 命令访问两个 CLI 私有状态目录并原样重试一次。拒绝、不支持或再次命中时停止申请，按最新 envelope 保留失败分支，不渲染额外恢复文案。命中 `DISCOVERY_FLOW:RETRY_WITH_NETWORK` 时先暂存本次 stdout，不对客发送；宿主支持时申请联网权限，并以完全相同的产品、salesCode 和签约复用回执原样重试同一条 discovery 命令一次。重试成功只送达重试后的 stdout 并继续；权限被拒绝、宿主不支持时送达首次 stdout 一次；重试仍返回同一 marker 时只送达重试后的 stdout 一次并停止再次申请。两类恢复都不新增对客文案、确认点或 closeout 枚举。优先级固定为 `AUTHORIZATION_INVALID`、本地权限、网络权限，禁止同时进入两个恢复分支。
 
-不存在全局授权阻断时，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding branch-summary --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 加载 Step 4 和三个分支共用的 Step 5 约束；共用区块只加载一次，不得整份读取后续 flow。
+不存在全局授权阻断时，执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding branch-summary --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"` 加载 Step 4 和三个分支共用的 Step 5 约束；共用区块只加载一次，不得整份读取后续 flow。
 
-Step 5 直接使用对应 phase 的完整命令；仅出现脚本异常、需要解释登记业务语义或用户明确要求详情时读取当前分支模块，错误恢复时才读取 `error-handling.md`。不得提前加载其他分支，也不重复读取已经读过且未变化的章节。
+Step 5 直接使用对应 phase 的完整命令；仅出现脚本异常、需要解释登记业务语义或用户明确要求详情时读取当前分支模块，错误恢复时才读取[错误处理指引](modules/error-handling/guide.md)。不得提前加载其他分支，也不重复读取已经读过且未变化的章节。
 
 1. 签约：若本次成功的 `auth.sh init|wait|confirm` 内部事实同时且唯一包含 `AUTH_SIGN_QUERY_REUSABLE=true`、合法 `AUTH_SIGN_REUSE_RECEIPT`，把回执原样传给 runner 复用；回执缺失、冲突、重复或解析失败时不传复用参数，由 runner 执行原 `query_sign_status.sh` 完整命令。兼容窗口内，旧事实 `SIGN_STATUS + FLOW:*` 仍可通过 `--reuse-sign-status "$SIGN_STATUS" --reuse-sign-flow "$SIGN_FLOW"` 传入，`FLOW:` 前缀可带可不带；runner 必须校验 status/flow、productType 和 salesCode 一致，合法 `OTHER_STATUS + FLOW:OTHER_STATUS` 只表示待核验，禁止重复签约。复用只省略同一请求的重复调用，不省略签约分支错误检测和状态处理。
 2. 服务：仅按量付费由 runner 执行原 `service.sh list`；其他产品 envelope 固定为 `NOT_APPLICABLE`。成功候选只取 envelope 的 `service.candidates`。
 3. 应用：runner 执行原 `app.sh list --product-type "$PRODUCT_TYPE" --sales-code "$SALES_CODE"`。成功候选和 `WEBAPP|MOBILEAPP` 只取 envelope 的 application 分支；不得宣称返回应用已与当前支付产品绑定。
 
-> ⚠️ 脚本通过 `error_handler.sh` 间接初始化 `DEV_TOOL_NAME`、优先取有效第三方项目 ID、缺失时取当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 版本、匿名 `skill_user_id` 及合法 `PROFILE` 中可选 `chinfo`、`vid` 对应的 `ALIPAYCLI_BIZ_INFO`，以及 CLI `PRODUCT`；缺少任一来源字段时分别保持省略。签约查询必须传入当前产品的 `--sales-code` 和 `--product-type`（aipay|webpay|apppay）做一致性校验。AI 网页应用收款和 AI 移动应用收款使用不同 salesCode，禁止混用。
+> ⚠️ 脚本通过 `error_handler.sh` 间接初始化 `DEV_TOOL_NAME`、优先取有效第三方项目 ID、缺失时取当前 `run_id` 的 `PLATFORM_ID`、当前 Skill 名与版本 对应的 `ALIPAYCLI_BIZ_INFO`，以及 CLI `PRODUCT`；签约查询必须传入当前产品的 `--sales-code` 和 `--product-type`（aipay|webpay|apppay）做一致性校验。AI 网页应用收款和 AI 移动应用收款使用不同 salesCode，禁止混用。
 
 各适用查询仍是独立 CLI/MCP 调用，runner 只编排现有脚本，必须分别完成原有错误检测，禁止伪造合并 MCP。失败后按错误类型处理：
 
@@ -302,7 +299,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message mate
 
 ### Step 5: 产品开通推进
 
-按“签约 -> 服务 -> 应用”默认顺序，一次只处理一个实际适用且可推进的类别；顺序不构成分支依赖。认证、授权或主体变化时全局停止并重新校验；单分支失败只登记该分支恢复动作，继续其他独立分支，不清除已验证材料或成功事实。全部适用分支已处理，或失败、未知及外部待办均已登记后，才执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding closeout --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；仍有可推进分支时不得提前收口。
+按“签约 -> 服务 -> 应用”默认顺序，一次只处理一个实际适用且可推进的类别；顺序不构成分支依赖。认证、授权或主体变化时全局停止并重新校验；单分支失败只登记该分支恢复动作，继续其他独立分支，不清除已验证材料或成功事实。全部适用分支已处理，或失败、未知及外部待办均已登记后，才执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding closeout --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`；仍有可推进分支时不得提前收口。
 
 本阶段的签约、服务、应用、截图和特殊资质上传 runtime 命令在 CLI 调用前返回唯一 `CLI_FLOW:RETRY_WITH_LOCAL_FS_PERMISSION` 时，当前业务调用次数为 0；允许同一命令访问 CLI 私有状态目录后原样重试一次，不重收材料、不重开页面、不新增确认。拒绝、不支持或再次命中时停止申请并按当前分支既有失败边界收口。CLI 已执行后出现同类证据时，读操作仍可进入该恢复；签约提交、服务保存、应用创建/公钥页/提审、截图上传和特殊资质上传等写操作只走既有核验或 `UNKNOWN`，禁止因权限 marker 重放。
 
@@ -338,19 +335,13 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" special-license --produ
 **固定命令契约**：按当前产品原样使用对应命令结构，只替换尖括号中的实际值，禁止增删、改名或猜测参数：
 
 <!-- ALIPAY_AIPAY_PRODUCT:aipay:START -->
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sign --product aipay --sales-code "I1080300001000160457" --mcc-code "<mccCode>" --mcc-context-receipt "$MCC_CONTEXT_RECEIPT" [--special-qualification-group-index "$SPECIAL_QUALIFICATION_GROUP_INDEX" --special-license-json "$SPECIAL_LICENSE_JSON"] --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+<!-- ALIPAY_AIPAY_BRANCH:ONBOARDING_SIGNING -->
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:webpay:START -->
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sign --product webpay --sales-code "I1080300001000041203" --mcc-code "<mccCode>" --mcc-context-receipt "$MCC_CONTEXT_RECEIPT" --picurl1 "<imageRef1>" --picurl2 "<imageRef2>" --picurl3 "<imageRef3>" [--special-qualification-group-index "$SPECIAL_QUALIFICATION_GROUP_INDEX" --special-license-json "$SPECIAL_LICENSE_JSON"] --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+<!-- ALIPAY_AIPAY_BRANCH:ONBOARDING_SIGNING -->
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:apppay:START -->
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sign --product apppay --sales-code "I1080300001000041313" --mcc-code "<mccCode>" --mcc-context-receipt "$MCC_CONTEXT_RECEIPT" --app-name "<APP名称>" --picurl1 "<imageRef1>" --picurl2 "<imageRef2>" --picurl3 "<imageRef3>" [--special-qualification-group-index "$SPECIAL_QUALIFICATION_GROUP_INDEX" --special-license-json "$SPECIAL_LICENSE_JSON"] --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+<!-- ALIPAY_AIPAY_BRANCH:ONBOARDING_SIGNING -->
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 提交成功后不等待或轮询签约生效，只记录“已提交，等待生效”。脚本成功必须同时产生 `SIGN_APPLY_RESULT=SUCCESS` 与对应产品 `FLOW:*_SIGN_CONTINUE`；响应不明且查询无法核验时产生 `SIGN_APPLY_RESULT=UNKNOWN`，本签约分支进入“结果未知/禁止重复提交”待办；明确未发送重试耗尽、业务失败或结构明确失败产生 `SIGN_APPLY_RESULT=FAILED`，本签约分支失败。服务和应用是否推进只取决于各自前置条件，不取决于本次签约提交是否成功；复用 Step 3.1 和 Step 4 的成功结果，只在会话、主体、候选资源变化或原查询失败时刷新受影响分支，刷新失败不清除其他成功结果。
@@ -367,30 +358,9 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sign --product apppay -
 - `P-SERVICE-WRITE`：服务创建摘要送达后直接创建；服务修改须取得绑定当前脱敏摘要的明确确认。
 - `P-WRITE-UNKNOWN`：非幂等写入结果不明时只读核验；仍无法确认则进入 UNKNOWN，禁止重试写入。
 <!-- GENERATED:ONBOARDING-GUARDS-SERVICE:END -->
-#### 5.2 服务市场注册（仅按量付费）
-
-仅 Step 3.1 查询成功且候选数组为空时直接新建；失败、缺失或非法时阻断。非空只接受当前完整 `serviceId`、`新建`（可附五项资料）或 `修改:<当前serviceId>`；序号、候选外/历史 ID、非法 `修改:` 或其他输入走 `invalid` 恢复，禁止复用或写入。创建/修改五项资料须通过 `validate`；单价可输入纯数字或带 `元`/`元/次` 后缀（可空格），后续只用 `SERVICE_PRICING=<纯数字>`。复用不写。创建时 `save` 重查全量，当前服务数量小于固定上限 `10` 才保存；达到 `10` 个时禁止调用保存方法，调用为 0 并输出 `SERVICE_SAVE_RESULT=FAILED`。校验通过先输出非阻塞摘要后创建；修改还须取得绑定当前会话、主体、产品、目标和参数的 `SERVICE_UPDATE_ONLY` 确认，变化即失效。成功实际 `serviceId` 记为 `productionServiceId`；未返回状态只写“状态未取得”，不得推断或重复 `save`。
-
-```bash
-# 创建摘要后不等待回复
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message service-create-summary --service-name "$SERVICE_NAME" --service-description "$SERVICE_DESCRIPTION" --service-url "$SERVICE_URL" --service-pricing "$SERVICE_PRICING" --service-schema "$SERVICE_SCHEMA" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-# 仅修改：stdout 原文送达并等待当前摘要的肯定回复
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message service-update-confirm --session-summary "$SESSION_SUMMARY" --subject-summary "$SUBJECT_SUMMARY" --service-id "$SERVICE_ID" --service-name "$SERVICE_NAME" --service-description "$SERVICE_DESCRIPTION" --service-url "$SERVICE_URL" --service-pricing "$SERVICE_PRICING" --service-schema "$SERVICE_SCHEMA" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
-
-进入本 flow 的 `service` 阶段时，不记录开始态 stage；创建/修改在 `service save` 成功后记录 `onboarding.confirm_service`，复用已有服务不执行写入并由最终 closeout 根据受控“已复用”结果补记同一唯一 stage。重复责任方由 runtime 的 `run_id + stage` 唯一性 no-op，不得由 Agent 另行执行 telemetry 命令。
-
-**固定命令契约**：复用已有服务不调用 `save`；创建不传 `--service-id`，修改必须传入用户从 Step 3.1 候选中选定的实际 `serviceId` 和全部字段：
-
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" service validate --name "<name>" --desc "<desc>" --url "<url>" --pricing "<pricing>" --schema "<json>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-# 创建：先成功渲染 service.create.summary/DEFAULT，再直接执行
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" service save --name "<name>" --desc "<desc>" --url "<url>" --pricing "<pricing>" --schema "<json>" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-# 修改：先取得 onboarding.write.confirm/SERVICE_UPDATE_ONLY 的有效确认，再执行
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" service save --service-id "<serviceId>" --name "<name>" --desc "<desc>" --url "<url>" --pricing "<pricing>" --schema "<json>" --telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
-
-`service save` 成功必须产生 `SERVICE_SAVE_RESULT=SUCCESS` 和实际 `SERVICE_ID`；创建/修改响应不明且只读查询无法唯一核验时产生 `SERVICE_SAVE_RESULT=UNKNOWN`，服务分支进入“结果未知/禁止重复保存”待办；明确未发送重试耗尽、业务失败或结构明确失败产生 `SERVICE_SAVE_RESULT=FAILED`，只终止服务分支，不清除签约或应用分支已取得事实。
+<!-- ALIPAY_AIPAY_PRODUCT:aipay:START -->
+<!-- ALIPAY_AIPAY_BRANCH:ONBOARDING_SERVICE -->
+<!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 <!-- ALIPAY_AIPAY_FLOW:ONBOARDING_SERVICE:END -->
 
@@ -428,7 +398,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message mate
 缺公钥禁创建或调用 `createKeyConfirmPage`。材料齐后用下方组合命令完成重查、比较、创建和公钥页生成；页面确认后 `verify-key-and-audit` 复用安全响应 guard 提审。工具只下载，不安装、启动或生成密钥；禁用 OpenSSL。
 
 <!-- ALIPAY_AIPAY_PRODUCT:apppay:START -->
-APP 支付通过 Skill 创建只支持 `IOS`、`ANDROID` 和 `ALL`，其中 `ALL` 只表示 iOS + Android。HarmonyOS 移动应用不得调用 `app.sh create|create-from-snapshot`；执行固定 runner 命令输出 `application.harmony.manual_create`，用户在开放平台完成创建及平台要求的后续配置后明确表示操作完成，只执行本节登记的轻量 `app list`，不得重跑 Step 3.1。只有实际查询到 `ON_LINE` 候选后才能复用，否则保持人工待办。
+<!-- ALIPAY_AIPAY_BRANCH:ONBOARDING_APPLICATION -->
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 `application` loader 不再记录开始态 stage；应用创建、复用或公钥提审完成后由脚本统一记录 `onboarding.confirm_alipayapp`，禁另报 telemetry。
@@ -441,14 +411,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapsho
 ```
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 <!-- ALIPAY_AIPAY_PRODUCT:apppay:START -->
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapshot --product-type apppay --sales-code "I1080300001000041313" --previous-candidates-json "$APP_CANDIDATES_JSON" --mobile-platform IOS --bundle-id "<bundleId>" --defer-open "<用户明确提供的完整publicKey>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapshot --product-type apppay --sales-code "I1080300001000041313" --previous-candidates-json "$APP_CANDIDATES_JSON" --mobile-platform ANDROID --app-package "<appPackage>" --app-sign "<appSign>" --defer-open "<用户明确提供的完整publicKey>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app create-from-snapshot --product-type apppay --sales-code "I1080300001000041313" --previous-candidates-json "$APP_CANDIDATES_JSON" --mobile-platform ALL --bundle-id "<bundleId>" --app-package "<appPackage>" --app-sign "<appSign>" --defer-open "<用户明确提供的完整publicKey>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" onboarding-message application-harmony-manual-create --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-# 仅 HarmonyOS 用户明确完成开放平台操作后轻量重查
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" app list --product-type apppay --sales-code "I1080300001000041313" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+<!-- ALIPAY_AIPAY_BRANCH:ONBOARDING_APPLICATION_2 -->
 <!-- ALIPAY_AIPAY_PRODUCT:END -->
 
 ```bash
@@ -554,7 +517,7 @@ runner 从 `PRODUCT_TYPE` 派生产品名，网站支付/APP 支付派生服务�
 
 renderer 按产品和实际结果自动派生【当前状态】、可选【沙箱测试配置】、【上线前有以下关键点】和【提示】。`onboarding_only` 禁止传 `--sandbox-summary`，不展示沙箱信息；`full_process` 仅 AI 网页应用收款在沙箱 READY、代码配置后置校验通过且原摘要有效时，传 Integration 本轮已交付的完整 `SANDBOX_SUMMARY`，包括 Worker 返回的原登记正文。不得重读配置、重建沙箱、摘出凭据或手写表格；无有效原摘要时省略，不展示占位信息。原摘要缺失、过期、格式异常或回放校验失败时，renderer 只省略该可选区块，严禁因此阻塞整个 summary；不输出未校验凭据，也不因省略展示改变或证明业务状态。区块只保留沙箱买家测试账号、沙箱买家登录密码、沙箱买家支付密码，两个密码明文展示（含 Windows）；不展示配置路径、appId、产品或密钥行。按量付费与 APP 支付禁止传该参数，最终 summary 不展示沙箱配置。沙箱区块用于用户后续测试，不宣称测试通过。
 
-上线关键点按“确认上线条件 → 生产配置替换 → 产品专属支付结果确认/服务配置 → 适用收款限制”组织。生产配置包括 appId、应用私钥、对应支付宝公钥及生产网关；应用公钥与应用私钥必须配对，在支付宝侧配置，无需额外配到项目中。应用上线提醒覆盖本轮新建和用户自行准备的其他生产应用。网页/移动收款必须同时实现通知处理和交易查询；缺少 `notify_url` 时省略该字段并由服务端查单兜底，不会仅因缺少该地址而报错。允许省略 `notify_url`，但商家服务端必须可靠主动查单并完成响应验签、订单/金额/状态/归属校验、持久化幂等、后台重试及未决订单恢复；使用通知时需公网 HTTPS、验签、关键字段校验、幂等、`success` 回写和补偿查询。仅没有公网通知地址不应判为不能上线。按量付费 summary 仅保留真实 serviceId、商户 PID/2088 等生产服务配置，不再单列 402 验付和履约回执验证提醒。最终 summary 不重复私钥格式，也不逐字段解释通知校验；这些实现和检查要求仍由原契约、代码开发 flow 及 checklist 执行，不改变自动测试脚本。
+上线关键点按“确认上线条件 → 生产配置替换 → 产品专属支付结果确认/服务配置 → 适用收款限制”组织。生产配置包括 appId、应用私钥、对应支付宝公钥及生产网关；应用公钥与应用私钥必须配对，在支付宝侧配置，无需额外配到项目中。应用上线提醒覆盖本轮新建和用户自行准备的其他生产应用。网页/移动收款必须同时实现通知处理和交易查询；缺少 `notify_url` 时省略该字段并由服务端查单兜底，不会仅因缺少该地址而报错。允许省略 `notify_url`，但商家服务端必须可靠主动查单并完成响应验签、订单/金额/状态/归属校验、持久化幂等、后台重试及未决订单恢复；使用通知时需公网 HTTP/HTTPS、验签、关键字段校验、幂等、`success` 回写和补偿查询。仅没有公网通知地址不应判为不能上线。按量付费 summary 仅保留真实 serviceId、收款商户 2088 开头的商户号等生产服务配置，不再单列 402 验付和履约回执验证提醒。最终 summary 不重复私钥格式，也不逐字段解释通知校验；这些实现和检查要求仍由原契约、代码开发 flow 及 checklist 执行，不改变自动测试脚本。
 
 通用通知地址提醒和用户可选沙箱付款体验不属于缺口，不得写入 `remainingActions`／`manualVerificationItems` 影响完成判定；仅剩这些提醒时按其余适用检查实际证据确定代码结果。实际待验证项必须与部分完成状态对应，不能在 renderer 中隐藏；上游分类有误时只纠正参数，不重测项目。本轮实际尚未验证的项目在上线关键点中列出，不单列“人工待验证”段落，不把尚未验证改成已通过。应用结果与支付宝公钥保存路径仍在前一步独立交付。禁止 Agent 在模板外补第二份生产上线清单或删掉网页收款限制；生产应用私钥、账号密码、支付凭证和未脱敏通知内容不得提供给 Agent。完成态不代表已切生产配置或已可真实收款，不新增确认点。
 
@@ -572,7 +535,7 @@ renderer 按产品和实际结果自动派生【当前状态】、可选【沙�
 
 ## 错误处理（全局规则）
 
-所有 CLI/MCP 操作立即使用脚本内置错误检测，失败后禁止解析业务结果；分类与恢复以 `modules/scripts/error_handler.sh` 和按需读取的 `modules/error-handling.md` 为准。Step 3.1 查询失败仍按分支隔离。
+所有 CLI/MCP 操作立即使用脚本内置错误检测，失败后禁止解析业务结果；分类与恢复以 `modules/error-handling/error_handler.sh` 和按需读取的 `modules/error-handling/guide.md` 为准。Step 3.1 查询失败仍按分支隔离。
 
 ---
 

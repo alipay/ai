@@ -1,17 +1,19 @@
 # 完整接入编排
 
-本文件是 `full_process` 唯一入口。启动方案送达前只复用 Integration 步骤 1 的项目、语言、当前系统分支环境和沙箱准备；不得开发代码、进入 Onboarding 或读取开通信息。
+本文件用于根入口已确认收单产品和完整接入意图后的执行。原生 Windows 先按已确认产品及 full_process 执行统一环境分流，Windows Integration 在当前 Agent 串行执行。CODE_ONLY 跳过自动沙箱创建，继续可独立执行的开发；符合原 checklist 与交接条件后，在开通阶段交付官网指引，不执行本地开通命令。启动方案送达前只复用 Integration 步骤 1 的项目、语言、当前系统分支环境和沙箱准备；不得开发代码、进入 Onboarding 或读取开通信息。
 
-目标项目和技术栈确定后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration entry --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`，只加载当前入口阶段并按步骤 1/2 准备及展示方案；代码开发满足衔接条件后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow onboarding entry --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。禁止整读两个 flow。所有 Skill 自有运行时动作只用当前 Skill 绝对路径下的统一入口单命令执行，不前置 `cd`、不拼接管道；用户项目命令仍以已确认项目根为 workdir。
+目标项目和技术栈确定后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" flow integration entry --product-type "$PRODUCT_TYPE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`，只加载当前入口阶段并按步骤 1/2 准备及展示方案；代码开发满足衔接条件后执行 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" full-process-handoff --product-type "$PRODUCT_TYPE" --integration-result "$INTEGRATION_RESULT" --sandbox-config-state "$SANDBOX_CONFIG_STATE" --next-phase "$NEXT_PHASE" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"`。禁止整读两个 flow。所有 Skill 自有运行时动作只用当前 Skill 绝对路径下的统一入口单命令执行，不前置 `cd`、不拼接管道；用户项目命令仍以已确认项目根为 workdir。
 
 其他 Skill 相对命令以 `references/normal/` 为 workdir。`PROJECT_INPUT` 保留原话；Agent 确定两类项目的真实 `PROJECT_PATH`，以 `--project-path` 交 runner 校验。复用须选定项目根，位置未知先定位候选；“当前目录”仅在 runner 识别为项目根时接受。后续只用规范化绝对路径。
 
 `full_process` 的 `RUN_ID` 只取 `runtime-entry.md` 中 `start-run` 的唯一 marker。active run 期间每条聊天框用户消息都先执行统一 `count-user-input --run-id "$RUN_ID"`，与 Skill 无关的插话和中断后输入也不例外。每个登记 stage 动作前回顾当前可见用户历史得到 `HISTORY_COUNT`，无法可靠回顾时为 `null`；能生成 stage 的 runtime 命令按对应 flow 追加 `--telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"`。Integration Worker 接收这两个低敏 telemetry 上下文字段及根入口已取得的 telemetry_session_id，并携带同一个 --session-id 透传给原 flow；正式计数仍由 runtime state 读取。`integration_summary` 不关闭 full-process run，只有 `all_summary` 关闭；telemetry 不改变本文件的业务衔接和卡点。
 
+用户在开发失败后改为先签约/开通时，使用当前产品的独立 onboarding_only 入口；按实际开发结果和办理结果分别汇报。完整接入保持原顺序时，自动交接必须有当前任务和产品已登记、允许继续的实际验收终态；工程版本一致性由最终验收检查，交接不重复扫描工程。
+
 ## 边界
 
 - 只编排 Integration 与 Onboarding，不复制其状态、完成条件和红线。完整接入复用 Integration 步骤 2 的唯一非阻塞 `integration.start.confirm`、同一检查器事实和模板，本轮只渲染一次。
-- 先确定项目、服务端语言和创建方式；框架按 Integration 登记的 `framework-resolve` 解析，不把框架未知当作补问条件。`NEW_PROJECT` 空路径检查后使用该 runner 默认或用户明确框架初始化最小骨架，再执行 Integration 步骤 1；沙箱不依赖产品、不传 `PRODUCT`、不展示摘要，待配置仍继续。代码开发方案送达前禁止读取/展示 MCC、授权范围和开通材料/待办。
+- 先确定项目、服务端语言和创建方式；框架按 Integration 登记的 `framework-resolve` 解析，不把框架未知当作补问条件。`NEW_PROJECT` 空路径检查后使用该 runner 默认或用户明确框架初始化最小骨架，再执行 Integration 步骤 1；产品与任务均已确定；匿名沙箱脚本本身不传 `PRODUCT`、不展示摘要，待配置仍继续。代码开发方案送达前禁止读取/展示 MCC、授权范围和开通材料/待办。
 - 项目事实只来自 runner 与实际文件。未知位置用 `locate-projects --search-input "$SEARCH_INPUT" --format message` 查标记并等待选择；不得扫描上层大目录。完整性仍以 Integration 全部适用项和 checklist 为准。
 
 ## 新项目准备与路由分类
@@ -41,18 +43,14 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message res
 
 ## 维度二：目标产品集成状态
 
-项目和沙箱取得确定终态后再确定产品并扫描合法项目分类。已有描述能唯一映射时直接复用；否则只执行下列消息并等待，仍不唯一时重复同一消息。目标产品明确前不得执行 `scan`。
-
-```bash
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message product-clarify --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+沿用根入口已确定的目标产品；项目和沙箱取得确定终态后扫描合法项目分类。若用户中途改变产品，恢复时重新核实目标；已明确的产品无需再询问。产品或任务不明确时回根入口只读澄清，不运行环境、项目或沙箱命令。
 
 - `TARGET_PARTIAL`：发现目标代码/配置，仍完整验证；并存时优先。
 - `OTHER_PRODUCT_ONLY`：仅有其他产品，保留。
 - `NO_PAYMENT`：无支付能力。
 - `STATUS_UNKNOWN`：不可访问、证据冲突/不足或产品不明，停止。
 
-合法项目分类与前三种代码状态确认后进入 Integration；`PROJECT_UNRESOLVED/STATUS_UNKNOWN` 继续澄清。Unix/macOS/Linux 的 `CREATE_PENDING|VERIFY_PENDING` 和 Windows 的 `VERIFY_PENDING` 都不阻止扫描/开发。新项目保留 `projectOriginLabel=本轮新建项目`；已有项目“新建”只能新增能力或使用空路径。这些分类只用于本轮分流，不持久化。
+合法项目分类与前三种代码状态确认后进入 Integration；`PROJECT_UNRESOLVED/STATUS_UNKNOWN` 继续澄清。Unix/macOS/Linux 的 `CREATE_PENDING|VERIFY_PENDING` 和 Windows READY 的 `CREATE_PENDING|VERIFY_PENDING`、Windows LEGACY/CODE_ONLY 的 `VERIFY_PENDING` 都不阻止扫描/开发。新项目保留 `projectOriginLabel=本轮新建项目`；已有项目“新建”只能新增能力或使用空路径。这些分类只用于本轮分流，不持久化。
 
 ## 完整接入启动方案
 
@@ -62,7 +60,7 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message pro
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message context-required --missing-items "$MISSING_ITEMS" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-`MISSING_ITEMS` 只由 `项目路径`、`技术栈` 组成，其中 `技术栈` 仅表示服务端语言缺失；产品不明确仍用 `product.clarify`。stdout 原文发出后等待，未补齐前不得初始化、安装或修改。路径输入均先 `resolve-project`；未知位置或需候选时执行：
+`MISSING_ITEMS` 只由 `项目路径`、`技术栈` 组成，其中 `技术栈` 仅表示服务端语言缺失；产品不明确回根入口澄清。stdout 原文发出后等待，未补齐前不得初始化、安装或修改。路径输入均先 `resolve-project`；未知位置或需候选时执行：
 
 ```bash
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message locate-projects --base-path "$USER_WORKSPACE_ROOT" --search-input "$SEARCH_INPUT" --format message --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
@@ -85,7 +83,9 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" integration-message sta
 ## 子流程衔接规则
 
 - 启动方案送达后先完成上述 Worker 分流，再由确定的执行者进入 Integration 步骤 3；用户中断后若项目、产品、语言或框架变化，重新澄清和扫描并输出当前方案。
-- Integration 先完整执行和校验。只有沙箱待配置，或 READY 且仅剩非阻塞人工待验证项时，保持“部分通过”进入 Onboarding；其他代码、安全或依据缺口停在 Integration，不提前登录或收集开通材料。
+- Worker 和主 Agent 都使用同一 `full-process-handoff` 命令绑定本轮产品。本地检查记录按 run、产品和工程区分，保存项目路径或其指纹、检查标识和执行结果。交接回执与最终验收结果和沙箱状态绑定，项目路径和指纹仅保留为当次验收的依据。交接只读取已登记的验收终态，核对当前 run、产品、开发结果及沙箱状态，不再读取工程文件、重算指纹或重新汇总工程检查记录。工程源代码、商家材料、凭据及会话正文不写入交接回执。重新进入 checklist、执行工程检查或生成最终验收结论时撤销旧交接记录，取得新的有效终态后才能继续。Worker 变量只取已校验回执原值。主 Agent 串行执行时将 checklist 的“通过”映射为“已完成”；仅沙箱待配置或仅余非阻塞人工项时分别用“部分完成，沙箱配置待完成”或“部分完成，人工待验证”，三者下一阶段均为 ONBOARDING；其他结果为“未通过”/STOP；把同一终态交给门禁，撤销先前回执后停止。命令不以变量自报代替实际验收结果。失败、STOP、回执缺失或矛盾时，不读取开通材料或执行平台入口。
+- Integration 先完整执行和校验。只有沙箱待配置，或 READY 且仅剩非阻塞人工待验证项时，保持“部分通过”进入 Onboarding；其他代码、安全或依据缺口停在 Integration，不提前登录或收集开通材料。按量付费已核实的沙箱远端异常按 [Machine Pay flow 的联调失败分类](../integration/machine-pay/flow.md)归入后一分支，不要求先把沙箱联调重跑通过。
+- Windows CODE_ONLY 时不自动创建沙箱；有效手工配置仍可用于满足自身实际依赖的测试，不因缺少 Git Bash 单独跳过原生 Python 402 联调。Integration 最终结果通过原 checklist 和交接校验后，沿用 `full-process-handoff`，平台入口只交付官网开通指引并停止本地 Onboarding，不要求先修好本地依赖。开发未通过、存在阻断缺陷或交接证据缺失时仍停止，不以官网兜底放宽开发验收。后续用户要求恢复本地办理时重新执行当前任务的 Windows 入口，READY 后按原只读查询核验实际业务状态，不重放已完成动作。
 - 阶段间只复用有效的产品、Integration 结果、沙箱状态、人工待验证项和剩余待办，不再询问是否进入 Onboarding；Onboarding 只保留非阻塞方案展示。
 - 授权后分别查询签约、应用和适用服务；分支独立，单分支失败不回滚其他成功，认证/授权不匹配或主体变化全局阻断。一次只收集一个类别，提前材料直接校验且不重复索取。
 - 签约材料通过后直接提交；服务创建摘要后直创、修改仍确认；空应用候选材料完整或非空候选明确新建，重查未变即创建，以用户公钥生成官方确认页，校验成功后直接提审。均不增加额外确认点；按量付费沙箱测试仍属 Integration 默认动作。

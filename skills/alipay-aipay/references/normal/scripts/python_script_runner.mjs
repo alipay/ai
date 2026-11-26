@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,9 +8,11 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { isWindowsPlatform } from './platform_compat.mjs';
+import { runWindowsPython } from './windows/python-execution.mjs';
+import { findWindowsPython } from './windows/python-runtime.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const allowedScript = path.resolve(scriptDir, '../../integration/modules/scripts/local_402_sandbox_pay.py');
+const allowedScript = path.resolve(scriptDir, '../../integration/machine-pay/sandbox/local_402_sandbox_pay.py');
 
 function commandRuns(command, args) {
   const result = spawnSync(command, args, { stdio: 'ignore', shell: false });
@@ -17,16 +20,8 @@ function commandRuns(command, args) {
 }
 
 function resolvePython() {
-  const candidates = isWindowsPlatform()
-    ? [
-        { command: 'py', prefix: ['-3'] },
-        { command: 'python', prefix: [] },
-        { command: 'python3', prefix: [] }
-      ]
-    : [
-        { command: 'python3', prefix: [] },
-        { command: 'python', prefix: [] }
-      ];
+  if (isWindowsPlatform()) return findWindowsPython();
+  const candidates = [{ command: 'python3', prefix: [] }, { command: 'python', prefix: [] }];
   return candidates.find(({ command, prefix }) => commandRuns(command, [...prefix, '--version'])) || null;
 }
 
@@ -40,15 +35,17 @@ export function runPythonScriptCli(argv = process.argv) {
 
   const python = resolvePython();
   if (!python) throw new Error('未找到可用的 Python 3 运行时');
-  const result = spawnSync(python.command, [...python.prefix, resolvedScript, ...argv.slice(3)], {
-    stdio: 'inherit',
-    shell: false
-  });
+  const result = isWindowsPlatform()
+    ? runWindowsPython(python, resolvedScript, argv.slice(3))
+    : spawnSync(python.command, [...python.prefix, resolvedScript, ...argv.slice(3)], {
+        stdio: 'inherit',
+        shell: false
+      });
   if (result.error) throw result.error;
   process.exitCode = Number.isInteger(result.status) ? result.status : 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     runPythonScriptCli();
   } catch (error) {

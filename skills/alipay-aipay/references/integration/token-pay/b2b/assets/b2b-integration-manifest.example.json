@@ -1,0 +1,343 @@
+{
+  "profile": {
+    "language": "go",
+    "client_mode": "DIRECT_GATEWAY",
+    "protocol": "CLASSIC_GATEWAY_V2",
+    "security_mode": "PUBLIC_KEY",
+    "flows": [
+      "AGGREGATE_CASHIER",
+      "BANK_TRANSFER",
+      "ENTERPRISE_EBANK"
+    ],
+    "capabilities": [
+      "ACCOUNT_MANAGEMENT",
+      "EBANK_CONSULT",
+      "BANK_FUND_CONFIRMATION",
+      "TRADE_CLOSE",
+      "REFUND",
+      "PARTIAL_REFUND",
+      "REFUND_DETAIL_QUERY",
+      "BILL_DOWNLOAD"
+    ]
+  },
+  "evidence": {
+    "product_activation": [
+      {
+        "kind": "external",
+        "reference": "PAYMENT-PLATFORM-CONFIG-001",
+        "description": "聚合收银产品签约回执"
+      }
+    ],
+    "merchant_application_readiness": [
+      {
+        "kind": "external",
+        "reference": "MERCHANT-APPLICATION-READINESS-001",
+        "description": "商户自有应用归属、绑定和应用状态核对记录"
+      }
+    ],
+    "open_platform_configuration": [
+      {
+        "kind": "external",
+        "reference": "OPEN-PLATFORM-CONFIG-001",
+        "description": "PID、app_id、公钥或证书、网关和环境隔离的脱敏核对记录"
+      }
+    ],
+    "language_build_and_test": [
+      {
+        "kind": "test",
+        "path": "internal/payment/classicgateway/client_test.go",
+        "case": "TestExecuteSignsRequestAndVerifiesRawResponse",
+        "description": "目标 Go 服务完成 go test ./..."
+      }
+    ],
+    "direct_gateway_request_signing": [
+      {
+        "kind": "test",
+        "path": "internal/payment/classicgateway/client_test.go",
+        "case": "TestCanonicalizeUsesRawValuesAndKeepsSignType",
+        "description": "原值排序、RSA2、Base64 和传输编码时机测试"
+      }
+    ],
+    "direct_gateway_response_verification": [
+      {
+        "kind": "test",
+        "path": "internal/payment/classicgateway/client_test.go",
+        "case": "TestParseResponseRejectsTamperingAndDuplicateRoot",
+        "description": "原始响应验签及篡改、缺失签名和重复 root 拒绝测试"
+      }
+    ],
+    "direct_gateway_transport": [
+      {
+        "kind": "test",
+        "path": "internal/payment/classicgateway/client_test.go",
+        "case": "TestExecuteRejectsHTTPStatusAndOversizedResponse",
+        "description": "超时、取消、非 2xx 和响应大小边界测试"
+      }
+    ],
+    "rsa2_security": [
+      {
+        "kind": "test",
+        "path": "internal/payment/classicgateway/client_test.go",
+        "case": "TestParseResponseRejectsTamperingAndDuplicateRoot",
+        "description": "RSA2 响应验签失败测试"
+      }
+    ],
+    "secret_management": [
+      {
+        "kind": "file",
+        "path": "config/payment.example.go",
+        "description": "只声明密钥引用的配置模板"
+      }
+    ],
+    "contract_models": [
+      {
+        "kind": "file",
+        "path": "src/payment/models.go",
+        "description": "企业支付请求响应模型"
+      }
+    ],
+    "trade_create": [
+      {
+        "kind": "test",
+        "path": "tests/payment/trade_service_test.go",
+        "case": "create_trade_and_store_gateway_identifiers",
+        "description": "创单和响应持久化测试"
+      }
+    ],
+    "create_idempotency": [
+      {
+        "kind": "test",
+        "path": "tests/payment/trade_service_test.go",
+        "case": "retry_create_with_same_payload",
+        "description": "同号同参重试测试"
+      }
+    ],
+    "trade_query": [
+      {
+        "kind": "test",
+        "path": "tests/payment/trade_service_test.go",
+        "case": "map_all_trade_statuses",
+        "description": "交易状态查询映射测试"
+      }
+    ],
+    "payment_finality": [
+      {
+        "kind": "test",
+        "path": "tests/payment/trade_service_test.go",
+        "case": "fulfill_only_after_verified_trade_success",
+        "description": "支付终态履约测试"
+      }
+    ],
+    "openmq_subscription": [
+      {
+        "kind": "external",
+        "reference": "OPENMQ-SUBSCRIPTION-001",
+        "description": "交易状态消息订阅回执"
+      }
+    ],
+    "openmq_method_routing": [
+      {
+        "kind": "test",
+        "path": "tests/payment/openmq_consumer_test.go",
+        "case": "route_only_trade_order_changed_method",
+        "description": "目标、非目标和缺失method的消息信封路由测试"
+      }
+    ],
+    "openmq_idempotency": [
+      {
+        "kind": "test",
+        "path": "tests/payment/openmq_consumer_test.go",
+        "case": "consume_duplicate_message_once",
+        "description": "重复通知只履约一次"
+      }
+    ],
+    "openmq_ack_and_recovery": [
+      {
+        "kind": "test",
+        "path": "tests/payment/openmq_consumer_test.go",
+        "case": "ack_after_commit_and_recover_out_of_order",
+        "description": "事务后确认和乱序恢复测试"
+      }
+    ],
+    "error_and_unknown_result": [
+      {
+        "kind": "test",
+        "path": "tests/payment/trade_service_test.go",
+        "case": "query_before_retrying_unknown_result",
+        "description": "未知结果先查后重试测试"
+      }
+    ],
+    "observability_and_redaction": [
+      {
+        "kind": "test",
+        "path": "tests/payment/payment_logging_test.go",
+        "case": "redact_credentials_and_keep_trade_ids",
+        "description": "日志脱敏和业务号关联测试"
+      }
+    ],
+    "status_reconciliation": [
+      {
+        "kind": "file",
+        "path": "src/payment/reconciliation_job.go",
+        "description": "长时间非终态订单补偿任务"
+      }
+    ],
+    "non_production_e2e": [
+      {
+        "kind": "run",
+        "path": "evidence/dev-enterprise-payment-e2e.md",
+        "environment": "dev",
+        "description": "创单支付查单关单退款脱敏记录"
+      }
+    ],
+    "aggregate_cashier_redirect": [
+      {
+        "kind": "test",
+        "path": "tests/payment/checkout_controller_test.go",
+        "case": "redirect_opaque_cashier_url_without_fulfilling",
+        "description": "收银台原样跳转且不确认支付"
+      }
+    ],
+    "bank_transfer_aggregate": [
+      {
+        "kind": "test",
+        "path": "tests/payment/bank_transfer_test.go",
+        "case": "reuse_account_and_fulfill_only_after_trade_success",
+        "description": "专属账户复用、聚合收银与订单终态测试"
+      }
+    ],
+    "enterprise_ebank_payment": [
+      {
+        "kind": "test",
+        "path": "tests/payment/ebank_test.go",
+        "case": "serialize_security_params_and_wait_for_ebank_trade_success",
+        "description": "企业网银安全参数、页面拉起与终态测试"
+      }
+    ],
+    "ebank_consult": [
+      {
+        "kind": "test",
+        "path": "tests/payment/ebank_test.go",
+        "case": "map_available_institutions_and_empty_result",
+        "description": "付款机构咨询、空结果和瞬时失败测试"
+      }
+    ],
+    "fund_openmq_subscription": [
+      {
+        "kind": "external",
+        "reference": "OPENMQ-FUND-SUBSCRIPTION-001",
+        "description": "待认款资金消息订阅回执"
+      }
+    ],
+    "fund_message_routing": [
+      {
+        "kind": "test",
+        "path": "tests/payment/openmq_consumer_test.go",
+        "case": "route_order_and_fund_messages_to_separate_consumers",
+        "description": "订单和资金消息精确分流测试"
+      }
+    ],
+    "fund_confirmation": [
+      {
+        "kind": "test",
+        "path": "tests/payment/fund_service_test.go",
+        "case": "confirm_or_reject_waiting_fund_without_early_fulfillment",
+        "description": "两种认款模式、拒绝和终态收敛测试"
+      }
+    ],
+    "fund_idempotency_and_concurrency": [
+      {
+        "kind": "test",
+        "path": "tests/payment/fund_service_test.go",
+        "case": "reuse_claim_request_and_serialize_confirm_reject",
+        "description": "原号原参恢复与 CONFIRM/REJECT 并发互斥测试"
+      }
+    ],
+    "account_create": [
+      {
+        "kind": "test",
+        "path": "tests/payment/bank_account_test.go",
+        "case": "create_or_reuse_account_idempotently",
+        "description": "银行账户创建与复用测试"
+      }
+    ],
+    "account_query": [
+      {
+        "kind": "test",
+        "path": "tests/payment/bank_account_test.go",
+        "case": "recover_account_and_verify_ownership",
+        "description": "账户查询恢复和归属核验测试"
+      }
+    ],
+    "trade_close": [
+      {
+        "kind": "test",
+        "path": "tests/payment/trade_service_test.go",
+        "case": "query_after_unknown_close_result",
+        "description": "关单未知结果补偿测试"
+      }
+    ],
+    "refund": [
+      {
+        "kind": "test",
+        "path": "tests/payment/refund_service_test.go",
+        "case": "refund_paid_trade_with_exact_amount",
+        "description": "支付成功订单退款测试"
+      },
+      {
+        "kind": "test",
+        "path": "tests/payment/refund_service_test.go",
+        "case": "accept_processing_refund_and_query_final_status",
+        "description": "明确受理时保存REFUND_PROCESSING和fund_change=N并进入退款查询补偿"
+      }
+    ],
+    "refund_query": [
+      {
+        "kind": "test",
+        "path": "tests/payment/refund_service_test.go",
+        "case": "recover_unknown_refund_by_query",
+        "description": "退款未知结果查询恢复测试"
+      }
+    ],
+    "partial_refund_idempotency": [
+      {
+        "kind": "test",
+        "path": "tests/payment/refund_service_test.go",
+        "case": "reuse_out_request_no_only_for_same_refund",
+        "description": "部分退款请求号幂等测试"
+      }
+    ],
+    "refund_detail_options": [
+      {
+        "kind": "test",
+        "path": "tests/payment/refund_service_test.go",
+        "case": "map_requested_refund_detail_options",
+        "description": "退款时间和资金明细映射测试"
+      }
+    ],
+    "bill_download": [
+      {
+        "kind": "test",
+        "path": "tests/payment/bill_service_test.go",
+        "case": "download_t1_bill_with_verified_response",
+        "description": "账单查询验签、未就绪重试和短期地址处理测试"
+      }
+    ],
+    "financial_reconciliation": [
+      {
+        "kind": "test",
+        "path": "tests/payment/reconciliation_service_test.go",
+        "case": "classify_and_confirm_bill_differences",
+        "description": "账单幂等解析和差异主动查询复核测试"
+      }
+    ],
+    "bill_download_e2e": [
+      {
+        "kind": "run",
+        "path": "evidence/dev-bill-reconciliation-e2e.md",
+        "environment": "dev",
+        "description": "账单查询下载解析和差异产出脱敏记录"
+      }
+    ]
+  }
+}

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-export const checklistPath = path.resolve(scriptDir, '../../integration/modules/checklist.md');
+export const checklistPath = path.resolve(scriptDir, '../../integration/modules/acquiring/checklist.md');
 const productTypes = new Set(['aipay', 'webpay', 'apppay']);
 const declarationPattern = /<!-- ALIPAY_AIPAY_CHECKLIST_PRODUCTS:([a-z,]+) -->\s*\n(## [^#\n].+)([\s\S]*?)(?=<!-- ALIPAY_AIPAY_CHECKLIST_PRODUCTS:|\s*$)/gu;
 

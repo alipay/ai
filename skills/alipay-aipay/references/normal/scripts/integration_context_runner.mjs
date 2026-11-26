@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -10,8 +11,7 @@ import { checklistForProduct } from './checklist_sections.mjs';
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const integrationDir = path.resolve(scriptDir, '../../integration');
-const modulesDir = path.join(integrationDir, 'modules');
-const interfaceGuidePath = path.join(modulesDir, 'interface-guide.md');
+const interfaceGuidePath = path.join(integrationDir, 'modules/acquiring/interface-guide.md');
 const productTypes = new Set(['aipay', 'webpay', 'apppay']);
 
 const languageRules = Object.freeze({
@@ -75,17 +75,17 @@ function productRoutes() {
     const [sandboxAction] = codeValues(cells[4]);
     const sandboxReferences = codeValues(cells[5]);
     if (!productTypes.has(productType) || routes[productType]) throw new Error('interface-guide productType 非法或重复');
-    const contracts = codeValues(cells[2]).map((value) => `modules/${value}`);
-    const exampleDirectories = codeValues(cells[3]);
-    if (!cells[1] || contracts.length === 0 || exampleDirectories.length === 0 || !sandboxAction || sandboxReferences.length > 1) {
+    const contracts = codeValues(cells[2]);
+    const examplePatterns = codeValues(cells[3]);
+    if (!cells[1] || contracts.length === 0 || examplePatterns.length === 0 || !sandboxAction || sandboxReferences.length > 1) {
       throw new Error(`interface-guide 的 ${productType} 路由字段不完整`);
     }
     routes[productType] = {
       name: cells[1],
       contracts,
-      exampleDirectories,
+      examplePatterns,
       sandboxAction,
-      sandboxReference: sandboxReferences[0] ? `modules/${sandboxReferences[0]}` : null
+      sandboxReference: sandboxReferences[0] ?? null
     };
   }
   if (Object.keys(routes).length !== productTypes.size) throw new Error('interface-guide 产品路由不完整');
@@ -100,11 +100,18 @@ function existingRoutePaths(route) {
 }
 
 function examplePathsFor(route, languageDirectory) {
-  const roots = route.exampleDirectories.map((directory) => path.join(modulesDir, 'code-examples', languageDirectory, directory));
-  const examples = roots.flatMap((directory) => fs.readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => relativeToIntegration(path.join(directory, entry.name))));
-  if (examples.length === 0) throw new Error('当前产品和语言没有本地代码示例');
+  const examples = route.examplePatterns.flatMap((pattern) => {
+    const candidate = path.join(integrationDir, pattern.replace('{language}', languageDirectory));
+    const directory = path.dirname(candidate);
+    const filename = path.basename(candidate);
+    const [prefix, suffix] = filename.split('*');
+    const matches = fs.readdirSync(directory, { withFileTypes: true }).filter((entry) =>
+      entry.isFile() && (suffix === undefined
+        ? entry.name === filename
+        : entry.name.startsWith(prefix) && entry.name.endsWith(suffix)));
+    if (!matches.length) throw new Error(`当前产品和语言没有本地代码示例：${candidate}`);
+    return matches.map((entry) => relativeToIntegration(path.join(directory, entry.name)));
+  });
   return examples.sort((left, right) => left.localeCompare(right));
 }
 
@@ -118,7 +125,7 @@ export function resolveIntegrationContext(productType, serverLanguage) {
     product_type: productType,
     product_name: product.name,
     server_language: language.name,
-    sdk_reference: 'modules/alipay-sdk-reminder.md',
+    sdk_reference: 'modules/acquiring/alipay-sdk-reminder.md',
     contracts: product.contracts,
     examples: examplePathsFor(product, language.directory),
     checklist: {
@@ -141,7 +148,7 @@ export function runIntegrationContextCli(argv = process.argv) {
   process.stderr.write(`${internalPrefix}INTEGRATION_CONTEXT=${JSON.stringify(context)}\n`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     runIntegrationContextCli();
   } catch (error) {

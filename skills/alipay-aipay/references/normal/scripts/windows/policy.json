@@ -1,0 +1,17 @@
+{
+  "validationCoverage": [],
+  "osVersionAllowlistRequired": false,
+  "automaticSetupRetries": 0,
+  "explicitRepairRetries": 1,
+  "nodeMinimumVersion": "18.17.0",
+  "jq": {
+    "version": "1.7.1",
+    "sha256": "7451fbbf37feffb9bf262bd97c54f0da558c63f0748e64152dd87b0a07b6d6ab",
+    "url": "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-windows-amd64.exe"
+  },
+  "git": {
+    "version": "2.56.0.2",
+    "sha256": "52188f917b378f00c70ec136bcf090005f30d44fbc4eba0bce759cc6592d60f6",
+    "url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/Git-2.56.0.2-64-bit.exe"
+  }
+}

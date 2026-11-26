@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { isMainModule } from './is_main_module.mjs';
+import { spawnSync as nativeSpawn } from 'node:child_process';
+const { spawnSync } = process.platform === 'win32'
+  ? await import('./windows/execution.mjs')
+  : { spawnSync: nativeSpawn };
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +12,7 @@ import { isAffirmativeReply } from './interaction_reply.mjs';
 
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const onboardingScriptsDir = path.resolve(scriptDir, '../../onboarding/modules/scripts');
+const onboardingDir = path.resolve(scriptDir, '../../onboarding');
 
 function parseArgs(argv) {
   const command = argv[2];
@@ -43,8 +47,8 @@ function assertRegisteredReply(args, kind) {
 }
 
 function runScript(scriptName, argv, env = process.env) {
-  const result = spawnSync('bash', [path.join(onboardingScriptsDir, scriptName), ...argv], {
-    cwd: onboardingScriptsDir,
+  const result = spawnSync('bash', [path.join(onboardingDir, scriptName), ...argv], {
+    cwd: path.dirname(path.join(onboardingDir, scriptName)),
     env,
     encoding: 'utf8',
     maxBuffer: 4 * 1024 * 1024
@@ -65,7 +69,7 @@ function runAuthConfirm(args) {
     ['mcc-name', required(args, 'mcc-name')],
     ['mcc-context-receipt', required(args, 'mcc-context-receipt')]
   ].flatMap(([name, value]) => [`--${name}`, value]);
-  runScript('auth.sh', ['confirm', ...context]);
+  runScript('modules/authorization/auth.sh', ['confirm', ...context]);
 }
 
 function runApplicationKeyRecovery(args) {
@@ -80,7 +84,7 @@ function runApplicationKeyRecovery(args) {
   }
   const argv = [mode, '--product-type', productType, required(args, 'app-id')];
   if (args['public-key'] !== undefined) argv.push(args['public-key']);
-  runScript('app.sh', argv, { ...process.env, ALIPAY_AIPAY_RECOVERY_QUERY_ONCE: '1' });
+  runScript('modules/app-release/app.sh', argv, { ...process.env, ALIPAY_AIPAY_RECOVERY_QUERY_ONCE: '1' });
 }
 
 export function runOnboardingRecoveryCli(argv = process.argv) {
@@ -90,7 +94,7 @@ export function runOnboardingRecoveryCli(argv = process.argv) {
   throw new Error('用法: onboarding_recovery_runner.mjs <auth-confirm|application-key> --reply <明确完成表达> --input-id <本地用户输入幂等键> ...');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     runOnboardingRecoveryCli();
   } catch (error) {

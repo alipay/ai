@@ -1,5 +1,4 @@
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMainModule } from './is_main_module.mjs';
 
 const MAX_PLATFORM_LENGTH = 40;
 const ASCII_PLATFORM_RE = /^[a-z0-9.]{1,40}$/u;
@@ -34,7 +33,7 @@ export function applyAgentPlatform(args, env = process.env) {
   return remaining;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isMainModule(import.meta.url)) {
   if (process.argv[2] !== 'normalize' || process.argv.length !== 4) {
     process.exitCode = 2;
   } else {

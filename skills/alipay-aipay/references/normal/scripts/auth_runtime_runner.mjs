@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync as nativeSpawn } from 'node:child_process';
+const { spawnSync } = process.platform === 'win32'
+  ? await import('./windows/execution.mjs')
+  : { spawnSync: nativeSpawn };
 import process from 'node:process';
 
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';

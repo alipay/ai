@@ -1,62 +1,48 @@
-# Telemetry 运行契约
+# 接入阶段记录
 
-## Run 与计数窗口
+使用本 Skill 的 runtime（`references/normal/scripts/runtime.mjs`）；会话文本的独立授权见[会话采集](conversation-telemetry.md)。默认先本地入队，再通过 `https://collect.alipay.com/yuyan/` 的 syncLog 通道上传；失败保留队列，后续沿用原有补传机制。选择“仅使用服务”后，仍记录实际接入阶段；阶段记录中没有用户问题、助手正文或问题摘要。咨询、澄清、官网查询没有业务 run，不为了统计而生成一个。
 
-- `root_intent + product_type` 唯一后执行 `telemetry start-run`。新 run 使用 runtime 生成的唯一 `run_id`，原子初始化 `counter_count=0` 并生成 `clarify_intent`；统计窗口从该 event 开始生成时开启，不等待 outbox 或网络成功。
-- `start-run` 创建或复用成功后，从唯一 `ALIPAY_AIPAY_INTERNAL:RUN_ID=<run_id>` 取得 `RUN_ID`。组合不变且 run 为 `ACTIVE` 时复用；组合变化时，触发变化的消息保留在旧 run，旧 run 逻辑停止且不补 summary，不要求本地保留旧 run state，新 run 从 0 开始；已关闭 run 不复用。旧 event 若仍在 outbox，继续按既有上传和清理策略处理。
-- 第三方项目 ID 不生成 `run_id`。run state 优先按显式 session override、与最终识别宿主匹配的会话/对话/线程 ID、通用 session ID 隔离；无论宿主来自本次 `--agent-platform` 还是自动识别，都忽略其他宿主残留的专属 session/thread ID。缺失时只回退与当前宿主匹配的第三方项目 ID，再缺失时使用受控默认 key。业务 `PLATFORM_ID` 继续优先第三方项目 ID，缺失时回退当前 `run_id`。
-- 最终 summary 为：`integration_only -> integration_summary`、`onboarding_only -> onboarding_summary`、`full_process -> all_summary`。合法最终 summary 到达即关闭 run，不以 outbox 或上传成功为条件；`full_process` 的 `integration_summary` 不关闭 run。
+产品和任务已经确定，并且确实开始开发、提供开通指引或办理时，执行 `telemetry start-run --session-id SESSION_ID --root-intent INTENT --product-type PRODUCT`。同一活动流程重试复用 RUN_ID。正文采集启用时，先读取本机采集偏好，仅没有有效选择时询问；仅使用服务也能正常办理和记录阶段。执行命令只传任务与产品，换任务时分别保留已知结果与待修事项。收单使用 `webpay / apppay / aipay`；Token Pay 见下表。每次后续用户输入仅用不含原文的稳定消息 ID 进行一次计数：`telemetry count-user-input --session-id SESSION_ID --run-id RUN_ID --input-id MESSAGE_ID`。阶段失败、答案未知或仅加载文档时，不记成功。
 
-## 用户输入计数
+| Token Pay 能力 | PRODUCT | 办理模式 |
+| --- | --- | --- |
+| 周期订阅 | token-subscription | 指引 |
+| 自动续购 | token-auto-purchase | 指引 |
+| 单笔支付／商业订单 | token-one-time | 指引 |
+| 企业支付 B2B | token-b2b | 指引 |
+| 数电发票 | token-invoice | 指引 |
+| 企业认证 | token-verification | 指引 |
 
-根入口先通过 `telemetry resolve-session` 取得当前对话的稳定 `SESSION_ID`，后续所有 runtime 动作显式携带 `--session-id "<SESSION_ID>"`。可靠来源沿用既有状态文件；无可靠来源时使用独立随机会话 ID。已绑定后，`--agent-platform` 仅改变平台归因，不切换 run 状态文件。未传新参数的旧脚本保留原兼容行为，但新的 Agent 执行不得依赖共享 default key。具体协议以 `runtime-entry.md` 为准。
+收单 runner／Shell 已在确认的步骤记录 `integration.create_sandbox`、`integration.complete_coding` 及 `onboarding.confirm_onboarding_plan / login / confirm_signing / confirm_service / confirm_alipayapp`（confirm_service 仅按量付费）。不要在流程文档再记录一遍。
 
-当前 `ACTIVE` run 内，Agent 每收到一条聊天框用户消息，都必须在解释、分类、路由、回复或调用任何 runner/tool 前执行一次：
+Token Pay 六个能力共用指令 `telemetry stage STAGE --session-id SESSION_ID --run-id RUN_ID --history-count null`：
 
-```text
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry count-user-input --run-id "$RUN_ID" --input-id "$USER_INPUT_ID" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+- 实际交付本产品的开通指引 → `token.guidance_delivered`（不等于商家签约成功）。
+- 已完成所需工程接入，有本地改动或用户认可的对应交付证据 → `token.integration_implemented`。
+- 已取得本产品允许的验证证据 → `token.validation_completed`（本地 mock 只说明 mock 已过；不得记录成生产成功，或为采集而扩大操作）。
 
-- 正常回答、主动追问、中断后输入、与 Skill 无关的消息、文字、图片、文件、空白、短确认和混合消息都按每条消息计 1；一条混合消息仍只计 1。
-- 不计 Agent、system、tool call/result、runner stdout、中间结果、网页授权、扫码和自动轮询。
-- 首次触发新 run 的整条消息不计入新 run。已有 active run 时先计数；若该消息随后改变组合，它只属于旧 run，不在新 run 重计。
-- `USER_INPUT_ID` 优先使用宿主稳定且非内容型的消息 ID；否则由 Agent 为该消息分配当前会话内稳定的非内容型身份。同一消息重试必须复用同一值。不得包含或派生自用户原文、文件名、路径、OCR、截图、业务材料、stage 或工具序号。
-- runtime 只保存 `run_id + USER_INPUT_ID` 的 hash 并幂等去重，不保存或上传原始身份。无 active run、缺少/不匹配的 `run_id` 或 run 已关闭时成功 no-op。
-- `count-user-input` 是唯一计数入口。业务 runner、recovery、renderer、交互回复、tool result 和 stage 都不得隐式修改 counter。
+入口确定任务时记录一次 `clarify_intent`；同一 run、同一阶段通过幂等去重。**业务收口**使用同一 stage 命令：只开发 `integration_summary`、只开通 `onboarding_summary`、两者都要 `all_summary`。全流程的开发小结 `integration_summary` 不终结 run。收到对应终态后即关闭本地业务 run，不依赖事件上传；当全局阶段采集关闭时也执行终态命令，关闭 run 不生成事件。
 
-## Stage 快照
+默认状态目录 `~/.alipay-aipay-new/telemetry-live/` 保持原路径，不随 Skill 名称统一搬迁；它与原本地评审目录 `~/.alipay-aipay-new/telemetry/` 隔离，不迁移旧队列或继承旧评审授权。隔离演练使用 `ALIPAY_AIPAY_TELEMETRY_DIR`，不要指向旧评审目录。设置 `ALIPAY_AIPAY_TELEMETRY=off` 关闭本地阶段与正文，只保留业务所需 run 状态；仅关正文使用 `ALIPAY_AIPAY_CONVERSATION_TELEMETRY=off`。上传默认开启，`ALIPAY_AIPAY_TELEMETRY_UPLOAD=0|false|off|no` 或 `ALIPAY_AIPAY_TELEMETRY_CAPTURE_ONLY=1` 只关闭上传，仍可本地采集；维护测试默认不上传，测试接收端由维护测试注入。阶段 code 为 `1005`，会话 code 为 `1009`、d1 为 OS、d2 为 Skill 版本，c1/c2 沿用现有格式。遥测失败不阻断交付；采集不是商机／公海投递，也不构成商家签约授权。
 
-每个 stage 生成前，Agent 回顾当前可见会话中从本 run `clarify_intent` 之后到快照前的用户角色消息，得到诊断值 `HISTORY_COUNT`；无法可靠回顾时使用字面值 `null`，不得以 0 表示未知。该值可以下降，只用于诊断，不修正 runtime counter。
+## 会话上报维度
 
-直接上报入口为：
+会话和阶段上报共用 `~/.alipay-aipay/telemetry-profile.json` 中的 `user_id`。首次沿用现有机器标识与 SHA256 算法生成并保存，后续各 Agent、聊天及重试补传读取同一值，每个进程读取一次后在模块变量中缓存。采集选择更新时保留该值，配置迁移见[会话采集](conversation-telemetry.md)。
 
-```text
-node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry stage <STAGE> --run-id "$RUN_ID" --history-count "$HISTORY_COUNT" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
-```
+会话 syncLog（默认 code=1009）的维度映射如下；分析侧字段名对应原始上报的 d1～d3，不写入 c2 会话正文。
 
-正常业务流程不另行手工调用该入口。能产生 stage 的登记 runner/script 是唯一责任方；调用这些动作时，把相同上下文追加到统一 gateway 命令：
+| 字段 | syncLog 位置 | 含义 |
+| --- | --- | --- |
+| `os` | `d1` | 操作系统：macOS / Linux / Windows / Other |
+| `skill_ver` | `d2` | 消息记录时的 Skill 版本 |
+| `harness` | `d3` | 消息记录时使用的 Agent 框架，如 codex / claudecode / cursor / openclaw |
 
-```text
---telemetry-run-id "$RUN_ID" --telemetry-history-count "$HISTORY_COUNT"
-```
+`harness` 复用现有 Agent 宿主识别：优先采用 runtime 的 `--agent-platform`（规范化后写入 `ALIPAY_AIPAY_AGENT_PLATFORM`），其次使用宿主环境标识及已有平台兜底；无法识别为 `unknown`。值按现有规则规范化，例如 `Claude Code` → `claudecode`，不增加必填参数或固定框架枚举。队列已保存消息入队时的 `platform`，上传和重试从该快照取值；旧版队列缺少框架快照时，会话上报使用 `unknown`，避免误记为补传进程的框架。阶段上报仍沿用原有 d1～d5，框架保持在 d2。
 
-gateway 在分发前剥离这两个内部参数，不把它们交给业务 parser。首次在产品/MCC 确认命令内建立 run 时尚无可用 marker，由该进程使用刚创建的 active run，并固定本次 `history_count=0`；不增加额外命令或用户操作。
+## 正式身份兼容与故障隔离
 
-固定 stage 只有：`clarify_intent`、`integration.create_sandbox`、`integration.complete_coding`、`onboarding.confirm_onboarding_plan`、`onboarding.login`、`onboarding.confirm_signing`、`onboarding.confirm_service`（仅 AIPAY）、`onboarding.confirm_alipayapp`、`integration_summary`、`onboarding_summary`、`all_summary`。
+阶段继续使用原 `alipay-aipay` 身份、`alipay-aipay-skill:sync-log`、code=1005、原 d1～d5 与 c4。`integration.complete_coding` 表示开发达到非阻断条件；最终未通过仅记录 integration_summary，不冒充完成。正文保留合并 Skill 的长期偏好、code=1009、维度及每轮采集范围。正文偏好不可读时不采正文，但不因此关闭阶段采集。
 
-事件外层的 `flow` 只是归类维度，用于区分 `integration`、`onboarding` 和公共事件 `common`，不表示流程状态、阶段开始/完成或转移。当前实现按 stage 前缀映射 Integration/Onboarding，`clarify_intent` 和三个 summary 映射为 `common`。
+公开配置统一使用 `ALIPAY_AIPAY_*`，继续兼容对应的 `ALIPAY_AIPAY_NEW_*` 开关及原目录/outbox/status/run-state 覆盖。两组变量中任一明确关闭都优先；路径覆盖优先采用 `ALIPAY_AIPAY_*`，其次采用 `ALIPAY_AIPAY_NEW_*`。当前合并版本的私有目录保持，避免误继承旧评审正文；默认路径下旧正式版的有效 stage 队列可迁移补传，保留 event_id、时间、版本及计数，不迁入旧正文或把旧会话授权扩大为长期偏好。自定义目录按显式配置运行，不扫描其他目录。
 
-runtime 校验 active run、显式 `run_id`、clarify 已记录、stage 路线、summary 类型、首次生成唯一性、合法 history 和非负 counter。每个 `run_id + stage` 首次在 run state 内原子保存唯一 `event_id` 后即永久固定；重复调用成功 no-op。state 写入失败不生成 event；state 成功但 outbox 写入失败时该 event 允许丢失且不得重建或补写，业务均继续。
-
-`c4/ext_info` 只允许 `user_input_after_clarify_intent`、`history_count`、`root_intent` 和 `progress_pct`。正式计数固定读取 event 生成锁内的 `counter_count`；不重复上传 `counter_count`。event 固定后，后续消息只影响后续 stage，不修改旧 event/c4。禁上传用户原文、input ID、文件名、路径、URL、密钥、账号、订单、截图、材料、授权信息、工具输出或堆栈原文。
-
-Yuyan 外层字段中的 `d1/d2/d3` 分别表示操作系统、宿主平台和模型。`d2` 优先使用 Agent 根据当前宿主身份随本次 runtime 命令传入的 `--agent-platform`；该值为 `unknown` 或非法时才检查当前进程的宿主自动识别信号，继承的通用平台变量只作为末级兼容值。其他宿主残留的 session/thread 环境变量不得遮蔽本次明确参数。所有来源都跳过 `unknown`/非法值。该兜底不使用宿主名称枚举或映射表：ASCII 名称按既有规则归一，合法 Unicode 名称保留可读原文，最后才为 `unknown`。stage 进入 outbox 时固定当时的 `d2`，后续延迟上传或从其他宿主 flush 不得改变原事件归因；旧版 outbox 记录没有该快照时才按当前环境兼容生成。gateway 将该上下文传给 Node 和 Shell 子进程，业务 CLI 的工具检测器也按同一优先级消费，不写跨会话状态。模型只从显式模型上下文读取：优先 `ALIPAY_AIPAY_MODEL`，兼容 `AIPAY_MODEL`；runtime 将具体变体归一为 `gpt-5`、`gpt-4`、`claude`、`gemini`、`qwen`、`deepseek` 或 `llama` 等粗粒度家族。没有宿主模型字段或无法识别时使用 `unknown`，不得根据宿主平台名称臆测模型。Skill 脚本无法读取对话系统内部的模型上下文，宿主或 Agent 需要在调用 runtime 前提供该字段。
-
-## 进度与上传
-
-- `progress_pct=ceil(X/N*100)`。`N` 是当前路线的非 summary 业务 stage 数，`X` 是 run state 已首次生成的对应唯一 event 数；不按 stage 序号补齐缺失前序。
-- `clarify_intent=0`。三个 summary 正常生成，但不进入分子或分母；部分结果 summary 可以小于 100。
-- 每个 stage 固定顺序为：state 唯一性记录 -> 私有 outbox -> 前台同步上传，网络硬超时 3 秒 -> 2xx 删除当前记录；超时、连接失败、非 2xx 或未知结果保留原 event。
-- 同步请求结束后如仍有积压，尝试启动 detached worker。worker 只上传固定 event，单次最多 50 条，首个失败停止；spawn 失败保留 outbox，不追加前台等待。前台 `flush-outbox` 最多 5 条并优先 summary；所有消费者使用 claim/lock，过期 claim 可恢复。
-- outbox 机会式清理超过 7 天的记录，并在超过 1000 条时从最旧开始删除；Skill 不创建定时任务，也不承诺宿主不再运行、机器关机或网络长期不可用时最终送达。
-- `ALIPAY_AIPAY_TELEMETRY=0|false|off|no` 时不计数、不生成 event/c4/进度、不读写 outbox/status、不上传、不启动 worker、不 flush；仅可保留供 `PLATFORM_ID <- run_id` 使用的最小 run context。遥测失败永不改变业务结果、消息、卡点或用户操作。
+遥测故障不阻断业务。主 run 存储不可写时，先有限重试，再恢复到当前用户私有临时目录的最小业务上下文；不记录该任务的输入计数或 stage，只保存 run/任务/产品/生命周期，以维持当前流程。会话正文采集独立处理，仍依据有效授权、采集开关和自身存储状态运行。恢复目录按原状态路径和会话隔离；可用后继续使用同一恢复位置，不因主目录恢复自动切换或重建历史事实。该目录不是跨会话业务进度恢复机制。业务必要上下文、工程检查或 handoff 证据仍无法可靠读写时，只暂停依赖它的步骤，说明实际缺口和恢复动作，不视为校验通过或重放支付写操作。

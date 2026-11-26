@@ -1,3 +1,7 @@
+import { collectionEnabled, uploadEnabled, configuredPath } from './telemetry_config.mjs';
+import { readSkillVersion } from './profile.mjs';
+import { checkWritable } from './windows/host.mjs';
+import { isMainModule } from './is_main_module.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import https from 'node:https';
@@ -6,12 +10,14 @@ import path from 'node:path';
 import process from 'node:process';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
+import { Writable } from 'node:stream';
 import { normalizeAgentPlatform as normalizePlatform } from './agent_platform.mjs';
-import { conversationCode, normalizeConversationEvent, normalizeConversationMessageInput, sanitizeConversationText, validConversationId } from './conversation_telemetry.mjs';
+import { tokenProductLabels, conversationCode, normalizeConversationEvent, normalizeConversationMessageInput, sanitizeConversationText, validConversationId } from './conversation_telemetry.mjs';
 
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
 const disableValues = new Set(['0', 'false', 'off', 'no']);
-const canonicalProductTypes = new Set(['AIPAY', 'WEBPAY', 'APPPAY']);
+const canonicalProductTypes = new Set(['AIPAY', 'WEBPAY', 'APPPAY', ...Object.keys(tokenProductLabels)]);
 const allowedRootIntents = new Set(['integration_only', 'onboarding_only', 'full_process']);
 const syncLogBizType = 'yuyanmonitorl';
 const syncLogServerURL = 'https://collect.alipay.com/yuyan/';
@@ -21,6 +27,11 @@ const syncLogMsg = 'alipay_aipay_skill_event';
 const syncLogYuyanID = '180020010001290755';
 const uploadTimeoutMs = 3000;
 const conversationUploadTimeoutMs = 10000;
+// Consent wording/scope changes have their own version, independent of Skill releases.
+const conversationNoticeVersion = 1;
+// Each runtime process reads identity once per profile. Consent is still checked
+// on every capture and upload so another chat's withdrawal takes effect.
+const machineUserIDCache = new Map();
 const uploadWorkerLifetimeMs = 60000;
 const permissionedForegroundFlushLimit = 5;
 const localWriteMaxAttempts = 2;
@@ -33,8 +44,7 @@ const outboxMaxAgeMs = 7 * 24 * 60 * 60 * 1000;
 const genericSessionStateEnvKeys = Object.freeze([
   'HERMES_SESSION_ID',
   'OPENAI_CONVERSATION_ID',
-  'SESSION_ID',
-  'CI_JOB_ID'
+  'SESSION_ID'
 ]);
 const platformSessionStateEnvKeys = new Map([
   ['codex', Object.freeze(['CODEX_THREAD_ID', 'CODEX_SESSION_ID'])],
@@ -54,6 +64,8 @@ const permissionedFlushNetworkErrors = new Set([
   'NETWORK_UNREACHABLE'
 ]);
 const productAliases = {
+  ...Object.fromEntries(Object.keys(tokenProductLabels).flatMap(key =>
+    [[key, key], [key.toLowerCase().replaceAll('_', '-'), key]])),
   aipay: 'AIPAY',
   webpay: 'WEBPAY',
   apppay: 'APPPAY',
@@ -64,6 +76,7 @@ const productAliases = {
 
 export const approvedStages = Object.freeze([
   'clarify_intent',
+  'token.guidance_delivered', 'token.integration_implemented', 'token.validation_completed',
   'integration.create_sandbox',
   'integration.complete_coding',
   'onboarding.confirm_onboarding_plan',
@@ -134,6 +147,8 @@ const countedStageRoutes = Object.freeze({
 
 const summaryStages = new Set(['integration_summary', 'onboarding_summary', 'all_summary']);
 function flowForStage(stage) {
+  if (stage === 'token.guidance_delivered') return 'onboarding';
+  if (stage.startsWith('token.')) return 'integration';
   if (stage.startsWith('integration.')) return 'integration';
   if (stage.startsWith('onboarding.')) return 'onboarding';
   if (summaryStages.has(stage)) return 'common';
@@ -146,6 +161,11 @@ const stageRules = new Map(approvedStages.map((stage) => [stage, {
 }]));
 
 function routeStages(rootIntent, productType) {
+  if (Object.hasOwn(tokenProductLabels, productType)) {
+    const guidance = ['token.guidance_delivered'];
+    const integration = ['token.integration_implemented', 'token.validation_completed'];
+    return ({ integration_only: integration, onboarding_only: guidance, full_process: [...integration, ...guidance] })[rootIntent] || [];
+  }
   const route = countedStageRoutes[rootIntent]?.[productType];
   return Array.isArray(route) ? route : [];
 }
@@ -250,17 +270,12 @@ function normalizeSwitch(value) {
 }
 
 export function telemetryEnabled(env = process.env) {
-  return !disableValues.has(normalizeSwitch(env.ALIPAY_AIPAY_TELEMETRY));
-}
-
-function telemetryCaptureOnly(env = process.env) {
-  return normalizeSwitch(env.ALIPAY_AIPAY_TELEMETRY_CAPTURE_ONLY) === '1';
+  return collectionEnabled(env);
 }
 
 export function telemetryUploadEnabled(env = process.env) {
   return telemetryEnabled(env)
-    && !telemetryCaptureOnly(env)
-    && !disableValues.has(normalizeSwitch(env.ALIPAY_AIPAY_TELEMETRY_UPLOAD))
+    && uploadEnabled(env)
     && !isMaintenanceProcess(env);
 }
 
@@ -277,7 +292,8 @@ function skillRoot() {
 }
 
 function telemetryRoot() {
-  return path.join(os.tmpdir(), 'alipay-aipay-telemetry');
+  // Keep local-review queues and grants outside the enabled uploader's scope.
+  return path.join(os.homedir(), '.alipay-aipay-new', 'telemetry-live');
 }
 
 function isMaintenanceProcess(env = process.env, argv = process.argv) {
@@ -294,10 +310,6 @@ function stableSessionSource(env = process.env) {
   const platformKeys = platformSessionStateEnvKeys.get(agentPlatform) || [];
   const sessionKeys = [...platformKeys, ...genericSessionStateEnvKeys];
   return sessionKeys.map((key) => safeRunId(env[key])).find(Boolean) || '';
-}
-
-function stableStateSource(env = process.env) {
-  return stableSessionSource(env) || platformProjectId(env) || '';
 }
 
 // Resolve once per conversation; callers carry the result across process boundaries.
@@ -323,23 +335,59 @@ export function applyTelemetrySession(args, env = process.env) {
 }
 
 function stateKeyFromSource(source) {
-  if (!source) return 'default';
+  if (!source) throw new Error('请先解析当前宿主会话并传入 --session-id');
   if (safeText(source) && source.length <= 128 && source !== '.' && source !== '..') return source;
   return `key-${crypto.createHash('sha256').update(source).digest('hex')}`;
 }
 
 function stableStateKey(env = process.env) {
-  return stateKeyFromSource(stableStateSource(env));
+  return stateKeyFromSource(stableSessionSource(env));
 }
 
 function stateDir(env = process.env) {
-  if (env.ALIPAY_AIPAY_TELEMETRY_DIR) return env.ALIPAY_AIPAY_TELEMETRY_DIR;
+  if (configuredPath(env, 'TELEMETRY_DIR')) return configuredPath(env, 'TELEMETRY_DIR');
   return telemetryRoot();
 }
 
-function runStatePath(env = process.env) {
+function primaryRunStatePath(env = process.env) {
   if (env.ALIPAY_AIPAY_RUN_STATE_FILE) return env.ALIPAY_AIPAY_RUN_STATE_FILE;
   return path.join(stateDir(env), `${stableStateKey(env)}.json`);
+}
+
+export function businessStateDirectory(env = process.env) {
+  const owner = typeof process.getuid === 'function' ? String(process.getuid()) : crypto.createHash('sha256').update(os.homedir()).digest('hex').slice(0, 16);
+  return env.ALIPAY_AIPAY_BUSINESS_STATE_DIR || path.join(os.tmpdir(), 'alipay-aipay-business-' + owner);
+}
+
+function fallbackRunStatePath(env = process.env) {
+  const key = crypto.createHash('sha256').update(primaryRunStatePath(env)).digest('hex');
+  return path.join(businessStateDirectory(env), key + '.json');
+}
+
+function usingBusinessFallback(env) {
+  return fs.existsSync(fallbackRunStatePath(env));
+}
+
+function runStatePath(env = process.env) {
+  // Once recovered, retain this session's context and evidence paths even if metrics storage recovers.
+  return usingBusinessFallback(env) ? fallbackRunStatePath(env) : primaryRunStatePath(env);
+}
+
+function recoverBusinessRun(rootIntent, productType, env, nowMs) {
+  const file = fallbackRunStatePath(env);
+  const transaction = withRunStateLock(env, () => {
+    const existing = readRunState(env);
+    const reusable = reusableRunState(existing, rootIntent, productType);
+    if (usingBusinessFallback(env) && reusable) return existing;
+    const state = { schema_ver: 2, run_id: reusable ? existing.run_id : crypto.randomUUID(), root_intent: rootIntent,
+      product_type: productType, lifecycle: 'ACTIVE', telemetry_disabled: true,
+      created_at: nowMs, updated_at: nowMs, terminal_at: null };
+    return writePrivateJson(file, state) ? state : null;
+  }, file + '.lock');
+  if (!transaction.acquired || !transaction.value) {
+    throw new Error('当前任务的必要上下文无法保存，已尝试恢复；请恢复本机状态目录的可写性后，从同一任务入口继续。依赖该上下文的步骤已暂停。');
+  }
+  return transaction.value;
 }
 
 function runStateLockPath(env = process.env) {
@@ -347,12 +395,12 @@ function runStateLockPath(env = process.env) {
 }
 
 function outboxDir(env = process.env) {
-  if (env.ALIPAY_AIPAY_TELEMETRY_OUTBOX_DIR) return env.ALIPAY_AIPAY_TELEMETRY_OUTBOX_DIR;
+  if (configuredPath(env, 'TELEMETRY_OUTBOX_DIR')) return configuredPath(env, 'TELEMETRY_OUTBOX_DIR');
   return path.join(stateDir(env), 'outbox');
 }
 
 function uploadStatusPath(env = process.env) {
-  if (env.ALIPAY_AIPAY_TELEMETRY_UPLOAD_STATUS_FILE) return env.ALIPAY_AIPAY_TELEMETRY_UPLOAD_STATUS_FILE;
+  if (configuredPath(env, 'TELEMETRY_UPLOAD_STATUS_FILE')) return configuredPath(env, 'TELEMETRY_UPLOAD_STATUS_FILE');
   return path.join(stateDir(env), 'upload-status.json');
 }
 
@@ -361,12 +409,18 @@ export function telemetryStoragePaths(env = process.env) {
     state_dir: stateDir(env),
     run_state_file: runStatePath(env),
     outbox_dir: outboxDir(env),
-    upload_status_file: uploadStatusPath(env)
+    upload_status_file: uploadStatusPath(env),
+    telemetry_profile_file: telemetryProfileFile(env),
+    conversation_preference_file: telemetryProfileFile(env)
   };
 }
 
 function ensurePrivateDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === 'win32') {
+    checkWritable(dir);
+    return;
+  }
   try {
     fs.chmodSync(dir, 0o700);
   } catch {}
@@ -455,7 +509,7 @@ function isValidRunState(parsed) {
     return !Object.prototype.hasOwnProperty.call(parsed, 'counter_count')
       && !Object.prototype.hasOwnProperty.call(parsed, 'input_hashes')
       && !Object.prototype.hasOwnProperty.call(parsed, 'stage_events')
-      && parsed.terminal_at === null;
+      && (parsed.lifecycle === 'ACTIVE' ? parsed.terminal_at === null : Number.isSafeInteger(parsed.terminal_at) && parsed.terminal_at > 0);
   }
 
   if (parsed.clarify_intent_recorded !== true
@@ -555,8 +609,9 @@ function writeOutboxRecord(event, env = process.env) {
   }
 }
 
+// Conversation events may enter the queue only through the consent + sequence transaction.
 export function enqueueMetricEvent(event, env = process.env) {
-  if (!telemetryEnabled(env)) return false;
+  if (isConversationEvent(event) || !telemetryEnabled(env)) return false;
   return Boolean(writeOutboxRecord(event, env));
 }
 
@@ -683,7 +738,7 @@ function writeMetricEventMarker(event, stream) {
 
 export function emitStageMetric(stage, context = {}, env = process.env) {
   try {
-    if (!telemetryEnabled(env) || !stageRules.has(stage)) return false;
+    if (!stageRules.has(stage) || (!telemetryEnabled(env) && !summaryStages.has(stage))) return false;
     const activeRun = currentRunContext(env);
     const runId = safeRunId(context.runId || context.run_id || env.ALIPAY_AIPAY_TELEMETRY_RUN_ID || activeRun?.run_id);
     const historyCount = context.historyCount ?? context.history_count ?? env.ALIPAY_AIPAY_TELEMETRY_HISTORY_COUNT ?? 'null';
@@ -721,6 +776,7 @@ function parseCliArgs(argv) {
       continue;
     }
     const name = token.slice(2);
+    if (name === 'message-stdin') { args[name] = true; continue; }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith('--')) throw new Error(`参数 --${name} 缺少取值`);
     args[name] = value;
@@ -781,8 +837,7 @@ function createOrReuseRunState(args, env = process.env, nowMs = Date.now()) {
   const requestedProductType = canonicalProductType(args['product-type']);
   if (!requestedProductType) return null;
   const existing = readRunState(env);
-  if (reusableRunState(existing, rootIntent, requestedProductType)
-    && (telemetryEnabled(env) ? existing.clarify_intent_recorded === true : true)) {
+  if (reusableRunState(existing, rootIntent, requestedProductType)) {
     const state = {
       ...existing,
       updated_at: nowMs
@@ -793,7 +848,7 @@ function createOrReuseRunState(args, env = process.env, nowMs = Date.now()) {
     };
   }
   const state = createRunState(args, env, nowMs);
-  return state ? { reused: false, state } : null;
+  return state ? { reused: false, state, replaced: existing?.lifecycle === 'ACTIVE' } : null;
 }
 
 export function recordTelemetryUserInput(inputId, env = process.env, nowMs = Date.now(), runId = '') {
@@ -801,7 +856,7 @@ export function recordTelemetryUserInput(inputId, env = process.env, nowMs = Dat
   const transaction = withRunStateLock(env, () => {
     const existing = readRunState(env);
     const explicitRunId = safeRunId(runId);
-    if (!existing?.run_id || existing.lifecycle !== 'ACTIVE' || !explicitRunId || explicitRunId !== existing.run_id) return null;
+    if (!existing?.run_id || existing.telemetry_disabled || existing.lifecycle !== 'ACTIVE' || !explicitRunId || explicitRunId !== existing.run_id) return null;
     const normalizedInputId = normalizeUserInputId(inputId);
     if (!normalizedInputId) throw new Error('用户输入计数必须提供不含用户原文或敏感信息的本地幂等 --input-id');
     const count = parseNonNegativeInteger(existing.counter_count);
@@ -845,20 +900,100 @@ function conversationSessionFile(ownerHash, suffix, env) {
   return path.join(stateDir(env), 'conversations', `${ownerHash}.${suffix}`);
 }
 
-function readConversationConsent(ownerHash, env) {
-  try {
-    const consent = JSON.parse(fs.readFileSync(conversationSessionFile(ownerHash, 'consent', env), 'utf8'));
-    if (consent.schema_ver !== 1 || consent.session_hash !== ownerHash
-      || !['GRANTED', 'DENIED'].includes(consent.decision)
-      || (consent.decision === 'GRANTED' && !validConversationId(consent.grant_id))
-      || !Array.isArray(consent.input_hashes)
-      || consent.input_hashes.some(hash => !/^[a-f0-9]{32}$/.test(hash))) return null;
-    return consent;
-  } catch { return null; }
+function telemetryProfileFile(env) {
+  // Keep test/custom state directories isolated, including their consent. In
+  // normal use all installations share the current OS user's preference.
+  const dir = configuredPath(env, 'TELEMETRY_DIR') || path.join(os.homedir(), '.alipay-aipay');
+  return path.resolve(dir, 'telemetry-profile.json');
 }
 
-// Consent is independent of business runs and contains no reply text. Replaying
-// an earlier confirmation must never undo a later opt-out.
+function legacyConversationPreferenceFile(env) {
+  return path.join(path.dirname(telemetryProfileFile(env)), 'conversation-preference.json');
+}
+
+function initialConversationConsent() {
+  return { schema_ver: 1, skill: 'alipay-aipay', notice_version: conversationNoticeVersion,
+    decision: 'UNSET', grant_id: null, input_hashes: [], notice_sessions: [] };
+}
+
+function readConversationConsent(env) {
+  try {
+    let body;
+    try { body = fs.readFileSync(telemetryProfileFile(env), 'utf8'); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      body = fs.readFileSync(legacyConversationPreferenceFile(env), 'utf8');
+    }
+    const consent = JSON.parse(body);
+    const validUserID = typeof consent?.user_id === 'string'
+      && /^(?:machine_[a-f0-9]{32}|anonymous_uid)$/u.test(consent.user_id);
+    if (consent?.schema_ver !== 1 || consent.skill !== 'alipay-aipay'
+      || !Number.isSafeInteger(consent.notice_version) || consent.notice_version < 1
+      || !['GRANTED', 'DENIED', 'UNSET'].includes(consent.decision)
+      || (consent.decision === 'GRANTED' && !validConversationId(consent.grant_id))
+      || !Array.isArray(consent.input_hashes)
+      || consent.input_hashes.some(hash => !/^[a-f0-9]{32}$/.test(hash))
+      || !Array.isArray(consent.notice_sessions)
+      || consent.notice_sessions.some(hash => !/^[a-f0-9]{64}$/.test(hash))
+      || (Object.hasOwn(consent, 'user_id') && !validUserID)) {
+      return { decision: 'UNAVAILABLE', ...(validUserID ? { user_id: consent.user_id } : {}) };
+    }
+    if (consent.notice_version !== conversationNoticeVersion) {
+      // Changed collection scope needs fresh consent. A refusal still applies;
+      // invalidating the old grant also prevents old queues being reauthorized.
+      return { ...consent, decision: consent.decision === 'DENIED' ? 'DENIED' : 'UNSET',
+        grant_id: null, notice_sessions: [] };
+    }
+    return consent;
+  } catch (error) {
+    return error.code === 'ENOENT' ? null : { decision: 'UNAVAILABLE' };
+  }
+}
+
+// Call only while holding the profile lock. Atomic replacement preserves the
+// choice and identity together, including during the old filename migration.
+function writeTelemetryProfile(profile, env) {
+  const file = telemetryProfileFile(env);
+  const next = { ...profile, user_id: profile.user_id || machineUserIDCache.get(file) || generateMachineUserID(env) };
+  if (!writePrivateJson(file, next)) return null;
+  machineUserIDCache.set(file, next.user_id);
+  try { fs.unlinkSync(legacyConversationPreferenceFile(env)); } catch {}
+  return next;
+}
+
+export function getConversationConsent(env = process.env, explicitSession = '') {
+  const owner = conversationSessionSource(env, explicitSession);
+  if (!owner) return 'UNSET';
+  if (!machineUserID(env)) return 'UNAVAILABLE';
+  return readConversationConsent(env)?.decision || 'UNSET';
+}
+
+// The choice is shared across chats; the notice must still have been shown in
+// the chat supplying a new grant. Legacy per-chat consent is never promoted.
+export function markConversationNotice(env = process.env) {
+  const source = conversationSessionSource(env);
+  if (!source || !conversationCode(env)) return false;
+  const owner = sessionHash(source);
+  const tx = withRunStateLock(env, () => {
+    const previous = readConversationConsent(env) ?? initialConversationConsent();
+    if (previous.decision === 'UNAVAILABLE') return false;
+    return Boolean(writeTelemetryProfile({ ...previous,
+      notice_version: conversationNoticeVersion,
+      notice_sessions: [...new Set([...previous.notice_sessions, owner])] }, env));
+  }, `${telemetryProfileFile(env)}.lock`);
+  return tx.acquired && tx.value;
+}
+
+// Global preference lock always precedes a conversation's state lock, so an
+// opt-out in another chat cannot interleave with a local body write.
+function withConversationStateLock(ownerHash, env, operation, waitMs = runStateLockWaitMs) {
+  const tx = withRunStateLock(env, () => withRunStateLock(env, operation,
+    conversationSessionFile(ownerHash, 'index.lock', env), waitMs),
+  `${telemetryProfileFile(env)}.lock`);
+  return tx.acquired ? tx.value : tx;
+}
+
+// Input hashes include the chat, so replay cannot undo a later opt-out.
 export function setConversationConsent({ sessionId = '', decision, inputId, conversationId } = {}, env = process.env) {
   if (!['GRANTED', 'DENIED'].includes(decision)) return null;
   // An explicit refusal is a privacy preference, even while collection is off.
@@ -868,37 +1003,47 @@ export function setConversationConsent({ sessionId = '', decision, inputId, conv
   if (!input) return null;
   try {
     const source = conversationSessionSource(env, sessionId);
-    const existing = conversationId ? readConversationState(conversationId, env) : null;
-    const ownerHash = source ? sessionHash(source) : existing?.session_hash;
-    if (!ownerHash || (conversationId && (!existing || existing.session_hash !== ownerHash))) return null;
+    if (!source) return null;
+    const ownerHash = sessionHash(source);
     const transaction = withRunStateLock(env, () => {
-      const previous = readConversationConsent(ownerHash, env);
+      const previous = readConversationConsent(env) ?? initialConversationConsent();
       const hash = userInputHash(input, ownerHash);
-      if (previous?.input_hashes.includes(hash)) return previous;
-      const next = { schema_ver: 1, session_hash: ownerHash, decision,
+      if (previous.decision === 'UNAVAILABLE' && decision !== 'DENIED') return null;
+      if (previous.input_hashes?.includes(hash)) return previous;
+      if (decision === 'GRANTED' && !previous.notice_sessions.includes(ownerHash)) {
+        // A business confirmation received before the notice cannot become a
+        // consent reply if that original message ID is replayed after it.
+        const unchanged = { ...previous, input_hashes: [...previous.input_hashes, hash] };
+        return writeTelemetryProfile(unchanged, env);
+      }
+      const next = { ...initialConversationConsent(), user_id: previous.user_id, decision, updated_at: Date.now(),
         grant_id: decision === 'GRANTED'
           ? (previous?.decision === 'GRANTED' ? previous.grant_id : crypto.randomUUID()) : null,
         input_hashes: [...(previous?.input_hashes || []), hash] };
-      if (!writePrivateJson(conversationSessionFile(ownerHash, 'consent', env), next)) return null;
+      const saved = writeTelemetryProfile(next, env);
+      if (!saved) return null;
       if (decision === 'DENIED') {
-        // The consent gate already prevents writes even if closing state fails.
-        let indexedId;
-        try { indexedId = JSON.parse(fs.readFileSync(conversationSessionFile(ownerHash, 'index', env), 'utf8')).conversation_id; } catch {}
-        for (const id of new Set([conversationId, indexedId])) {
-          const state = readConversationState(id, env);
-          if (state?.session_hash === ownerHash && state.lifecycle === 'ACTIVE') {
-            writePrivateJson(conversationStatePath(id, env), { ...state, lifecycle: 'CLOSED' });
+        // The shared gate revokes every chat immediately, even when closing the
+        // current state fails. A later grant gets a new ID and cannot revive it.
+        withRunStateLock(env, () => {
+          let indexedId;
+          try { indexedId = JSON.parse(fs.readFileSync(conversationSessionFile(ownerHash, 'index', env), 'utf8')).conversation_id; } catch {}
+          for (const id of new Set([conversationId, indexedId])) {
+            const state = readConversationState(id, env, { checkOwner: false });
+            if (state?.session_hash === ownerHash && state.lifecycle === 'ACTIVE') {
+              writePrivateJson(conversationStatePath(id, env), { ...state, lifecycle: 'CLOSED' });
+            }
           }
-        }
+        }, conversationSessionFile(ownerHash, 'index.lock', env));
       }
-      return next;
-    }, conversationSessionFile(ownerHash, 'index.lock', env), 0);
+      return saved;
+    }, `${telemetryProfileFile(env)}.lock`);
     return transaction.acquired ? transaction.value : null;
   } catch { return null; }
 }
 
 function hasConversationConsent(state, env) {
-  const consent = state && readConversationConsent(state.session_hash, env);
+  const consent = state && readConversationConsent(env);
   return consent?.decision === 'GRANTED' && state.consent_id === consent.grant_id;
 }
 
@@ -909,7 +1054,7 @@ function readConversationState(conversationId, env, { checkOwner = true } = {}) 
     if (state.schema_ver !== 3 || state.conversation_id !== conversationId
       || !['ACTIVE', 'CLOSED'].includes(state.lifecycle)
       || !/^[a-f0-9]{64}$/.test(state.session_hash)
-      || (source && state.session_hash !== sessionHash(source))
+      || (checkOwner && (!source || state.session_hash !== sessionHash(source)))
       || !Number.isSafeInteger(state.sequence) || state.sequence < 0
       || !Array.isArray(state.message_hashes) || state.message_hashes.length !== state.sequence
       || state.message_hashes.some((hash) => !/^[a-f0-9]{32}$/.test(hash))
@@ -957,14 +1102,15 @@ export function startConversation({ sessionId = '' } = {}, env = process.env, no
   try {
     const source = conversationSessionSource(env, sessionId);
     if (!source) return null;
+    if (!machineUserID(env)) return null;
     const ownerHash = sessionHash(source);
     const indexPath = path.join(stateDir(env), 'conversations', `${ownerHash}.index`);
-    const transaction = withRunStateLock(env, () => {
-      const consent = readConversationConsent(ownerHash, env);
+    const transaction = withConversationStateLock(ownerHash, env, () => {
+      const consent = readConversationConsent(env);
       if (consent?.decision !== 'GRANTED') return null;
       let existingId;
       try { existingId = JSON.parse(fs.readFileSync(indexPath, 'utf8')).conversation_id; } catch {}
-      const existing = readConversationState(existingId, env);
+      const existing = readConversationState(existingId, env, { checkOwner: false });
       if (existing?.lifecycle === 'ACTIVE' && existing.session_hash === ownerHash
         && existing.consent_id === consent.grant_id) {
         return { ...existing, created: false };
@@ -976,7 +1122,7 @@ export function startConversation({ sessionId = '' } = {}, env = process.env, no
       if (!writePrivateJson(conversationStatePath(conversationId, env), state)
         || !writePrivateJson(indexPath, { conversation_id: conversationId })) return null;
       return { ...state, created: true };
-    }, `${indexPath}.lock`, 0);
+    });
     return transaction.acquired ? transaction.value : null;
   } catch { return null; }
 }
@@ -1006,52 +1152,59 @@ export function endConversation(conversationId, env = process.env) {
 export async function recordConversationMessage(message, context = {}, env = process.env, nowMs = Date.now()) {
   if (!telemetryEnabled(env) || !conversationCode(env)) return null;
   try {
+    const existing = readConversationState(context.conversationId, env);
+    if (!existing || existing.lifecycle !== 'ACTIVE' || !hasConversationConsent(existing, env)) return null;
     message = normalizeConversationMessageInput(message);
     if (!message) return null;
-    const allowed = new Set(['role', 'content', 'has_attachments']);
+    const allowed = new Set(['role', 'content', 'has_attachments', 'question_summary']);
     if (!hasOnlyFields(message, allowed) || !['user', 'assistant'].includes(message.role)
       || (message.has_attachments !== undefined && typeof message.has_attachments !== 'boolean')) return null;
     const sanitized = sanitizeConversationText(message.content);
     const messageId = normalizeUserInputId(context.messageId);
-    // Assistant content is captured only when the caller explicitly marks the final reply.
+    // The Agent selects only the turn-ending blocking/final reply; all intermediate
+    // messages (including required nonblocking notices) are excluded. This flag is
+    // the caller's assertion of that scope, not proof of channel or task completion.
     if (message.role === 'assistant' && context.final !== true) return null;
     const conversationId = context.conversationId;
-    const productType = context.productType == null ? null : canonicalProductType(context.productType);
+    const productType = context.productType == null ? null :
+      (['token-pay', 'tokenpay', 'TOKENPAY'].includes(context.productType) ? 'TOKENPAY' : canonicalProductType(context.productType));
     if (!hasOnlyFields(context, new Set(['conversationId', 'messageId', 'productType', 'final']))
-      || !sanitized || !messageId || !validConversationId(conversationId)
+      || !sanitized?.content.trim() || !messageId || !validConversationId(conversationId)
       || (context.productType != null && !productType)) return null;
     const file = conversationStatePath(conversationId, env);
-    const existing = readConversationState(conversationId, env);
-    if (!existing) return null;
-    const transaction = withRunStateLock(env, () => {
-      const state = reconcileConversationMessage(readConversationState(conversationId, env), env);
-      if (!state || state.lifecycle !== 'ACTIVE' || !hasConversationConsent(state, env)) return null;
-      const hash = userInputHash(`${message.role}:${messageId}`, conversationId);
-      const existingIndex = state.message_hashes.indexOf(hash);
-      // A retry of an already captured message keeps its original sequence and is
-      // reported as a duplicate success, never as a capture failure.
-      if (existingIndex !== -1) return { duplicate: true, sequence: existingIndex + 1 };
-      const sequence = state.sequence + 1;
-      const event = normalizeConversationEvent({ ...conversationEventBase(state, productType, env, nowMs),
-        sequence, role: message.role, content: sanitized.content, truncated: sanitized.truncated,
-        has_attachments: message.has_attachments ?? false, redaction_version: 1 });
-      if (!event) return null;
-      // Reserve only recovery metadata, not a committed sequence or message body.
-      if (!writePrivateJson(file, { ...state, pending_message: {
-        sequence, message_hash: hash, timestamp: event.timestamp
-      } })) return null;
-      const queuedFile = writeOutboxRecord(event, env);
-      if (!queuedFile) {
-        writePrivateJson(file, state);
-        return null;
-      }
-      const next = { ...state, sequence, message_hashes: [...state.message_hashes, hash] };
-      if (!writePrivateJson(file, next)) {
-        try { fs.unlinkSync(queuedFile); } catch {}
-        return null;
-      }
-      return event;
-    }, conversationSessionFile(existing.session_hash, 'index.lock', env), 0);
+    let transaction;
+    for (let attempt = 0; attempt < localWriteMaxAttempts; attempt += 1) {
+      transaction = withConversationStateLock(existing.session_hash, env, () => {
+        const state = reconcileConversationMessage(readConversationState(conversationId, env), env);
+        if (!state || state.lifecycle !== 'ACTIVE' || !hasConversationConsent(state, env)) return null;
+        const hash = userInputHash(`${message.role}:${messageId}`, conversationId);
+        const existingIndex = state.message_hashes.indexOf(hash);
+        // A retry of an already captured message keeps its original sequence and is
+        // reported as a duplicate success, never as a capture failure.
+        if (existingIndex !== -1) return { duplicate: true, sequence: existingIndex + 1 };
+        const sequence = state.sequence + 1;
+        const event = normalizeConversationEvent({ ...conversationEventBase(state, productType, env, nowMs),
+          sequence, role: message.role, question_summary: message.question_summary, content: sanitized.content, truncated: sanitized.truncated,
+          has_attachments: message.has_attachments ?? false, redaction_version: 1 });
+        if (!event) return null;
+        // Reserve only recovery metadata, not a committed sequence or message body.
+        if (!writePrivateJson(file, { ...state, pending_message: {
+          sequence, message_hash: hash, timestamp: event.timestamp
+        } })) return null;
+        const queuedFile = writeOutboxRecord(event, env);
+        if (!queuedFile) {
+          writePrivateJson(file, state);
+          return null;
+        }
+        const next = { ...state, sequence, message_hashes: [...state.message_hashes, hash] };
+        if (!writePrivateJson(file, next)) {
+          try { fs.unlinkSync(queuedFile); } catch {}
+          return null;
+        }
+        return event;
+      });
+      if (transaction.acquired && transaction.value) break;
+    }
     if (!transaction.acquired || !transaction.value) return null;
     // Recovered duplicate retries may also need to wake their queued upload.
     // Already queued under the session lock; do not enqueue twice or wait for HTTP.
@@ -1084,7 +1237,7 @@ async function deliverPersistedStageEvent(event, env = process.env, stream = pro
 }
 
 export async function recordStageEvent(stage, context = {}, env = process.env, nowMs = Date.now(), stream = process.stderr) {
-  if (!telemetryEnabled(env)) return null;
+  if (!telemetryEnabled(env) && !summaryStages.has(stage)) return null;
   if (!stageRules.has(stage)) throw new Error('stage 不在公开 telemetry stage 列表中');
   const runId = safeRunId(context.runId || context.run_id);
   const historyCount = parseHistoryCount(context.historyCount ?? context.history_count, { strict: true });
@@ -1092,6 +1245,13 @@ export async function recordStageEvent(stage, context = {}, env = process.env, n
     const existing = readRunState(env);
     if (!existing || existing.lifecycle !== 'ACTIVE') return { kind: 'noop' };
     if (!runId || runId !== existing.run_id) return { kind: 'noop' };
+    // Business state closes independently of the metrics/transport switch.
+    if (!telemetryEnabled(env) || existing.telemetry_disabled === true) {
+      if (shouldCloseRunAfterStage({ stage }, existing)) {
+        persistRunState({ ...existing, lifecycle: 'CLOSED', terminal_at: nowMs, updated_at: nowMs }, env);
+      }
+      return { kind: 'noop' };
+    }
     if (!existing.clarify_intent_recorded || !stageAlreadyRecorded(existing, 'clarify_intent')) return { kind: 'noop' };
     if (!legalStageForState(existing, stage) || stage === 'clarify_intent') return { kind: 'noop' };
     if (stageAlreadyRecorded(existing, stage)) return { kind: 'duplicate' };
@@ -1131,8 +1291,13 @@ export async function startTelemetryRun(rootIntent, productType, _inputId = '', 
     throw new Error('--root-intent 仅支持 integration_only、onboarding_only、full_process');
   }
   const canonicalProduct = canonicalProductType(productType);
-  if (!canonicalProduct) return null;
-  const enabled = telemetryEnabled(env);
+  if (!canonicalProduct) throw new Error('执行前需确认具体产品能力，请在当前产品范围内选择要办理或开发的能力');
+  if (!stableSessionSource(env)) throw new Error('请先解析当前宿主会话并传入 --session-id');
+  const choice = conversationCode(env) ? getConversationConsent(env) : 'DISABLED';
+  const enabled = telemetryEnabled(env) && !usingBusinessFallback(env);
+  if (choice === 'UNSET') {
+    throw new Error('尚无有效采集偏好，请先展示采集说明（conversation notice），取得同意采集或仅使用服务的选择后继续');
+  }
   const transaction = withRunStateLock(env, () => {
     const run = createOrReuseRunState({
       'root-intent': rootIntent,
@@ -1169,9 +1334,13 @@ export async function startTelemetryRun(rootIntent, productType, _inputId = '', 
   });
   if (!transaction.acquired || !transaction.value?.state) {
     recordLocalTelemetryFailure('LOCAL_RUN_STATE_WRITE_FAILED', 'failed to persist local telemetry run state', env);
-    return null;
+    const recovered = recoverBusinessRun(rootIntent, canonicalProduct, env, nowMs);
+    env.ALIPAY_AIPAY_TELEMETRY_RUN_ID = recovered.run_id;
+    if (stream && typeof stream.write === 'function') stream.write(`${internalPrefix}RUN_ID=${recovered.run_id}\n`);
+    return recovered;
   }
-  const { state, event } = transaction.value;
+  const { state, event, replaced } = transaction.value;
+  if (replaced) process.stdout.write('已按你的选择开始新的办理或开发任务。上一任务的开发结果和开通进度以各自的检查记录、办理回执为准。\n');
   env.ALIPAY_AIPAY_TELEMETRY_RUN_ID = state.run_id;
   if (event) env.ALIPAY_AIPAY_TELEMETRY_HISTORY_COUNT = '0';
   if (stream && typeof stream.write === 'function') {
@@ -1231,7 +1400,7 @@ function modelFromEnv(env = process.env) {
 
 function skillVersionFromDisk() {
   try {
-    return normalizeSkillVersion(fs.readFileSync(path.join(skillRoot(), 'VERSION'), 'utf8')) || 'unknown';
+    return normalizeSkillVersion(readSkillVersion(skillRoot())) || 'unknown';
   } catch {}
   return 'unknown';
 }
@@ -1291,11 +1460,25 @@ function machineCodeRaw(env = process.env) {
   return '';
 }
 
-export function machineUserID(env = process.env) {
+function generateMachineUserID(env) {
   const raw = machineCodeRaw(env);
   if (!raw) return 'anonymous_uid';
   const hash = crypto.createHash('sha256').update(String(raw)).digest('hex').slice(0, 32);
   return `machine_${hash}`;
+}
+
+export function machineUserID(env = process.env) {
+  const file = telemetryProfileFile(env);
+  if (machineUserIDCache.has(file)) return machineUserIDCache.get(file);
+  const tx = withRunStateLock(env, () => {
+    const profile = readConversationConsent(env) ?? initialConversationConsent();
+    if (profile.user_id && fs.existsSync(file)) return profile.user_id;
+    if (profile.decision === 'UNAVAILABLE') return '';
+    return writeTelemetryProfile(profile, env)?.user_id || '';
+  }, `${file}.lock`);
+  const userID = tx.acquired ? tx.value : '';
+  if (userID) machineUserIDCache.set(file, userID);
+  return userID;
 }
 
 function monitorEnv(env = process.env, skillVersion = skillVersionFromDisk()) {
@@ -1378,14 +1561,17 @@ function normalizeTelemetryEvent(event) {
 export function buildSyncLogReport(event, env = process.env, dimensions = {}) {
   const normalizedEvent = normalizeTelemetryEvent(event);
   if (!normalizedEvent) return null;
+  const userID = machineUserID(env);
+  if (!userID) return null;
   const skillVersion = skillVersionFromEvent(normalizedEvent);
+  const harness = Object.prototype.hasOwnProperty.call(dimensions, 'platform')
+    ? normalizePlatform(dimensions.platform)
+    : platformFromEnv(env);
   const item = {
     code: syncLogCode,
     msg: syncLogMsg,
     d1: normalizeOS(),
-    d2: Object.prototype.hasOwnProperty.call(dimensions, 'platform')
-      ? normalizePlatform(dimensions.platform)
-      : platformFromEnv(env),
+    d2: harness,
     d3: modelFromEnv(env),
     d4: skillVersion,
     d5: normalizedEvent.product_type || 'UNKNOWN',
@@ -1397,9 +1583,14 @@ export function buildSyncLogReport(event, env = process.env, dimensions = {}) {
   if (isConversationEvent(normalizedEvent)) {
     item.code = normalizedEvent.code;
     item.msg = 'alipay_aipay_skill_conversation';
+    item.d2 = skillVersion;
+    item.d3 = harness;
+    delete item.d4;
+    delete item.d5;
     item.c1 = normalizedEvent.conversation_id;
     item.c2 = JSON.stringify({ sequence: normalizedEvent.sequence,
-      role: normalizedEvent.role, content: normalizedEvent.content });
+      role: normalizedEvent.role, content: normalizedEvent.content,
+      ...(normalizedEvent.question_summary ? { question_summary: normalizedEvent.question_summary } : {}) });
     delete item.c3;
     delete item.c4;
   }
@@ -1408,7 +1599,7 @@ export function buildSyncLogReport(event, env = process.env, dimensions = {}) {
     options: {
       Env: monitorEnv(env, skillVersion),
       SprintID: skillVersion,
-      UserID: machineUserID(env),
+      UserID: userID,
       YuyanID: syncLogYuyanID
     }
   };
@@ -1558,8 +1749,41 @@ export function sendSyncLogReportDetailed(report, {
   });
 }
 
+// Import only old stable stage records, never legacy dialogue grants or bodies.
+export function migrateLegacyStageQueue(env = process.env, { legacyDir } = {}) {
+  if (!telemetryEnabled(env)) return 0;
+  if (!legacyDir && (configuredPath(env, 'TELEMETRY_DIR') || configuredPath(env, 'TELEMETRY_OUTBOX_DIR'))) return 0;
+  const source = path.join(legacyDir || path.join(os.tmpdir(), 'alipay-aipay-telemetry'), 'outbox');
+  const destination = outboxDir(env);
+  if (path.resolve(source) === path.resolve(destination)) return 0;
+  let migrated = 0;
+  try {
+    const sourceStat = fs.lstatSync(source);
+    if (typeof process.getuid === 'function' && sourceStat.uid !== process.getuid()) return 0;
+    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) return 0;
+    const names = fs.readdirSync(source).filter(name => !name.startsWith('.') && name.endsWith('.json')).sort().slice(0, outboxMaxRecords);
+    ensurePrivateDir(destination);
+    for (const name of names) {
+      const file = path.join(source, name), target = path.join(destination, name);
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) continue;
+      const record = readOutboxRecord(file);
+      if (!record || isConversationEvent(record.event) || Date.now() - record.created_at > outboxMaxAgeMs) continue;
+      const bytes = fs.readFileSync(file);
+      try { fs.writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 }); }
+      catch (error) {
+        if (error.code !== 'EEXIST' || !fs.lstatSync(target).isFile() || fs.lstatSync(target).isSymbolicLink() || !fs.readFileSync(target).equals(bytes)) continue;
+      }
+      fs.unlinkSync(file);
+      migrated++;
+    }
+  } catch { /* Optional transport recovery cannot block service. */ }
+  return migrated;
+}
+
 function outboxFiles(env = process.env, { targetFile = '', limit = 0 } = {}) {
   if (!telemetryEnabled(env)) return [];
+  migrateLegacyStageQueue(env);
   try {
     const dir = outboxDir(env);
     recoverStaleOutboxClaims(env);
@@ -1791,7 +2015,8 @@ export async function flushOutbox(env = process.env, {
   includeConversations = true
 } = {}) {
   const result = { attempted: 0, sent: 0, retained: 0, invalid: 0 };
-  if (!telemetryUploadEnabled(env)) return result;
+  // Explicit dependency injection is for a test receiver only; the CLI has no receiver option.
+  if (!telemetryEnabled(env) || (!telemetryUploadEnabled(env) && sender === sendSyncLogReportDetailed)) return result;
   const files = outboxFilesForFlush(env, { targetFile, limit, prioritizeTerminal, includeConversations });
   const stages = { attempted: 0, sent: 0, retained: 0 };
   const stageFileCount = files.filter(file => !file.endsWith('.conversation')).length;
@@ -1827,13 +2052,14 @@ export async function flushOutbox(env = process.env, {
       } catch {}
       continue;
     }
-    if (isConversationEvent(record.event)) {
+    const conversation = isConversationEvent(record.event);
+    if (conversation) {
       // Finish stage accounting before handing off to conversation delivery.
       recordStageSuccess();
       // Legacy preview queues were captured before explicit consent existed.
       // Never retroactively authorize those messages with a later confirmation.
       const state = readConversationState(record.event.conversation_id, env, { checkOwner: false });
-      if (!validConversationId(state?.consent_id)) {
+      if (!validConversationId(state?.consent_id) || !hasConversationConsent(state, env)) {
         try { fs.unlinkSync(claimedFile); } catch { releaseOutboxClaim(claimedFile); }
         result.invalid += 1;
         continue;
@@ -1846,19 +2072,21 @@ export async function flushOutbox(env = process.env, {
         continue;
       }
     }
+    // Legacy conversation queues cannot identify the original host from the uploader.
     const report = buildSyncLogReport(
       record.event,
       env,
-      record.schema_ver === 2 ? { platform: record.platform } : {}
+      record.schema_ver === 2 ? { platform: record.platform }
+        : conversation ? { platform: 'unknown' } : {}
     );
     if (!report) {
-      result.invalid += 1;
-      try {
-        fs.unlinkSync(claimedFile);
-      } catch {}
+      // The queue record was validated above. An unavailable shared identity
+      // must leave it pending until the profile can be read or saved again.
+      releaseOutboxClaim(claimedFile);
+      result.retained += 1;
+      if (!conversation) stages.retained += 1;
       continue;
     }
-    const conversation = isConversationEvent(record.event);
     result.attempted += 1;
     if (!conversation) stages.attempted += 1;
     let sendResult = { ok: false, error_code: 'SENDER_FAILED', error_message: 'sender failed' };
@@ -2120,6 +2348,51 @@ function emitTelemetryError(error) {
   }
 }
 
+// Parse only after verifying session consent; never echo input or JSON parser errors.
+async function readConversationInput(args) {
+  if (!args['message-stdin']) {
+    process.stderr.write(`${internalPrefix}CONVERSATION_INPUT_ERROR=INPUT_UNAVAILABLE\n`);
+    return null;
+  }
+  try {
+    let body;
+    if (!process.stdin.isTTY) body = fs.readFileSync(0, 'utf8');
+    else {
+      // readline disables terminal echo; its rendering goes only to this sink.
+      // Wait for readiness before sending one JSON.stringify(message) + newline.
+      body = await new Promise((resolve) => {
+        const output = new Writable({ write(_chunk, _encoding, done) { done(); } });
+        const reader = createInterface({ input: process.stdin, output, terminal: true, historySize: 0 });
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          process.stdin.removeListener('error', onError);
+          reader.close();
+          output.end();
+          resolve(value);
+        };
+        const onError = () => finish(null);
+        const timer = setTimeout(onError, 60000);
+        reader.once('line', finish);
+        reader.once('close', onError);
+        reader.once('SIGINT', onError);
+        process.stdin.once('error', onError);
+        process.stderr.write(`${internalPrefix}CONVERSATION_INPUT_READY=true\n`);
+      });
+    }
+    if (!body?.trim()) {
+      process.stderr.write(`${internalPrefix}CONVERSATION_INPUT_ERROR=INPUT_UNAVAILABLE\n`);
+      return null;
+    }
+    return JSON.parse(body);
+  } catch {
+    process.stderr.write(`${internalPrefix}CONVERSATION_INPUT_ERROR=INVALID_INPUT\n`);
+    return null;
+  }
+}
+
 export async function runTelemetryCli(argv = process.argv) {
   try {
     const { command, args } = parseCliArgs(argv);
@@ -2130,10 +2403,13 @@ export async function runTelemetryCli(argv = process.argv) {
         if (command === 'opt-out') {
           assertCliArgs(args, new Set(['conversation-id', 'input-id']), 0);
           const consent = setConversationConsent({ decision: 'DENIED', conversationId: args['conversation-id'],
-            inputId: args['input-id'] || (args['conversation-id'] && `opt-out:${args['conversation-id']}`) });
+            inputId: args['input-id'] });
           if (consent?.decision === 'DENIED') {
             process.stderr.write(`${internalPrefix}CONVERSATION_CONSENT=DENIED\n`);
             process.stderr.write(`${internalPrefix}CONVERSATION_CLOSED=true\n`);
+          } else {
+            process.stderr.write(`${internalPrefix}CONVERSATION_CONSENT=UNAVAILABLE\n`);
+            return 1;
           }
         } else if (command === 'end-conversation') {
           assertCliArgs(args, new Set(['conversation-id']), 0);
@@ -2142,34 +2418,66 @@ export async function runTelemetryCli(argv = process.argv) {
             process.stderr.write(`${internalPrefix}CONVERSATION_CLOSED=true\n`);
           }
         } else if (command === 'start-conversation') {
-          // --host-session-id is a host-compatible alias for --session-id; when neither is
-          // supplied, startConversation uses the previously consented stable env session.
-          assertCliArgs(args, new Set(['session-id', 'host-session-id', 'message-id', 'message-json', 'product-type', 'final']), 0);
-          if (typeof args['message-json'] !== 'string') return 0;
-          const message = normalizeConversationMessageInput(JSON.parse(args['message-json']));
-          if (message?.role !== 'user' || !normalizeUserInputId(args['message-id'])) return 0;
-          const conversation = startConversation({ sessionId: args['host-session-id'] || args['session-id'] });
-          if (!conversation) return 0;
+          assertCliArgs(args, new Set(['session-id', 'host-session-id', 'message-id', 'message-stdin', 'product-type', 'final']), 0);
+          // runtime consumes --session-id before dispatch. Apply the legacy
+          // alias throughout this call so opening and recording use one owner.
+          const explicit = safeRunId(args['session-id'] || args['host-session-id']);
+          const env = explicit && !safeRunId(process.env.ALIPAY_AIPAY_SESSION_ID)
+            ? { ...process.env, ALIPAY_AIPAY_SESSION_ID: explicit }
+            : process.env;
+          if (getConversationConsent(env) !== 'GRANTED') {
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=NO_ACTIVE_GRANT\n`);
+            return 0;
+          }
+          const message = normalizeConversationMessageInput(await readConversationInput(args));
+          const final = args.final === 'true';
+          if (!message || !message.content.trim() || !normalizeUserInputId(args['message-id'])
+            || message.role !== 'user') {
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=INVALID_MESSAGE\n`);
+            return 0;
+          }
+          const conversation = startConversation({}, env);
+          if (!conversation) {
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=SESSION_UNAVAILABLE\n`);
+            return 0;
+          }
           const trigger = await recordConversationMessage(message, { conversationId: conversation.conversation_id,
-            messageId: args['message-id'], productType: args['product-type'], final: args.final === 'true' });
+            messageId: args['message-id'], productType: args['product-type'], final }, env);
           if (!trigger) {
-            // Only an orphan conversation created by this call is closed.
-            if (conversation.created) endConversation(conversation.conversation_id, process.env);
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=NOT_RECORDED\n`);
             return 0;
           }
           process.stderr.write(`${internalPrefix}CONVERSATION_ID=${conversation.conversation_id}\n`);
           process.stderr.write(`${internalPrefix}CONVERSATION_MESSAGE_RECORDED=${trigger.sequence}\n`);
         } else {
-          assertCliArgs(args, new Set(['conversation-id', 'product-type', 'message-id', 'message-json', 'final']), 0);
-          if (typeof args['message-json'] !== 'string') return 0;
-          const recorded = await recordConversationMessage(JSON.parse(args['message-json']), {
+          assertCliArgs(args, new Set(['conversation-id', 'product-type', 'message-id', 'message-stdin', 'final']), 0);
+          if (getConversationConsent(process.env) !== 'GRANTED') {
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=NO_ACTIVE_GRANT\n`);
+            return 0;
+          }
+          const conversation = readConversationState(args['conversation-id'], process.env);
+          if (conversation?.lifecycle !== 'ACTIVE' || !hasConversationConsent(conversation, process.env)) {
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=SESSION_NOT_ACTIVE\n`);
+            return 0;
+          }
+          const recorded = await recordConversationMessage(await readConversationInput(args), {
             conversationId: args['conversation-id'], productType: args['product-type'], messageId: args['message-id'], final: args.final === 'true'
           });
           if (recorded) {
             process.stderr.write(`${internalPrefix}CONVERSATION_MESSAGE_RECORDED=${recorded.sequence}\n`);
+          } else {
+            process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=NOT_RECORDED\n`);
           }
         }
-      } catch {}
+      } catch {
+        if (command === 'opt-out') {
+          process.stderr.write(`${internalPrefix}CONVERSATION_CONSENT=UNAVAILABLE\n`);
+          return 1;
+        }
+        if (command !== 'end-conversation') {
+          process.stderr.write(`${internalPrefix}CONVERSATION_RECORD_ERROR=NOT_RECORDED\n`);
+        }
+      }
       return 0;
     }
     if (command === 'resolve-session') {
@@ -2178,37 +2486,7 @@ export async function runTelemetryCli(argv = process.argv) {
       return 0;
     }
     if (command === 'start-run') {
-      assertCliArgs(args, new Set(['root-intent', 'product-type', 'conversation-id', 'conversation-session-id', 'conversation-message-id', 'conversation-message-json']), 0);
-      if (!allowedRootIntents.has(args['root-intent'])) {
-        throw new Error('--root-intent 仅支持 integration_only、onboarding_only、full_process');
-      }
-      if (telemetryEnabled(process.env) && conversationCode(process.env)) {
-        try {
-          const supplied = args['conversation-id'] && readConversationState(args['conversation-id'], process.env);
-          const conversation = args['conversation-id']
-            ? (supplied?.lifecycle === 'ACTIVE' && hasConversationConsent(supplied, process.env) ? supplied : null)
-            : startConversation({ sessionId: args['conversation-session-id'] || resolveTelemetrySession(process.env) }, process.env);
-          if (conversation?.conversation_id) {
-            let recorded = null;
-            if (args['conversation-message-id'] && args['conversation-message-json']) {
-              recorded = await recordConversationMessage(JSON.parse(args['conversation-message-json']), {
-                conversationId: conversation.conversation_id,
-                messageId: args['conversation-message-id'],
-                productType: args['product-type']
-              }, process.env);
-              if (!recorded && conversation.created) {
-                // Only an orphan conversation created by this call is closed;
-                // a caller-supplied conversation_id is never closed here.
-                endConversation(conversation.conversation_id, process.env);
-              }
-            }
-            if (!args['conversation-message-json'] || recorded) {
-              process.stderr.write(`${internalPrefix}CONVERSATION_ID=${conversation.conversation_id}\n`);
-              if (recorded) process.stderr.write(`${internalPrefix}CONVERSATION_MESSAGE_RECORDED=${recorded.sequence}\n`);
-            }
-          }
-        } catch {}
-      }
+      assertCliArgs(args, new Set(['root-intent', 'product-type']), 0);
       await startTelemetryRun(args['root-intent'], args['product-type'], '', { env: process.env });
       return 0;
     }
@@ -2277,7 +2555,7 @@ export async function runTelemetryCli(argv = process.argv) {
       await runOutboxWorker(process.env);
       return 0;
     }
-    if (!telemetryEnabled(process.env)) return 0;
+    if (!telemetryEnabled(process.env) && !(command === 'stage' && summaryStages.has(args._[0]))) return 0;
     if (command !== 'stage' || args._.length !== 1) {
       emitTelemetryError(new Error('invalid telemetry arguments'));
       return 0;
@@ -2299,11 +2577,11 @@ export async function runTelemetryCli(argv = process.argv) {
   } catch (error) {
     if (['start-conversation', 'conversation-message', 'end-conversation', 'opt-out'].includes(argv[2])) return 0;
     emitTelemetryError(error);
-    return 0;
+    return argv[2] === 'start-run' ? 1 : 0;
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMainModule(import.meta.url)) {
   runTelemetryCli(process.argv).then((code) => {
     process.exitCode = code;
   }, (error) => {

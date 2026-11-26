@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
 const installUrl = 'https://opengw.alipay.com/alipaycli/install';
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
@@ -54,7 +54,7 @@ function commandOutput(result) {
 }
 
 function verifyAlipayCli(binDir) {
-  const command = path.join(binDir, process.platform === 'win32' ? 'alipay-cli.cmd' : 'alipay-cli');
+  const command = path.join(binDir, process.platform === 'win32' ? 'alipay-cli.exe' : 'alipay-cli');
   const result = spawnSync(command, ['version'], {
     encoding: 'utf8',
     env: cleanChildEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}` }),
@@ -65,10 +65,15 @@ function verifyAlipayCli(binDir) {
   return result.status === 0;
 }
 
-export function runAlipayCliRefreshCli(argv = process.argv) {
+export async function runAlipayCliRefreshCli(argv = process.argv) {
   if (argv.length !== 3 || argv[2] !== 'refresh-alipay-cli') {
     console.error('用法: node alipay_cli_refresh.mjs refresh-alipay-cli');
     process.exitCode = 1;
+    return;
+  }
+  if (process.platform === 'win32') {
+    const { refreshWindowsCli } = await import('./windows/cli-install.mjs');
+    emit(refreshWindowsCli());
     return;
   }
 
@@ -124,6 +129,6 @@ export function runAlipayCliRefreshCli(argv = process.argv) {
   emit(verifyAlipayCli(binDir) ? 'READY' : 'VERIFY_FAILED');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runAlipayCliRefreshCli();
 }

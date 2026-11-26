@@ -19,7 +19,7 @@ function Invoke-NodeProbe([string]$Executable) {
         if ($process.ExitCode -ne 0) { return $null }
         $value = $stdout.Result | ConvertFrom-Json -ErrorAction Stop
         if ($value.platform -ne 'win32' -or $value.arch -ne 'x64' -or
-            $value.version -notmatch '^([0-9]+)\.[0-9]+\.[0-9]+$' -or [int]$Matches[1] -lt 18 -or
+            $value.version -notmatch '^([0-9]+)\.[0-9]+\.[0-9]+$' -or [version]$value.version -lt [version]'18.17.0' -or
             -not [IO.Path]::IsPathRooted($value.executable)) { return $null }
         if ($RequireNpm) {
             $bin = Split-Path -Parent $value.executable
@@ -96,7 +96,7 @@ function Install-UserNode([string]$Root) {
         $releases = @(Get-Content -LiteralPath $indexFile -Raw | ConvertFrom-Json)
         $release = $releases | Where-Object {
             $_.lts -is [string] -and $_.lts.Length -gt 0 -and $_.version -match '^v[0-9]+\.[0-9]+\.[0-9]+$' -and
-            [version]$_.version.Substring(1) -ge [version]'18.0.0' -and $_.files -contains 'win-x64-zip'
+            [version]$_.version.Substring(1) -ge [version]'18.17.0' -and $_.files -contains 'win-x64-zip'
         } | Sort-Object { [version]$_.version.Substring(1) } -Descending | Select-Object -First 1
         if ($null -eq $release) { throw 'NO_LTS_ASSET' }
         $name = 'node-' + $release.version + '-win-x64'
@@ -129,30 +129,8 @@ function Invoke-NodeBootstrap([string]$Action, [string]$Root) {
     if ($Action -eq 'check') { return @{status='NEEDS_SETUP'; reason='NODE_MISSING_OR_UNSUPPORTED'} }
     New-Item -ItemType Directory -Path $Root -Force -ErrorAction Stop | Out-Null
     if ((Get-Item -LiteralPath $Root).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'UNSAFE_DIRECTORY' }
-    $lock = $null
-    try {
-        try { $lock = [IO.File]::Open((Join-Path $Root 'node.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
-        catch { throw 'ENVIRONMENT_BUSY' }
-        $stateFile = Join-Path $Root 'node-environment.json'
-        $state = @{prepareAttempts=0; repairAttempts=0}
-        if (Test-Path -LiteralPath $stateFile) {
-            try {
-                $loaded = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
-                foreach ($key in @('prepareAttempts', 'repairAttempts')) {
-                    if ($loaded.$key -isnot [int] -and $loaded.$key -isnot [long]) { throw 'invalid' }
-                    if ($loaded.$key -lt 0) { throw 'invalid' }
-                    $state[$key] = $loaded.$key
-                }
-            } catch { throw 'ENVIRONMENT_STATE_INVALID' }
-        }
-        if (($Action -eq 'repair' -and $state.repairAttempts -ge 1) -or
-            ($Action -eq 'prepare' -and ($state.prepareAttempts -ge 1 -or $state.repairAttempts -ge 1))) { throw 'RETRY_BUDGET_EXHAUSTED' }
-        $state.prepareAttempts++
-        if ($Action -eq 'repair') { $state.repairAttempts++ }
-        [IO.File]::WriteAllText($stateFile, ($state | ConvertTo-Json -Compress))
-        $found = Install-UserNode $Root
-        return @{status='READY'; nodePath=$found.executable; version=$found.version}
-    } finally { if ($null -ne $lock) { $lock.Dispose() } }
+    $found = Install-UserNode $Root
+    return @{status='READY'; nodePath=$found.executable; version=$found.version}
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
@@ -161,10 +139,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         $localData = $env:LOCALAPPDATA
         if (-not $localData) { $localData = [Environment]::GetFolderPath('LocalApplicationData') }
         if (-not $localData -or -not [IO.Path]::IsPathRooted($localData)) { throw 'STORAGE_FAILED' }
-        $result = Invoke-NodeBootstrap $Mode (Join-Path $localData 'alipay-aipay-pre/bootstrap')
+        $result = Invoke-NodeBootstrap $Mode (Join-Path $localData 'alipay-aipay-new/bootstrap')
     } catch {
         $reason = [string]$_.Exception.Message
-        if ($reason -notmatch '^(DOWNLOAD_FAILED|NO_LTS_ASSET|INTEGRITY_FAILED|VERIFY_FAILED|UNSAFE_DIRECTORY|ENVIRONMENT_BUSY|ENVIRONMENT_STATE_INVALID|RETRY_BUDGET_EXHAUSTED|UNSUPPORTED_PLATFORM|ARCHITECTURE_CHECK_FAILED|STORAGE_FAILED)$') { $reason = 'SETUP_FAILED' }
+        if ($reason -notmatch '^(DOWNLOAD_FAILED|NO_LTS_ASSET|INTEGRITY_FAILED|VERIFY_FAILED|UNSAFE_DIRECTORY|STORAGE_FAILED)$') { $reason = 'SETUP_FAILED' }
         $result = @{status='BLOCKED'; reason=$reason}
     }
     [Console]::Error.WriteLine('ALIPAY_AIPAY_INTERNAL:NODE_BOOTSTRAP=' + ($result | ConvertTo-Json -Compress))

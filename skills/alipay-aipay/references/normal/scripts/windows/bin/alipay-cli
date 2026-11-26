@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Real CLI forwarding entry for original `env ... alipay-cli` call sites.
+set -eu
+exec "$ALIPAY_WINDOWS_NODE" "$ALIPAY_WINDOWS_CLI_RUNNER" "$@"

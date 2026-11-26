@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
+const windowsRouting = process.platform === 'win32' ? await import('./windows/routing.mjs') : null;
+let windowsMccCatalog;
+
+import { isMainModule } from './is_main_module.mjs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 import { isWindowsPlatform } from './platform_compat.mjs';
 import {
   buildWindowsOnboardingRedirectUrl,
   createMccContextReceipt,
   mccQualificationSummary,
-  renderMessage
+  renderMessage,
+  renderPlanMessage
 } from './render_customer_message.mjs';
 import {
   currentRunContext,
@@ -156,6 +161,11 @@ async function readStdin() {
 }
 
 function runPlatformEntry(args = {}) {
+  if (windowsRouting) {
+    const route=windowsRouting.onboardingRoute({ siteFallback: true });
+    if (route==='READY') return '';
+    if (route==='BLOCKED') throw Object.assign(new Error('Windows 环境准备未完成'),{reason:'WINDOWS_ENVIRONMENT_UNAVAILABLE'});
+  }
   if (!isWindowsPlatform()) return '';
   const runContext = currentRunContext();
   if (runContext?.terminal) {
@@ -167,13 +177,19 @@ function runPlatformEntry(args = {}) {
   }
   const platformId = platformIdFromEnv(process.env)
     || runContext?.run_id
-    || '';
+    || sessionPlatformId(process.env);
   if (!platformId) {
     throw new Error('Windows 产品开通引导缺少有效的当前 Onboarding run context');
   }
   return renderMessage('onboarding.windows.redirect', 'DEFAULT', {
     officialUrl: buildWindowsOnboardingRedirectUrl(platformId)
   });
+}
+
+function sessionPlatformId(env = process.env) {
+  const session = env.ALIPAY_AIPAY_SESSION_ID;
+  return typeof session === 'string' && session && !/[\u0000-\u001f\u007f,^=]/u.test(session)
+    ? `session_${createHash('sha256').update(session).digest('hex').slice(0, 32)}` : '';
 }
 
 function platformIdFromEnv(env = process.env) {
@@ -244,6 +260,13 @@ function assertMccQuery(query) {
 }
 
 const mccSelectionReceiptPrefix = 'AIPAY_MCC_SELECTION_V1.';
+const ignoredMccQueryTokens = new Set([
+  '服务', '企业', '个人', '提供', '适用', '用于', '平台', '项目', '申请', '商家', '公司',
+  '互联', '联网', '互联网', '在线', '用品', '收费', '缴费', '费用', '适用于', '经营',
+  '业务', '相关', '主体', '从事', '网站', '网页', '购买', '买票', '购票', '票务', '售票',
+  '预约', '预定', '退票', '支付', '付款', '收款', '下单', '订单', '交易', '销售', '售卖',
+  '商品', '产品'
+]);
 
 function activeMccRunId(env = process.env) {
   const candidate = env.ALIPAY_AIPAY_RUN_ID
@@ -298,6 +321,10 @@ function mccCandidateFromRecord(record, productType = '', mccRunContext = captur
 }
 
 function dynamicMccRecordsFromCatalog(rawCatalog) {
+  if (windowsRouting && rawCatalog === '@windows-stdin') {
+    windowsMccCatalog ??= fs.readFileSync(0, 'utf8');
+    rawCatalog = windowsMccCatalog;
+  }
   let catalog;
   try {
     catalog = typeof rawCatalog === 'string' ? JSON.parse(rawCatalog) : rawCatalog;
@@ -371,10 +398,8 @@ function mccCatalogForAgent(records) {
 }
 
 function parseAgentCandidateRefs(args, records) {
-  if (!Object.prototype.hasOwnProperty.call(args, 'agent-candidate-refs-json')) {
-    return { provided: false, codes: [] };
-  }
   const raw = args['agent-candidate-refs-json'];
+  if (raw === undefined) return { codes: undefined };
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -392,7 +417,7 @@ function parseAgentCandidateRefs(args, records) {
     }
     codes.push(refs.get(ref));
   }
-  return { provided: true, codes };
+  return { codes };
 }
 
 function mccTableSummary(records) {
@@ -430,12 +455,190 @@ function directMccCode(query, records) {
   return { isCode: true, matches: [...records.keys()].filter((code) => code.endsWith(`_${raw}`)) };
 }
 
-function directMccName(query, records) {
+function mccNgrams(value, size) {
+  const grams = new Set();
+  const searchableText = meaningfulMccSearch(value);
+  for (const segment of searchableText.split(/\s+/u).filter(Boolean)) {
+    const characters = [...segment];
+    for (let index = 0; index <= characters.length - size; index += 1) {
+      const gram = characters.slice(index, index + size).join('');
+      if (/^[\p{L}\p{N}]+$/u.test(gram)) grams.add(gram);
+    }
+  }
+  return grams;
+}
+
+function meaningfulMccSearch(value) {
+  let searchableText = normalizeSearch(value);
+  const ignoredTerms = [...ignoredMccQueryTokens]
+    .sort((left, right) => [...right].length - [...left].length);
+  for (const term of ignoredTerms) searchableText = searchableText.replaceAll(term, ' ');
+  return searchableText
+    .trim()
+    .replace(/\s+/gu, ' ')
+    .split(' ')
+    .filter((segment) => [...segment].length >= 2)
+    .join(' ');
+}
+
+export function parseMccSemanticTerms(args) {
+  const raw = optional(args, 'semantic-terms-json');
+  if (raw === undefined) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('semantic-terms-json 必须是合法 JSON 字符串数组');
+  }
+  if (!Array.isArray(parsed) || parsed.length > 12 || parsed.some((term) => typeof term !== 'string')) {
+    throw new Error('semantic-terms-json 必须是最多 12 项的 JSON 字符串数组');
+  }
+  const normalized = [];
+  let totalLength = 0;
+  for (const rawTerm of parsed) {
+    if (/\u0000|[\u0001-\u001f\u007f]/u.test(rawTerm)) {
+      throw new Error('semantic-terms-json 包含控制字符');
+    }
+    const term = normalizeSearch(rawTerm);
+    const termLength = [...term.replace(/\s+/gu, '')].length;
+    if (termLength < 2 || termLength > 40) {
+      throw new Error('semantic-terms-json 每项长度必须为 2 到 40 个字符');
+    }
+    if (/(?:A\d{4}\s*)?B\d{4}/iu.test(term)) {
+      throw new Error('semantic-terms-json 只能包含业务概念词，禁止提供 MCC 编码');
+    }
+    totalLength += termLength;
+    if (!normalized.includes(term)) normalized.push(term);
+  }
+  if (totalLength > 240) throw new Error('semantic-terms-json 总长度不得超过 240 个字符');
+  return normalized.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+function mccDocumentFrequency(indexedRecords) {
+  const frequencies = new Map();
+  for (const indexed of indexedRecords) {
+    const documentGrams = new Set([
+      ...indexed.nameBigrams,
+      ...indexed.nameTrigrams,
+      ...indexed.businessBigrams,
+      ...indexed.businessTrigrams
+    ]);
+    for (const gram of documentGrams) frequencies.set(gram, (frequencies.get(gram) || 0) + 1);
+  }
+  return frequencies;
+}
+
+function weightedMccOverlap(queryGrams, documentGrams, frequencies, recordCount, size) {
+  let weight = 0;
+  for (const gram of queryGrams) {
+    if (!documentGrams.has(gram)) continue;
+    const documentCount = frequencies.get(gram) || 0;
+    weight += (Math.log((recordCount + 1) / (documentCount + 1)) + 1) * (size === 3 ? 1.6 : 1);
+  }
+  return weight;
+}
+
+function mccPhraseCoverage(haystackSegments, needleSegments) {
+  let coverage = 0;
+  for (const needle of needleSegments) {
+    if (ignoredMccQueryTokens.has(needle)) continue;
+    const needleLength = [...needle].length;
+    for (const haystack of haystackSegments) {
+      if (!haystack.includes(needle)) continue;
+      coverage = Math.max(coverage, needleLength / [...haystack].length);
+    }
+  }
+  return coverage;
+}
+
+function mccTextEvidence(value, indexed, frequencies, recordCount) {
+  const normalizedValue = normalizeSearch(value);
+  const valueSegments = meaningfulMccSearch(normalizedValue).split(' ').filter(Boolean);
+  const valueBigrams = mccNgrams(normalizedValue, 2);
+  const valueTrigrams = mccNgrams(normalizedValue, 3);
+  const exactName = indexed.name === normalizedValue
+    || (normalizedValue.split(' ').length === 1 && indexed.nameSegments.includes(normalizedValue));
+  const nameContainsValueCoverage = mccPhraseCoverage(indexed.nameEvidenceSegments, valueSegments);
+  const valueContainsNameCoverage = mccPhraseCoverage(valueSegments, indexed.nameEvidenceSegments);
+  const businessContainsValueCoverage = mccPhraseCoverage(indexed.businessEvidenceSegments, valueSegments);
+  const nameBigram = weightedMccOverlap(valueBigrams, indexed.nameBigrams, frequencies, recordCount, 2);
+  const nameTrigram = weightedMccOverlap(valueTrigrams, indexed.nameTrigrams, frequencies, recordCount, 3);
+  const businessBigram = weightedMccOverlap(valueBigrams, indexed.businessBigrams, frequencies, recordCount, 2);
+  const businessTrigram = weightedMccOverlap(valueTrigrams, indexed.businessTrigrams, frequencies, recordCount, 3);
+  const matchedBigrams = new Set([
+    ...[...valueBigrams].filter((gram) => indexed.nameBigrams.has(gram)),
+    ...[...valueBigrams].filter((gram) => indexed.businessBigrams.has(gram))
+  ]);
+  const matchedTrigrams = new Set([
+    ...[...valueTrigrams].filter((gram) => indexed.nameTrigrams.has(gram)),
+    ...[...valueTrigrams].filter((gram) => indexed.businessTrigrams.has(gram))
+  ]);
+  const rareBigramDocumentLimit = Math.max(1, Math.ceil(recordCount * 0.02));
+  const hasRareBigram = [...matchedBigrams].some((gram) => (
+    (frequencies.get(gram) || recordCount) <= rareBigramDocumentLimit
+  ));
+  const hasLexicalEvidence = matchedTrigrams.size > 0
+    || matchedBigrams.size >= 2
+    || (valueBigrams.size <= 2 && hasRareBigram);
+  const phraseEvidence = nameContainsValueCoverage > 0
+    || valueContainsNameCoverage > 0
+    || businessContainsValueCoverage > 0;
+  return {
+    eligible: exactName || phraseEvidence || hasLexicalEvidence,
+    exactName,
+    score: (exactName ? 100000 : 0)
+      + (nameContainsValueCoverage * 6000)
+      + (valueContainsNameCoverage * 3000)
+      + (businessContainsValueCoverage * 2500)
+      + ((nameBigram + nameTrigram) * 120)
+      + ((businessBigram + businessTrigram) * 40)
+  };
+}
+
+function deterministicMccMatches(query, records, { limit = 8, semanticTerms = [] } = {}) {
   const normalizedQuery = assertMccQuery(query);
-  return sortedMccRecords(records)
-    .filter((record) => normalizeSearch(record.name) === normalizedQuery)
-    .map((record) => record.code)
-    .slice(0, 8);
+  const indexedRecords = [...records.values()].map((record) => {
+    const name = normalizeSearch(record.name);
+    const businesses = normalizeSearch(record.applicableBusinesses);
+    return {
+      record,
+      name,
+      nameSegments: name.split(' ').filter(Boolean),
+      nameEvidenceSegments: meaningfulMccSearch(name).split(' ').filter(Boolean),
+      businessEvidenceSegments: meaningfulMccSearch(businesses).split(' ').filter(Boolean),
+      nameBigrams: mccNgrams(name, 2),
+      nameTrigrams: mccNgrams(name, 3),
+      businessBigrams: mccNgrams(businesses, 2),
+      businessTrigrams: mccNgrams(businesses, 3)
+    };
+  });
+  const frequencies = mccDocumentFrequency(indexedRecords);
+  const scored = [];
+
+  for (const indexed of indexedRecords) {
+    const originalEvidence = mccTextEvidence(normalizedQuery, indexed, frequencies, indexedRecords.length);
+    const semanticEvidence = semanticTerms
+      .map((term) => mccTextEvidence(term, indexed, frequencies, indexedRecords.length))
+      .filter((evidence) => evidence.eligible)
+      .sort((left, right) => right.score - left.score)[0];
+    if (!originalEvidence.eligible && !semanticEvidence) continue;
+    scored.push({
+      record: indexed.record,
+      score: originalEvidence.score + ((semanticEvidence?.score || 0) * 0.7),
+      exactName: originalEvidence.exactName,
+      originalEligible: originalEvidence.eligible,
+      semanticEligible: Boolean(semanticEvidence),
+      semanticExactName: Boolean(semanticEvidence?.exactName)
+    });
+  }
+
+  const exactMatches = scored.filter(({ exactName }) => exactName);
+  const ranked = exactMatches.length > 0
+    ? exactMatches
+    : scored;
+  return ranked
+    .sort((left, right) => right.score - left.score || left.record.code.localeCompare(right.record.code))
+    .slice(0, limit);
 }
 
 function createMccSelectionReceipt(productType, query, result, mccRunContext = captureMccRunContext()) {
@@ -445,6 +648,7 @@ function createMccSelectionReceipt(productType, query, result, mccRunContext = c
     mccRunContext.runId,
     productType,
     assertMccQuery(query),
+    JSON.stringify(result.semanticTerms || []),
     table.sha256,
     table.recordCount,
     codes
@@ -452,8 +656,8 @@ function createMccSelectionReceipt(productType, query, result, mccRunContext = c
   return `${mccSelectionReceiptPrefix}${codes}.${createHash('sha256').update(binding).digest('base64url')}`;
 }
 
-function resolveMccSelection(productType, query, selectedInput, receipt, records, mccRunContext) {
-  const candidateCodes = mccSelectionReceiptCodes(productType, query, receipt, records, mccRunContext);
+function resolveMccSelection(productType, query, selectedInput, receipt, records, semanticTerms, agentCandidateCodes, mccRunContext) {
+  const candidateCodes = mccSelectionReceiptCodes(productType, query, receipt, records, semanticTerms, mccRunContext);
   if (!candidateCodes) {
     const semanticStatus = typeof receipt === 'string' && receipt.startsWith(mccSelectionReceiptPrefix)
       ? 'SELECTION_RECEIPT_STALE'
@@ -462,8 +666,10 @@ function resolveMccSelection(productType, query, selectedInput, receipt, records
       query,
       productType,
       records,
+      semanticTerms,
       semanticStatus,
-      mccRunContext
+      mccRunContext,
+      agentCandidateCodes
     );
     return {
       ...refreshed,
@@ -480,7 +686,8 @@ function resolveMccSelection(productType, query, selectedInput, receipt, records
       deterministicCandidateCodes: [],
       deterministicStrongCandidateCodes: [],
       deterministicWeakCandidateCodes: [],
-      agentCandidateCodes: [],
+      semanticCandidateCodes: [],
+      semanticTerms,
       mergedCandidateCodes: candidateCodes,
       mccTableSummary: currentTable,
       candidates: candidateCodes.map((code) => mccCandidateFromRecord(records.get(code), productType, mccRunContext))
@@ -493,14 +700,15 @@ function resolveMccSelection(productType, query, selectedInput, receipt, records
     deterministicCandidateCodes: [],
     deterministicStrongCandidateCodes: [],
     deterministicWeakCandidateCodes: [],
-    agentCandidateCodes: [],
+    semanticCandidateCodes: [],
+    semanticTerms,
     mergedCandidateCodes: [selectedCode],
     mccTableSummary: currentTable,
     candidates: [candidate]
   };
 }
 
-function mccSelectionReceiptCodes(productType, query, receipt, records, mccRunContext = captureMccRunContext()) {
+function mccSelectionReceiptCodes(productType, query, receipt, records, semanticTerms, mccRunContext = captureMccRunContext()) {
   if (typeof receipt !== 'string' || !receipt.startsWith(mccSelectionReceiptPrefix)) return null;
   const body = receipt.slice(mccSelectionReceiptPrefix.length);
   const separator = body.lastIndexOf('.');
@@ -511,20 +719,24 @@ function mccSelectionReceiptCodes(productType, query, receipt, records, mccRunCo
     || candidateCodes.some((code) => !records.has(code))
     || receipt !== createMccSelectionReceipt(productType, query, {
       mergedCandidateCodes: candidateCodes,
-      mccTableSummary: currentTable
+      mccTableSummary: currentTable,
+      semanticTerms
     }, mccRunContext)) {
     return null;
   }
   return candidateCodes;
 }
 
+function localCodesForReview(matches) { return matches.map(({ record }) => record.code); }
+
 function resolveMccResultFromRecords(
   query,
   productType,
   records,
+  semanticTerms = [],
   semanticStatus,
   mccRunContext = captureMccRunContext(),
-  agentReview = { provided: false, codes: [] }
+  agentCandidateCodes
 ) {
   const directCode = directMccCode(query, records);
   if (directCode.isCode) {
@@ -537,7 +749,9 @@ function resolveMccResultFromRecords(
         deterministicCandidateCodes: [code],
         deterministicStrongCandidateCodes: [code],
         deterministicWeakCandidateCodes: [],
+        semanticCandidateCodes: [],
         agentCandidateCodes: [],
+        semanticTerms,
         mergedCandidateCodes: [code],
         mccTableSummary: mccTableSummary(records),
         candidates: [candidate]
@@ -550,69 +764,49 @@ function resolveMccResultFromRecords(
       deterministicCandidateCodes: finalCodes,
       deterministicStrongCandidateCodes: finalCodes,
       deterministicWeakCandidateCodes: [],
+      semanticCandidateCodes: [],
       agentCandidateCodes: [],
+      semanticTerms,
       mergedCandidateCodes: finalCodes,
       mccTableSummary: mccTableSummary(records),
       candidates: finalCodes.map((code) => mccCandidateFromRecord(records.get(code), productType, mccRunContext))
     };
   }
 
-  const exactNameCodes = directMccName(query, records);
-  if (exactNameCodes.length > 0) {
-    const candidates = exactNameCodes.map((code) => mccCandidateFromRecord(records.get(code), productType, mccRunContext));
-    return {
-      matchType: candidates.length === 1 ? 'UNIQUE' : 'MULTIPLE',
-      semanticStatus: 'NOT_REQUIRED_EXACT_NAME',
-      deterministicCandidateCodes: exactNameCodes,
-      deterministicStrongCandidateCodes: exactNameCodes,
-      deterministicWeakCandidateCodes: [],
-      agentCandidateCodes: [],
-      mergedCandidateCodes: exactNameCodes,
-      mccTableSummary: mccTableSummary(records),
-      candidates
-    };
-  }
-
-  if (!agentReview.provided) {
-    return {
-      matchType: 'NONE',
-      semanticStatus: semanticStatus || 'AGENT_CATALOG_REVIEW_REQUIRED',
-      deterministicCandidateCodes: [],
-      deterministicStrongCandidateCodes: [],
-      deterministicWeakCandidateCodes: [],
-      agentCandidateCodes: [],
-      mergedCandidateCodes: [],
-      mccTableSummary: mccTableSummary(records),
-      candidates: [],
+  const matches = deterministicMccMatches(query, records, { limit: 8, semanticTerms });
+  const deterministicCodes = matches.filter(({ originalEligible }) => originalEligible).map(({ record }) => record.code);
+  const semanticCodes = matches.filter(({ semanticEligible }) => semanticEligible).map(({ record }) => record.code);
+  const exactCodes = [...records.values()].filter(record => normalizeSearch(record.name) === normalizeSearch(query)).map(record => record.code);
+  // Lexical scores are hints only. Natural language must be judged against the full catalog.
+  // An explicit [] is a completed no-match decision, distinct from an omitted review.
+  const reviewed = agentCandidateCodes !== undefined;
+  const finalCodes = exactCodes.length ? exactCodes : reviewed ? agentCandidateCodes : [];
+  const candidates = finalCodes.map(code => mccCandidateFromRecord(records.get(code), productType, mccRunContext));
+  const needsAgentReview = exactCodes.length === 0 && !reviewed;
+  return {
+    matchType: candidates.length === 1 ? 'UNIQUE' : candidates.length === 0 ? 'NONE' : 'MULTIPLE',
+    semanticStatus: semanticStatus
+      || (reviewed ? 'AGENT_CATALOG_REVIEW_USED' : exactCodes.length ? 'NOT_REQUIRED_EXACT_NAME' : 'AGENT_CATALOG_REVIEW_REQUIRED'),
+    deterministicCandidateCodes: deterministicCodes,
+    deterministicStrongCandidateCodes: deterministicCodes,
+    deterministicWeakCandidateCodes: [],
+    semanticCandidateCodes: semanticCodes,
+    agentCandidateCodes: agentCandidateCodes || [],
+    semanticTerms,
+    mergedCandidateCodes: finalCodes,
+    mccTableSummary: mccTableSummary(records),
+    candidates,
+    ...(needsAgentReview ? {
       agentReview: {
         required: true,
         attempt: 1,
         maxAttempts: 2,
-        reason: 'NATURAL_LANGUAGE_MATCH',
-        instructions: {
-          keepExplicitConstraints: true,
-          keepUnspecifiedDimensionsOpen: true,
-          excludeContradictions: true,
-          rankByRelevance: true,
-          maxCandidates: 8
-        },
+        reason: 'NATURAL_LANGUAGE_CATALOG_REVIEW',
+        instructions: { keepExplicitConstraints: true, keepUnspecifiedDimensionsOpen: true, excludeContradictions: true, rankByRelevance: true, maxCandidates: 8 },
+        localHintCodes: localCodesForReview(matches),
         catalog: mccCatalogForAgent(records)
       }
-    };
-  }
-
-  const finalCodes = agentReview.codes;
-  const candidates = finalCodes.map((code) => mccCandidateFromRecord(records.get(code), productType, mccRunContext));
-  return {
-    matchType: candidates.length === 1 ? 'UNIQUE' : candidates.length === 0 ? 'NONE' : 'MULTIPLE',
-    semanticStatus: semanticStatus || 'AGENT_CATALOG_REVIEW_USED',
-    deterministicCandidateCodes: [],
-    deterministicStrongCandidateCodes: [],
-    deterministicWeakCandidateCodes: [],
-    agentCandidateCodes: finalCodes,
-    mergedCandidateCodes: finalCodes,
-    mccTableSummary: mccTableSummary(records),
-    candidates
+    } : {})
   };
 }
 
@@ -624,7 +818,7 @@ function renderPlanConfirm(productType, mccCandidate, mccRunContext = captureMcc
     mccQualification: mccCandidate.qualification
   };
   if (mccCandidate.mccContextReceipt) variables.mccContextReceipt = mccCandidate.mccContextReceipt;
-  return renderMessage('onboarding.plan.confirm', product.variant, variables, { productType, runId: mccRunContext.runId, mccRunId: mccRunContext.runId });
+  return renderPlanMessage('onboarding.plan.confirm', product.variant, variables, { productType, runId: mccRunContext.runId, mccRunId: mccRunContext.runId });
 }
 
 function requireCustomerMessageDelivery(messageId, message) {
@@ -641,7 +835,7 @@ async function runPlanConfirm(args) {
   productFor({ ...args, 'product-type': productType });
   await startTelemetryRun(rootIntent, productType);
   const mccRunContext = captureMccRunContext();
-  return requireCustomerMessageDelivery('onboarding.plan.confirm', renderPlanConfirm(productType, {
+  return requireCustomerMessageDelivery('onboarding.plan.confirm', await renderPlanConfirm(productType, {
     mccCode: required(args, 'mcc-code'),
     mccName: required(args, 'mcc-name'),
     qualification: required(args, 'mcc-qualification'),
@@ -662,9 +856,7 @@ async function runMccResolvePlan(args) {
   const selected = optional(args, 'select');
   const selectionReceipt = optional(args, 'selection-receipt');
   const selectionState = optional(args, 'selection-state');
-  if (args['semantic-terms-json'] !== undefined) {
-    throw new Error('mcc-resolve-plan 不再接受 --semantic-terms-json；自然语言只使用一次受限目录判断');
-  }
+  const semanticTerms = parseMccSemanticTerms(args);
   if ((selected === undefined) !== (selectionReceipt === undefined)) {
     throw new Error('--select 与 --selection-receipt 必须同时提供');
   }
@@ -680,8 +872,8 @@ async function runMccResolvePlan(args) {
   const records = recordsForArgs(args);
   const agentReview = parseAgentCandidateRefs(args, records);
   let result = selected === undefined
-    ? resolveMccResultFromRecords(query, productType, records, undefined, mccRunContext, agentReview)
-    : resolveMccSelection(productType, query, selected, selectionReceipt, records, mccRunContext);
+    ? resolveMccResultFromRecords(query, productType, records, semanticTerms, undefined, mccRunContext, agentReview.codes)
+    : resolveMccSelection(productType, query, selected, selectionReceipt, records, semanticTerms, agentReview.codes, mccRunContext);
   if (selectionState === 'STALE') {
     result = {
       ...result,
@@ -689,7 +881,7 @@ async function runMccResolvePlan(args) {
       semanticStatus: 'SELECTION_RECEIPT_STALE'
     };
   }
-  const { candidates: _internalCandidates, ...controlResult } = result;
+  const { candidates: _internalCandidates, semanticTerms: _privateTerms, ...controlResult } = result;
   process.stderr.write(`ALIPAY_AIPAY_INTERNAL:MCC_RESOLUTION=${JSON.stringify(controlResult)}\n`);
   if (result.matchType === 'UNIQUE') {
     if (result.candidates[0].mccContextReceipt) {
@@ -697,7 +889,7 @@ async function runMccResolvePlan(args) {
     }
     return requireCustomerMessageDelivery(
       'onboarding.plan.confirm',
-      renderPlanConfirm(productType, result.candidates[0], mccRunContext)
+      await renderPlanConfirm(productType, result.candidates[0], mccRunContext)
     );
   }
   if (result.matchType === 'NONE') {
@@ -718,17 +910,15 @@ async function runMccMatchCodes(args) {
   }
   await startTelemetryRun(rootIntent, productType);
   const query = required(args, 'query');
-  if (args['semantic-terms-json'] !== undefined) {
-    throw new Error('mcc-match-codes 不再接受 --semantic-terms-json；自然语言只使用一次受限目录判断');
-  }
+  const semanticTerms = parseMccSemanticTerms(args);
   if (args['agent-mcc-status'] !== undefined || args['agent-mcc-codes'] !== undefined) {
     throw new Error('mcc-match-codes 不接受 --agent-mcc-status 或 --agent-mcc-codes；MCC 匹配只使用本轮动态 catalog');
   }
   const records = recordsForArgs(args);
   const agentReview = parseAgentCandidateRefs(args, records);
   const mccRunContext = captureMccRunContext();
-  const result = resolveMccResultFromRecords(query, productType, records, undefined, mccRunContext, agentReview);
-  const { candidates: _internalCandidates, ...controlResult } = result;
+  const result = resolveMccResultFromRecords(query, productType, records, semanticTerms, undefined, mccRunContext, agentReview.codes);
+  const { candidates: _internalCandidates, semanticTerms: _privateTerms, ...controlResult } = result;
   process.stderr.write(`ALIPAY_AIPAY_INTERNAL:MCC_RESOLUTION=${JSON.stringify(controlResult)}\n`);
   return '';
 }
@@ -737,15 +927,14 @@ function runMccValidateSelectionCache(args) {
   const productType = required(args, 'product-type');
   productFor({ ...args, 'product-type': productType });
   const records = recordsForArgs(args);
-  if (args['semantic-terms-json'] !== undefined) {
-    throw new Error('mcc-validate-selection-cache 不再接受 --semantic-terms-json');
-  }
+  const semanticTerms = parseMccSemanticTerms(args);
   const mccRunContext = captureMccRunContext();
   if (!mccSelectionReceiptCodes(
     productType,
     required(args, 'query'),
     required(args, 'selection-receipt'),
     records,
+    semanticTerms,
     mccRunContext
   )) {
     throw new Error('MCC 候选详情缓存与本轮选择回执不一致');
@@ -807,8 +996,8 @@ function specialQualificationMaterialHint(raw) {
   if (!Array.isArray(groups) || groups.length === 0) return '';
   const lines = [
     '特殊资质要求：',
-    '- 以下资质组合任选一种；选择某一组合后，必须同时提供该组合内全部所需材料。',
-    '- 请先选择一个资质组合；如所选组合包含需上传材料，请【按该组合列出的顺序】提供特殊资质材料。'
+    '- 请从以下资质组合中任选一种，回复组合序号，满足该组合的全部条件，并【按该组合列出的顺序】提供全部需上传的特殊资质材料。',
+    '- 若所选组合全部为“无需上传”的文字条件，请回复所选组合序号，并确认满足该组合的全部条件。'
   ];
   let renderedGroups = 0;
   for (const [groupIndex, group] of groups.entries()) {
@@ -831,7 +1020,6 @@ function specialQualificationMaterialHint(raw) {
     lines.push(`- 资质组合 ${groupIndex + 1}：${parts.join(' + ')}`);
   }
   if (renderedGroups === 0) return '';
-  lines.push('- 如选择的组合只包含“无需上传”的文字条件，请在回复中说明选择该组合并确认满足该文字条件。');
   return lines.join('\n');
 }
 
@@ -875,10 +1063,13 @@ async function runMaterialCollect(args) {
   const input = optional(args, 'missing-fields') !== undefined
     ? { missingFields: args['missing-fields'] }
     : await readStdin();
-  const variant = state === 'INITIAL' && category === 'service'
+  let variant = state === 'INITIAL' && category === 'service'
     ? 'SERVICE_INITIAL'
     : stateRule.variant;
   const missingFields = normalizeMissingFields(category, input.missingFields);
+  if (state === 'INITIAL' && category === 'signing') {
+    variant = { webpay: 'SIGNING_WEB_INITIAL', apppay: 'SIGNING_APP_INITIAL' }[productType] || variant;
+  }
   if (category === 'application' && productType !== 'apppay') {
     const incompatibleFields = missingFields.split('、').filter((field) => field !== '应用公钥');
     if (incompatibleFields.length > 0) {
@@ -1166,7 +1357,7 @@ export async function runOnboardingMessageCli(argv = process.argv) {
   if (command === 'platform-entry') {
     const message = runPlatformEntry(args);
     if (message) console.log(message);
-    return;
+    return windowsRouting ? (message ? 'LEGACY' : 'READY') : undefined;
   }
   if (command === 'product-clarify') {
     console.log(runProductClarify());
@@ -1251,7 +1442,7 @@ export async function runOnboardingMessageCli(argv = process.argv) {
   throw new Error('用法: onboarding_message_runner.mjs <platform-entry|product-clarify|enterprise-unsupported|mcc-resolve-plan|mcc-match-codes|mcc-validate-selection-cache|plan-confirm|mcc-clarify|material-collect|application-candidates|service-candidates|application-recheck|closeout|service-create-summary|service-update-confirm|application-harmony-manual-create|application-reuse-no-key|signing-result|service-result|application-result> ...');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runOnboardingMessageCli().catch((error) => {
     console.error(`ONBOARDING_MESSAGE_ERROR:${error.message}`);
     process.exitCode = 1;

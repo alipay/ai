@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+import { isMainModule } from './is_main_module.mjs';
+import { readSkillVersion } from './profile.mjs';
+import { verifyInstalled } from './payload.mjs';
+import { readSessionSkill, finalizeLegacyMetadata } from './session_skill.mjs';
+import { acquireMetadataLock, releaseMetadataLock, installTransactionPaths, processIsAbsent } from './metadata_lock.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -28,20 +33,21 @@ function appendBounded(current, chunk) {
 }
 
 async function terminateProcessTree(child) {
-  if (!child.pid) return;
+  if (!child.pid) return false;
   if (process.platform === 'win32') {
-    spawnSync('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+    const result = spawnSync('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
       stdio: 'ignore',
       timeout: 2 * 1000,
       windowsHide: true,
     });
     try { child.kill('SIGKILL'); } catch {}
-    return;
+    return !result.error && result.status === 0;
   }
 
   try { process.kill(-child.pid, 'SIGTERM'); } catch {}
   await delay(250);
   try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+  return true;
 }
 
 function packageManagerCommand(command, args) {
@@ -127,11 +133,13 @@ function spawnPackageManager(command, args, { timeout, env = process.env }) {
     timer = setTimeout(() => {
       timedOut = true;
       void (async () => {
-        await terminateProcessTree(child);
+        const terminated = await terminateProcessTree(child);
         if (!closed) await Promise.race([closedPromise, delay(2 * 1000)]);
         const error = new Error(`package manager timed out after ${timeout}ms`);
         error.code = 'ETIMEDOUT';
-        finish({ status: null, signal: 'SIGKILL', error });
+        const terminationConfirmed = terminated && closed
+          && (process.platform === 'win32' || processIsAbsent(-child.pid));
+        finish({ status: null, signal: 'SIGKILL', error, timedOut: true, terminationConfirmed });
       })();
     }, timeout);
   });
@@ -214,35 +222,19 @@ function compareVersions(left, right) {
   return 0;
 }
 
-export function skillVersionKind(value, channel) {
+export function skillVersionKind(value) {
   if (typeof value !== 'string') return null;
   const parsed = parseVersion(value);
   if (!parsed) return null;
-  const suffix = parsed.prerelease.join('.');
-  if (suffix === (channel === 'pre' ? 'pre' : '')) return 'release';
-  const pattern = channel === 'pre' ? /^pre-beta(?:\d+|\.\d+)?$/u : /^beta(?:\d+|\.\d+)?$/u;
-  return pattern.test(suffix) ? 'beta' : null;
+  if (parsed.prerelease.length === 0) return 'release';
+  return /^beta(?:\d+|\.\d+)?$/u.test(parsed.prerelease.join('.')) ? 'beta' : null;
 }
 
 function readVersionFile(skillDir) {
-  try {
-    const file = path.join(skillDir, 'VERSION');
-    return isRegularFile(file) ? parseVersion(fs.readFileSync(file, 'utf8')) : null;
-  } catch {
-    return null;
-  }
+  try { return parseVersion(readSkillVersion(skillDir)); } catch { return null; }
 }
-
 function readLocalVersion(skillDir) {
-  try {
-    const versionFile = path.join(skillDir, 'VERSION');
-    const skillFile = path.join(skillDir, 'SKILL.md');
-    const runtimeEntry = path.join(skillDir, 'references', 'runtime-entry.md');
-    if (![versionFile, skillFile, runtimeEntry].every(isRegularFile)) return null;
-    return parseVersion(fs.readFileSync(versionFile, 'utf8'));
-  } catch {
-    return null;
-  }
+  try { return parseVersion(verifyInstalled(skillDir)); } catch { return null; }
 }
 
 function selfUpdateNetworkRestricted() {
@@ -264,15 +256,8 @@ function packageManagerFailureKind(result) {
 }
 
 function readChannel(skillDir) {
-  const source = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-  const declaredName = source.match(/^name:\s*(\S+)\s*$/m)?.[1];
-  const identity = declaredName === 'alipay-aipay-pre' ? 'pre' : 'stable';
-  const channelFile = path.join(skillDir, 'references', 'normal', 'json', 'release-channel.json');
-  if (!fs.existsSync(channelFile) && identity === 'stable') return 'stable';
-  if (!isRegularFile(channelFile)) throw new Error('invalid release channel');
-  const channel = JSON.parse(fs.readFileSync(channelFile, 'utf8')).channel;
-  if (!['stable', 'pre'].includes(channel) || channel !== identity) throw new Error('invalid release channel');
-  return channel;
+  if (fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8').match(/^name:\s*(\S+)\s*$/m)?.[1] !== 'alipay-aipay') throw Error('invalid Skill identity');
+  return 'stable'; // Legacy wire identity only; the merged Skill has no selectable channels.
 }
 
 async function npmLatest(channel) {
@@ -284,7 +269,7 @@ async function npmLatest(channel) {
     if (result.status !== 0 || result.error) return { ok: false, reason: packageManagerFailureKind(result) };
     const decoded = JSON.parse(result.stdout);
     const packageVersion = typeof decoded?.version === 'string' ? parseVersion(decoded.version) : null;
-    const value = decoded?.alipayAipayChannels?.[channel];
+    const value = decoded?.alipayAipayChannels?.stable ?? decoded?.version;
     const version = typeof value === 'string' ? parseVersion(value) : null;
     return packageVersion && version && skillVersionKind(version.raw, channel) === 'release' ? { ok: true, version, packageVersion } : { ok: false, reason: 'check' };
   } catch {
@@ -292,29 +277,21 @@ async function npmLatest(channel) {
   }
 }
 
-function transactionArtifacts(skillDir, transactionId, channel) {
-  const parent = path.dirname(skillDir);
-  const skillName = channel === 'pre' ? 'alipay-aipay-pre' : 'alipay-aipay';
-  return {
-    staging: path.join(parent, `.${skillName}-install-${transactionId}`),
-    backup: path.join(parent, `.${skillName}-backup-${transactionId}`),
-  };
-}
-
-function removeTransactionPath(target) {
-  try { fs.rmSync(target, { recursive: true, force: true }); } catch {}
-}
-
-function reconcileInstallTransaction(skillDir, transactionId, channel) {
-  const artifacts = transactionArtifacts(skillDir, transactionId, channel);
-  if (isRecoverableSkillRoot(artifacts.backup)) {
+function reconcileInstallTransaction(skillDir, transactionId, result) {
+  const artifacts = installTransactionPaths(skillDir, transactionId);
+  let recoveryBlocked = Boolean(result.timedOut && !result.terminationConfirmed);
+  if (!recoveryBlocked) {
+    let lock;
     try {
-      removeTransactionPath(skillDir);
-      fs.renameSync(artifacts.backup, skillDir);
-    } catch {}
+      // Acquisition repairs only transactions whose abandoned owner we can
+      // claim. A late updater must not adopt an unowned old backup merely
+      // because its filename contains this updater's transaction ID.
+      lock = acquireMetadataLock(skillDir);
+      recoveryBlocked = fs.existsSync(artifacts.staging) || fs.existsSync(artifacts.backup);
+    } catch { recoveryBlocked = true; }
+    finally { if (lock) releaseMetadataLock(lock); }
   }
-  removeTransactionPath(artifacts.staging);
-  return { version: readLocalVersion(skillDir), backupPresent: fs.existsSync(artifacts.backup) };
+  return { version: readLocalVersion(skillDir), backupPresent: fs.existsSync(artifacts.backup), recoveryBlocked };
 }
 
 async function installVersion(skillDir, packageVersion, channel) {
@@ -324,11 +301,12 @@ async function installVersion(skillDir, packageVersion, channel) {
   try {
     result = await spawnPackageManager(
       'npx',
-      ['-y', `@alipay/alipay-aipay@${packageVersion.raw}`, 'install-current', '--channel', channel],
+      ['-y', `@alipay/alipay-aipay@${packageVersion.raw}`, 'install-current'],
       {
         timeout,
         env: {
           ...process.env,
+          ALIPAY_AIPAY_UPDATER_PROTOCOL: '2',
           [selfUpdateTargetEnv]: skillDir,
           [selfUpdateTransactionEnv]: transactionId,
         },
@@ -348,7 +326,7 @@ async function installVersion(skillDir, packageVersion, channel) {
       } catch { /* An invalid receipt never permits a session switch. */ }
     }
   }
-  const reconciled = reconcileInstallTransaction(skillDir, transactionId, channel);
+  const reconciled = reconcileInstallTransaction(skillDir, transactionId, result);
   return {
     ok: result.status === 0 && !result.error,
     reason: result.status === 0 && !result.error ? 'ok' : packageManagerFailureKind(result),
@@ -365,6 +343,7 @@ function reportOutcome(outcome) {
 
 export async function runSelfUpdateCli(argv = process.argv) {
   const skillDir = parseArgs(argv);
+  finalizeLegacyMetadata(skillDir);
   const channel = readChannel(skillDir);
   if (fs.existsSync(path.join(skillDir,'.session-skill.json'))) {
     const {readSessionSkill}=await import('./session_skill.mjs');
@@ -393,7 +372,7 @@ export async function runSelfUpdateCli(argv = process.argv) {
   if (installed.session && installed.session.version===latest.raw) {
     return {kind:'SESSION_READY',version:latest,skillDir:installed.session.skillDir};
   }
-  if (installed.backupPresent) return { kind: 'INSTALL_FAILED' };
+  if (installed.backupPresent || installed.recoveryBlocked) return { kind: 'INSTALL_FAILED' };
   const updated = installed.version || readLocalVersion(skillDir);
   if (installed.ok && updated && readChannel(skillDir) === channel && compareVersions(updated, latest) >= 0) return { kind: 'UPDATED', version: updated };
   if (installed.reason === 'network') return { kind: 'RETRY_WITH_NETWORK' };
@@ -401,7 +380,7 @@ export async function runSelfUpdateCli(argv = process.argv) {
   return { kind: installed.ok ? 'VERIFY_FAILED' : 'INSTALL_FAILED' };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     reportOutcome(await runSelfUpdateCli());
   } catch {
