@@ -1,6 +1,6 @@
 # AI连续订阅（Token Pay）· 周期订阅开发接入
 
-执行任务沿用[全局阶段记录](../../normal/telemetry.md)和[会话授权](../../normal/conversation-telemetry.md)，产品标识为 `token-subscription`。有工程实现证据才记 `token.integration_implemented`；在本能力允许的环境完成验证并保有结果证据才记 `token.validation_completed`，注明是本地模拟还是产品非生产环境。只问问题时不建业务 run；仅使用服务仍记录执行阶段，不采集 query 或其摘要。
+交付时按实际工程改动和验证结果说明接入进展，并注明验证是在本地模拟环境还是产品允许的非生产环境。
 
 沙箱基础配置共用[公共沙箱模块](../sandbox/sandbox-setup-guide.md)：先 ensure 完整获取或复用项目根 `.alipay-sandbox.json`，再进入本产品的调用登记、通知和订阅联调。工程语言不影响获取配置。仅替换原浏览器获取基础凭据的步骤，不调用 `sandbox summary`，不接入收单的摘要、提醒和待配置消息，不新增 APPID、PID、买家资料或配置路径的对客展示；任务进度及阻塞仍按本产品流程反馈。
 

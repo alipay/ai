@@ -11,7 +11,13 @@ node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox ensure "<项目
 node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" sandbox reverify "<项目绝对路径>" --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
 ```
 
-沿用任务的 run/session 参数；有明确 run ID 时附加 `--telemetry-run-id`，不能用命令参数伪造活动任务。TokenPay 仍从其自身执行入口按[阶段规则](../../normal/telemetry.md)建立 `token-subscription` 任务，不走收单 bootstrap。`summary` 仅供收单产品使用，见第 6 节。
+沿用任务的 run/session 参数。有明确 run ID 时附加 `--telemetry-run-id`，由运行时核对当前活动任务。`summary` 仅供收单产品使用，见第 6 节。
+
+周期订阅调用公共沙箱前，使用以下入口建立本地任务上下文，并沿用命令返回的 RUN_ID。该上下文用于沙箱和环境命令的任务校验。
+
+```sh
+node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" telemetry start-run --root-intent integration_only --product-type token-subscription --agent-platform "<AGENT_PLATFORM>" --session-id "<SESSION_ID>"
+```
 
 Unix/macOS/Linux 或 Windows READY 在缺少配置时调用 alipay-cli。先按现有任务级 CLI 准备流程执行 `runtime.mjs env integration-check`；缺 jq 时走既有 `env prepare-jq`，CLI 准备失败按 `normal/alipay-cli-env.md` 恢复。Windows 调用附加当前 `--windows-route`；周期订阅也可使用 `windows-entry --root-intent integration_only --product-type token-subscription` 完成环境分流。
 

@@ -14,11 +14,11 @@ Windows 在原目录切换前遇到 EPERM/EACCES/EBUSY 时，可在用户目录�
 
 ## PROFILE
 
-`SKILL.md` 同目录只使用 JSON `PROFILE` 保存 `version`、`chinfo`、可选 `vid` 和已有扩展字段。version 是 Skill 载荷版本；本次包与 Skill 均为 2.0.0。业务 CLI 与阶段遥测读取同一版本，不把来源字段塞入 stage 的 c4。
+`SKILL.md` 同目录只使用 JSON `PROFILE` 保存 `version`、`chinfo`、可选 `vid` 和已有扩展字段。version 是 Skill 载荷版本；本次包与 Skill 均为 2.0.1。业务 CLI 与阶段遥测读取同一版本，不把来源字段塞入 stage 的 c4。
 
 公开 `npx -y @alipay/alipay-aipay@latest install [--chinfo <来源>] [--vid <访问来源>]` 更新版本并刷新 chinfo：未传 chinfo 写 origin；未传 vid 保留原值。自更新、内部 install-current 只更新 version，保留 chinfo、vid 和扩展字段。字段合并与安装按同一目标加锁、原子替换；无效/损坏 PROFILE 保留原文件并停止覆盖，不静默丢弃来源。可变来源不参与不可变代码摘要，但版本必须与载荷收据一致。
 
-旧用户可通过既有自更新直接升级。内部 `install-current` 先验证目标目录和事务 ID；新版 updater 额外传 `ALIPAY_AIPAY_UPDATER_PROTOCOL=2`，旧 updater 不传。仅内部调用未声明新版协议时，安装器暂留 VERSION=2.0.0，供已在运行的旧代码完成验收；公开 install 与新版内部协议均不生成 VERSION。首次执行新版 runtime 时验证 PROFILE、安装载荷及适用会话收据后移除 VERSION。Windows 旧格式会话收据先通过旧 verifier，再转换为新版收据；以后只有 PROFILE。失败时保留证据，不提前删除 VERSION。
+旧用户可通过既有自更新直接升级。内部 `install-current` 先验证目标目录和事务 ID；新版 updater 额外传 `ALIPAY_AIPAY_UPDATER_PROTOCOL=2`，旧 updater 不传。仅内部调用未声明新版协议时，安装器暂留 VERSION=2.0.1，供已在运行的旧代码完成验收；公开 install 与新版内部协议均不生成 VERSION。首次执行新版 runtime 时验证 PROFILE、安装载荷及适用会话收据后移除 VERSION。Windows 旧格式会话收据先通过旧 verifier，再转换为新版收据；以后只有 PROFILE。失败时保留证据，不提前删除 VERSION。
 
 ## 发布渠道扩展边界
 
