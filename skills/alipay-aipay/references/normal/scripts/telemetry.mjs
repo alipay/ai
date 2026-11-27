@@ -17,7 +17,8 @@ import { tokenProductLabels, conversationCode, normalizeConversationEvent, norma
 
 const internalPrefix = 'ALIPAY_AIPAY_INTERNAL:';
 const disableValues = new Set(['0', 'false', 'off', 'no']);
-const canonicalProductTypes = new Set(['AIPAY', 'WEBPAY', 'APPPAY', ...Object.keys(tokenProductLabels)]);
+const stageProductTypes = new Set(['AIPAY', 'WEBPAY', 'APPPAY']);
+const canonicalProductTypes = new Set([...stageProductTypes, ...Object.keys(tokenProductLabels)]);
 const allowedRootIntents = new Set(['integration_only', 'onboarding_only', 'full_process']);
 const syncLogBizType = 'yuyanmonitorl';
 const syncLogServerURL = 'https://collect.alipay.com/yuyan/';
@@ -41,6 +42,7 @@ const outboxFlushLimit = 50;
 const outboxClaimTtlMs = 5 * 60 * 1000;
 const outboxMaxRecords = 1000;
 const outboxMaxAgeMs = 7 * 24 * 60 * 60 * 1000;
+const outboxRecordSuffixes = ['.json', '.conversation', '.stage'];
 const genericSessionStateEnvKeys = Object.freeze([
   'HERMES_SESSION_ID',
   'OPENAI_CONVERSATION_ID',
@@ -76,7 +78,6 @@ const productAliases = {
 
 export const approvedStages = Object.freeze([
   'clarify_intent',
-  'token.guidance_delivered', 'token.integration_implemented', 'token.validation_completed',
   'integration.create_sandbox',
   'integration.complete_coding',
   'onboarding.confirm_onboarding_plan',
@@ -147,8 +148,6 @@ const countedStageRoutes = Object.freeze({
 
 const summaryStages = new Set(['integration_summary', 'onboarding_summary', 'all_summary']);
 function flowForStage(stage) {
-  if (stage === 'token.guidance_delivered') return 'onboarding';
-  if (stage.startsWith('token.')) return 'integration';
   if (stage.startsWith('integration.')) return 'integration';
   if (stage.startsWith('onboarding.')) return 'onboarding';
   if (summaryStages.has(stage)) return 'common';
@@ -161,11 +160,6 @@ const stageRules = new Map(approvedStages.map((stage) => [stage, {
 }]));
 
 function routeStages(rootIntent, productType) {
-  if (Object.hasOwn(tokenProductLabels, productType)) {
-    const guidance = ['token.guidance_delivered'];
-    const integration = ['token.integration_implemented', 'token.validation_completed'];
-    return ({ integration_only: integration, onboarding_only: guidance, full_process: [...integration, ...guidance] })[rootIntent] || [];
-  }
   const route = countedStageRoutes[rootIntent]?.[productType];
   return Array.isArray(route) ? route : [];
 }
@@ -243,7 +237,8 @@ const stageExtInfoFields = new Set([
   'user_input_after_clarify_intent',
   'history_count',
   'root_intent',
-  'progress_pct'
+  'progress_pct',
+  'conversation_id'
 ]);
 
 function safeText(value) {
@@ -533,11 +528,18 @@ function isValidRunState(parsed) {
   return true;
 }
 
+function businessOnlyRunState(state) {
+  const { schema_ver, run_id, root_intent, product_type, lifecycle, created_at, updated_at, terminal_at } = state;
+  return { schema_ver, run_id, root_intent, product_type, lifecycle, created_at, updated_at, terminal_at, telemetry_disabled: true };
+}
+
 function readRunState(env = process.env) {
   try {
     const statePath = runStatePath(env);
     const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    return isValidRunState(parsed) ? parsed : null;
+    // Keep a previously started subscription sandbox usable after an upgrade.
+    const state = Object.hasOwn(tokenProductLabels, parsed?.product_type) ? businessOnlyRunState(parsed) : parsed;
+    return isValidRunState(state) ? state : null;
   } catch {
     return null;
   }
@@ -584,10 +586,11 @@ function persistRunState(state, env = process.env) {
 
 function outboxFilename(event) {
   const timestamp = Number.isFinite(Number(event?.timestamp)) ? String(Number(event.timestamp)) : String(Date.now());
-  const eventID = isConversationEvent(event)
-    ? `${event.conversation_id}-${event.sequence}`
-    : safeText(event?.event_id) || crypto.randomUUID();
-  const suffix = isConversationEvent(event) ? '.conversation' : '.json';
+  if (isConversationEvent(event)) return `${timestamp}-${event.conversation_id}-${event.sequence}.conversation`;
+  const eventID = safeText(event.event_id) || crypto.randomUUID();
+  // Older workers reject extra stage fields. Give linked events their own suffix
+  // so an older worker draining the shared directory leaves them for this version.
+  const suffix = JSON.parse(event.ext_info).conversation_id ? '.stage' : '.json';
   return `${timestamp}-${eventID}${suffix}`;
 }
 
@@ -688,12 +691,13 @@ function stageExtInfoFromPayload(payload = {}) {
     user_input_after_clarify_intent: userInputAfterClarifyIntent,
     history_count: historyCount,
     root_intent: rootIntent,
-    progress_pct: progressPct
+    progress_pct: progressPct,
+    ...(validConversationId(payload.conversation_id) ? { conversation_id: payload.conversation_id } : {})
   });
 }
 
 function legalStageForState(state, stage) {
-  if (!state || !stageRules.has(stage)) return false;
+  if (!state || !stageProductTypes.has(state.product_type) || !stageRules.has(stage)) return false;
   if (stage === 'clarify_intent') return true;
   if (stage === 'integration_summary') return ['integration_only', 'full_process'].includes(state.root_intent);
   if (stage === 'onboarding_summary') return state.root_intent === 'onboarding_only';
@@ -1064,6 +1068,22 @@ function readConversationState(conversationId, env, { checkOwner = true } = {}) 
   } catch { return null; }
 }
 
+function indexedConversationState(ownerHash, env) {
+  try {
+    const index = JSON.parse(fs.readFileSync(conversationSessionFile(ownerHash, 'index', env), 'utf8'));
+    const state = readConversationState(index.conversation_id, env, { checkOwner: false });
+    return state?.session_hash === ownerHash ? state : null;
+  } catch { return null; }
+}
+
+function linkStageConversation(event, env) {
+  const source = conversationCode(env) && conversationSessionSource(env);
+  const state = source ? indexedConversationState(sessionHash(source), env) : null;
+  if (state?.lifecycle !== 'ACTIVE' || !hasConversationConsent(state, env)) return event;
+  const extInfo = JSON.parse(event.ext_info);
+  return { ...event, ext_info: JSON.stringify({ ...extInfo, conversation_id: state.conversation_id }) };
+}
+
 // Called only while holding the conversation's session lock. A private pending
 // marker survives a crash between enqueue and the final sequence/dedup commit.
 function reconcileConversationMessage(state, env) {
@@ -1104,15 +1124,12 @@ export function startConversation({ sessionId = '' } = {}, env = process.env, no
     if (!source) return null;
     if (!machineUserID(env)) return null;
     const ownerHash = sessionHash(source);
-    const indexPath = path.join(stateDir(env), 'conversations', `${ownerHash}.index`);
+    const indexPath = conversationSessionFile(ownerHash, 'index', env);
     const transaction = withConversationStateLock(ownerHash, env, () => {
       const consent = readConversationConsent(env);
       if (consent?.decision !== 'GRANTED') return null;
-      let existingId;
-      try { existingId = JSON.parse(fs.readFileSync(indexPath, 'utf8')).conversation_id; } catch {}
-      const existing = readConversationState(existingId, env, { checkOwner: false });
-      if (existing?.lifecycle === 'ACTIVE' && existing.session_hash === ownerHash
-        && existing.consent_id === consent.grant_id) {
+      const existing = indexedConversationState(ownerHash, env);
+      if (existing?.lifecycle === 'ACTIVE' && existing.consent_id === consent.grant_id) {
         return { ...existing, created: false };
       }
       const conversationId = crypto.randomUUID();
@@ -1277,8 +1294,9 @@ export async function recordStageEvent(stage, context = {}, env = process.env, n
   }
   const result = transaction.value;
   if (result?.kind !== 'created') return null;
-  await deliverPersistedStageEvent(result.event, env, stream);
-  return result.event;
+  const event = linkStageConversation(result.event, env);
+  await deliverPersistedStageEvent(event, env, stream);
+  return event;
 }
 
 export async function startTelemetryRun(rootIntent, productType, _inputId = '', {
@@ -1294,7 +1312,7 @@ export async function startTelemetryRun(rootIntent, productType, _inputId = '', 
   if (!canonicalProduct) throw new Error('执行前需确认具体产品能力，请在当前产品范围内选择要办理或开发的能力');
   if (!stableSessionSource(env)) throw new Error('请先解析当前宿主会话并传入 --session-id');
   const choice = conversationCode(env) ? getConversationConsent(env) : 'DISABLED';
-  const enabled = telemetryEnabled(env) && !usingBusinessFallback(env);
+  const enabled = stageProductTypes.has(canonicalProduct) && telemetryEnabled(env) && !usingBusinessFallback(env);
   if (choice === 'UNSET') {
     throw new Error('尚无有效采集偏好，请先展示采集说明（conversation notice），取得同意采集或仅使用服务的选择后继续');
   }
@@ -1318,17 +1336,7 @@ export async function startTelemetryRun(rootIntent, productType, _inputId = '', 
         }
       };
     } else {
-      state = {
-        schema_ver: 2,
-        run_id: state.run_id,
-        root_intent: state.root_intent,
-        product_type: state.product_type,
-        lifecycle: 'ACTIVE',
-        telemetry_disabled: true,
-        created_at: state.created_at,
-        updated_at: nowMs,
-        terminal_at: null
-      };
+      state = businessOnlyRunState(state);
     }
     return persistRunState(state, env) ? { ...run, state, event } : null;
   });
@@ -1346,7 +1354,7 @@ export async function startTelemetryRun(rootIntent, productType, _inputId = '', 
   if (stream && typeof stream.write === 'function') {
     stream.write(`${internalPrefix}RUN_ID=${state.run_id}\n`);
   }
-  if (event) await deliverPersistedStageEvent(event, env, stream);
+  if (event) await deliverPersistedStageEvent(linkStageConversation(event, env), env, stream);
   return state;
 }
 
@@ -1514,8 +1522,8 @@ function normalizeMetricEvent(event) {
   const stageRule = stageRules.get(event.stage);
   if (!stageRule || event.flow !== stageRule.flow) return null;
   if (!Number.isSafeInteger(event.timestamp) || event.timestamp <= 0) return null;
-  const productType = canonicalProductType(event.product_type);
-  if (!productType || productType !== event.product_type) return null;
+  const productType = event.product_type;
+  if (!stageProductTypes.has(productType)) return null;
   const rootIntent = event.root_intent;
   if (rootIntent !== undefined && !allowedRootIntents.has(rootIntent)) return null;
 
@@ -1808,11 +1816,11 @@ function outboxFiles(env = process.env, { targetFile = '', limit = 0 } = {}) {
 }
 
 function isOutboxRecordName(name) {
-  return !name.startsWith('.') && (name.endsWith('.json') || name.endsWith('.conversation'));
+  return !name.startsWith('.') && outboxRecordSuffixes.some(suffix => name.endsWith(suffix));
 }
 
 function isOutboxClaimName(name) {
-  return !name.startsWith('.') && (name.includes('.json.sending.') || name.includes('.conversation.sending.'));
+  return !name.startsWith('.') && outboxRecordSuffixes.some(suffix => name.includes(`${suffix}.sending.`));
 }
 
 function outboxRecordEntries(dir) {

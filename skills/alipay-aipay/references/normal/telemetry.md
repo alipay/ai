@@ -2,26 +2,19 @@
 
 使用本 Skill 的 runtime（`references/normal/scripts/runtime.mjs`）；会话文本的独立授权见[会话采集](conversation-telemetry.md)。默认先本地入队，再通过 `https://collect.alipay.com/yuyan/` 的 syncLog 通道上传；失败保留队列，后续沿用原有补传机制。选择“仅使用服务”后，仍记录实际接入阶段；阶段记录中没有用户问题、助手正文或问题摘要。咨询、澄清、官网查询没有业务 run，不为了统计而生成一个。
 
-产品和任务已经确定，并且确实开始开发、提供开通指引或办理时，执行 `telemetry start-run --session-id SESSION_ID --root-intent INTENT --product-type PRODUCT`。同一活动流程重试复用 RUN_ID。正文采集启用时，先读取本机采集偏好，仅没有有效选择时询问；仅使用服务也能正常办理和记录阶段。执行命令只传任务与产品，换任务时分别保留已知结果与待修事项。收单使用 `webpay / apppay / aipay`；Token Pay 见下表。每次后续用户输入仅用不含原文的稳定消息 ID 进行一次计数：`telemetry count-user-input --session-id SESSION_ID --run-id RUN_ID --input-id MESSAGE_ID`。阶段失败、答案未知或仅加载文档时，不记成功。
-
-| Token Pay 能力 | PRODUCT | 办理模式 |
-| --- | --- | --- |
-| 周期订阅 | token-subscription | 指引 |
-| 自动续购 | token-auto-purchase | 指引 |
-| 单笔支付／商业订单 | token-one-time | 指引 |
-| 企业支付 B2B | token-b2b | 指引 |
-| 数电发票 | token-invoice | 指引 |
-| 企业认证 | token-verification | 指引 |
+阶段上报适用于网页收款、移动应用收款和按量付费（`webpay / apppay / aipay`）。产品和任务已经确定，且实际开始开发或办理时，执行 `telemetry start-run --session-id SESSION_ID --root-intent INTENT --product-type PRODUCT`。同一活动任务重试复用 RUN_ID。每次后续用户输入仅用不含原文的稳定消息 ID 计数一次：`telemetry count-user-input --session-id SESSION_ID --run-id RUN_ID --input-id MESSAGE_ID`。阶段失败、答案未知或仅加载文档时，不记成功。
 
 收单 runner／Shell 已在确认的步骤记录 `integration.create_sandbox`、`integration.complete_coding` 及 `onboarding.confirm_onboarding_plan / login / confirm_signing / confirm_service / confirm_alipayapp`（confirm_service 仅按量付费）。不要在流程文档再记录一遍。
 
-Token Pay 六个能力共用指令 `telemetry stage STAGE --session-id SESSION_ID --run-id RUN_ID --history-count null`：
-
-- 实际交付本产品的开通指引 → `token.guidance_delivered`（不等于商家签约成功）。
-- 已完成所需工程接入，有本地改动或用户认可的对应交付证据 → `token.integration_implemented`。
-- 已取得本产品允许的验证证据 → `token.validation_completed`（本地 mock 只说明 mock 已过；不得记录成生产成功，或为采集而扩大操作）。
+Token Pay 不上报业务阶段。周期订阅调用公共沙箱时按[沙箱入口](../integration/sandbox/sandbox-setup-guide.md#1-入口和环境)建立本地任务上下文。
 
 入口确定任务时记录一次 `clarify_intent`；同一 run、同一阶段通过幂等去重。**业务收口**使用同一 stage 命令：只开发 `integration_summary`、只开通 `onboarding_summary`、两者都要 `all_summary`。全流程的开发小结 `integration_summary` 不终结 run。收到对应终态后即关闭本地业务 run，不依赖事件上传；当全局阶段采集关闭时也执行终态命令，关闭 run 不生成事件。
+
+## 关联阶段与会话
+
+`1005.c1` 保存业务任务的 `run_id`，`1009.c1` 保存会话的 `conversation_id`。首次会话采集通过 `telemetry start-conversation` 创建或复用当前宿主会话对应的采集会话。阶段事件生成时，运行时按同一个 `SESSION_ID` 读取已有的活动采集会话，授权有效时把其 `conversation_id` 写入 `1005.c4`。同一会话可以关联多个业务任务。分析时用 `1005.c4.conversation_id = 1009.c1` 关联，按 `1005.c1` 区分任务。
+
+会话尚未建立或授权无效时，阶段事件仅使用 `run_id`。关联字段在事件生成时确定，随阶段事件一起入队，补传沿用入队时的值。
 
 默认状态目录 `~/.alipay-aipay-new/telemetry-live/` 保持原路径，不随 Skill 名称统一搬迁；它与原本地评审目录 `~/.alipay-aipay-new/telemetry/` 隔离，不迁移旧队列或继承旧评审授权。隔离演练使用 `ALIPAY_AIPAY_TELEMETRY_DIR`，不要指向旧评审目录。设置 `ALIPAY_AIPAY_TELEMETRY=off` 关闭本地阶段与正文，只保留业务所需 run 状态；仅关正文使用 `ALIPAY_AIPAY_CONVERSATION_TELEMETRY=off`。上传默认开启，`ALIPAY_AIPAY_TELEMETRY_UPLOAD=0|false|off|no` 或 `ALIPAY_AIPAY_TELEMETRY_CAPTURE_ONLY=1` 只关闭上传，仍可本地采集；维护测试默认不上传，测试接收端由维护测试注入。阶段 code 为 `1005`，会话 code 为 `1009`、d1 为 OS、d2 为 Skill 版本，c1/c2 沿用现有格式。遥测失败不阻断交付；采集不是商机／公海投递，也不构成商家签约授权。
 

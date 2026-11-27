@@ -1,6 +1,6 @@
 # 企业身份与对公账户认证接入
 
-执行任务沿用[全局阶段记录](../../../normal/telemetry.md)和[会话授权](../../../normal/conversation-telemetry.md)，产品标识为 `token-verification`。有工程实现证据才记 `token.integration_implemented`；在本能力允许的环境完成验证并保有结果证据才记 `token.validation_completed`，注明是本地模拟还是产品非生产环境。只问问题时不建业务 run；仅使用服务仍记录执行阶段，不采集 query 或其摘要。
+交付时按实际工程改动和验证结果说明接入进展，并注明验证是在本地模拟环境还是产品允许的非生产环境。
 
 ## 选择能力
 

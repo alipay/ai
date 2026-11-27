@@ -9,7 +9,7 @@ description: 支付宝 AI 付商家与开发者接入：产品选型、开通、
 
 1. 从宿主给出的本文件路径取得所在目录的**绝对路径**，下文以 `<SKILL_DIR>` 表示。Windows 首次使用先按 [Windows 的 Node 启动说明](references/normal/windows-environment.md#已安装-skill-的-node-启动)绑定可用的 Node，后续用其绝对路径代替下文的 `node`。按[全局自更新](references/normal/self-update.md)，当前对话首次使用时先在 Agent 上下文记下自更新已检查事实，再执行一次 `node "<SKILL_DIR>/references/normal/scripts/runtime.mjs" self-update check`。同一对话的补充回复、恢复和重复触发不再检查。唯一 `UPDATED` 时停止使用旧内容并重读新版入口；`SESSION_READY` 时明确全局未更新，改用已验证会话副本并重读入口。失败继续当前可用入口；只有 `RETRY_WITH_NETWORK` 在恢复网络后原样重试一次。
 2. 在加载任何产品资料或回答业务问题**之前**，按[全局采集选择与撤回](references/normal/conversation-telemetry.md)用同一 runtime 的 `telemetry resolve-session` 和 `conversation status --session-id SESSION_ID` 读取本机当前系统用户保存的采集偏好。已有 `GRANTED` 或 `DENIED` 时直接沿用，不因新聊天、切换 Agent 或普通 Skill 更新再次询问。没有有效选择（LOCAL + UNSET）时执行 `conversation notice --session-id SESSION_ID`，原样回复完整声明。等待“同意采集”或“仅使用服务”，**本轮到这里结束**。查询状态或显示失败时也不得推定同意；采集不可用时继续服务，不记录正文或摘要。旧版仅限本次会话的同意不自动扩展为长期偏好，首次使用新声明须重新选择。首次回复同时包含明确拒绝和业务需求时，登记“仅使用服务”后继续处理同一条业务需求。
-3. 两种选择都能使用服务。“仅使用服务”只记录实际业务阶段，不记录问题、答复或摘要。用户本轮确认同意，或 preference 中已有有效的同意记录，均立即开始采集。已有记录时无需再次询问，从当前聊天触发 Skill 的那条用户消息开始记录。按[会话采集规则](references/normal/conversation-telemetry.md)实际调用 `telemetry start-conversation` 或 `telemetry conversation-message`，检查 `CONVERSATION_MESSAGE_RECORDED` 成功回执；只读取状态不算采集。写入失败时重试当前消息，沿用同一消息 ID，以成功回执为准。同一聊天的后续消息沿用同一个采集会话，不同聊天各自建立会话；首次同意后按规则补采本次触发起的相关对话。
+3. 两种选择都能使用服务。选择“仅使用服务”时，网页收款、移动应用收款和按量付费仍记录实际业务阶段，问题、答复和摘要均不采集。用户本轮确认同意，或 preference 中已有有效的同意记录，均立即开始采集。已有记录时无需再次询问，从当前聊天触发 Skill 的那条用户消息开始记录。按[会话采集规则](references/normal/conversation-telemetry.md)实际调用 `telemetry start-conversation` 或 `telemetry conversation-message`，检查 `CONVERSATION_MESSAGE_RECORDED` 成功回执；只读取状态不算采集。写入失败时重试当前消息，沿用同一消息 ID，以成功回执为准。同一聊天的后续消息沿用同一个采集会话，不同聊天各自建立会话；首次同意后按规则补采本次触发起的相关对话。
 
    对已获授权且符合采集范围的用户消息和助手回复，能拿到完整正文时，逐字上报，保留标点、换行和格式，只把敏感片段替换为 `[REDACTED]`。拿不到完整正文时，可上报脱敏摘要，开头标注 `【摘要】`。无法确认主要内容时跳过该条。
 
@@ -46,7 +46,7 @@ Token Pay 的商家办理仅提供指引，本包不投递线索或代签约。�
 
 周期订阅的取消退款、独立退款、客诉超标自动退款（`AUTO_PENALTY`）和批量退款查询见[订阅退款接口](references/integration/token-pay/api-complete.md#批量退款查询接口-alipaytradecommercialbatchrefundquery)与[退款通知](references/integration/token-pay/notification-guide.md#52-alipaytradecommercialbatchrefundchanged-消息体批量退款状态通知)。
 
-实际开始开发或办理时，按[业务阶段与完成证据](references/normal/telemetry.md)记录本次任务；专业问答不创建业务 run。
+网页收款、移动应用收款和按量付费的实际开发或办理按[业务阶段与完成证据](references/normal/telemetry.md)记录。Token Pay 不上报业务阶段。
 
 网页收款、移动应用收款和按量付费在明确办理或开发后，按[运行指引](references/runtime-entry.md)进入相应流程。只开发不自动签约，只开通不改工程。明确要求两者时按[完整接入衔接](references/normal/full-process-routing.md)核对当前产品和开发结果，再决定是否自动进入办理。开发遇阻后商家明确要求先开通，走独立办理并保留实际开发结果。
 

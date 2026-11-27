@@ -1,7 +1,5 @@
 # 企业支付 B2B · 商家办理
 
-执行任务沿用[全局阶段记录](../../normal/telemetry.md)和[会话授权](../../normal/conversation-telemetry.md)，产品标识为 `token-b2b`。实际交付相应办理指引才记 `token.guidance_delivered`；它不代表商家已申请、公海已收到线索、签约已通过或产品已开通。只问问题时不建业务 run；仅使用服务仍记录执行阶段，不采集 query 或其摘要。
-
 企业客户购买订阅仍可走周期订阅；需要企业聚合收银、银行转账、企业支付账户或资金对账时走本能力。
 - 核对业务画像和商户自有应用、PID、密钥对应关系。此域只支持自有应用，不套用订阅服务商代开发或 app_auth_token。
 - 按[企业支付平台准备](../../integration/token-pay/b2b/open-platform-setup.md)核对企业产品签约、应用绑定、银行账户（仅适用时）和 OpenMQ 配置。具体签约资格和平台状态由商户在其实际渠道核验。

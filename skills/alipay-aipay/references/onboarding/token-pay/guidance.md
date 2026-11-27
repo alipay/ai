@@ -1,7 +1,5 @@
 # AI连续订阅（Token Pay）· 周期订阅的商家办理与上线条件
 
-执行任务沿用[全局阶段记录](../../normal/telemetry.md)和[会话授权](../../normal/conversation-telemetry.md)，产品标识为 `token-subscription`。实际交付相应办理指引才记 `token.guidance_delivered`；它不代表商家已申请、公海已收到线索、签约已通过或产品已开通。只问问题时不建业务 run；仅使用服务仍记录执行阶段，不采集 query 或其摘要。
-
 本页用于**周期订阅**的商家办理及上线准备。想了解产品范围、经营规则或结算时，直接看[AI连续订阅产品概览](../../integration/token-pay/product-overview.md)。自动续购、商业订单、企业支付、发票和企业认证的准入、调用身份和回执不同，分别看[自动续购](auto-renewal.md)、[商业订单](single-payment.md)、[B2B](b2b.md)、[发票](invoice.md)、[企业认证](verification.md)。
 
 先按当前身份和应用核实[订阅官方办理说明](https://aipay.alipay.com/docs/subscribe/introduce.md)。已有企业身份（含选择该企业的操作员）可按页面指引办理；个人身份或需要注册新企业时查看[联系销售](https://aipay.alipay.com/merchant-intent)。资格、材料要求和处理状态以当期页面及控制台为准。

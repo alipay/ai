@@ -1,6 +1,6 @@
 # 自动续购产品接入指南
 
-执行任务沿用[全局阶段记录](../../normal/telemetry.md)和[会话授权](../../normal/conversation-telemetry.md)，产品标识为 `token-auto-purchase`。有工程实现证据才记 `token.integration_implemented`；在本能力允许的环境完成验证并保有结果证据才记 `token.validation_completed`，注明是本地模拟还是产品非生产环境。只问问题时不建业务 run；仅使用服务仍记录执行阶段，不采集 query 或其摘要。
+交付时按实际工程改动和验证结果说明接入进展，并注明验证是在本地模拟环境还是产品允许的非生产环境。
 
 > **产品定位**：自动续购属于 Token Pay，与周期订阅是两种不同的收费方式；使用代扣协议（user.agreement），不使用周期订阅接口（trade.subscription）。商家办理及邀约条件见[开通指引](../../onboarding/token-pay/auto-renewal.md)。
 
