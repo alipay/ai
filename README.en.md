@@ -8,7 +8,7 @@ This repository provides official Agent Skills, integration guides, and code exa
 
 Describe your business requirements in natural language to let an AI agent assist with product selection, integration preparation, code changes, and troubleshooting.
 
-[Official website](https://aipay.alipay.com/) · [Products and documentation](https://aipay.alipay.com/llms.txt) · [Skills overview](skills/README.md)
+[Official website](https://aipay.alipay.com/) · [Products and documentation](https://aipay.alipay.com/llms.txt) · [Skills overview](skills/README.md) · [PIBench](https://github.com/inclusionAI/PIBench)
 
 The Skills overview and detailed skill documentation are currently primarily in Chinese.
 
@@ -108,6 +108,14 @@ See the [Skills overview](skills/README.md) for selection guidance and expected 
 | [Web payments with agent handoff](code_example/page-pay-demo-with-agentpay/README.md) | Node.js web payments, transaction queries, asynchronous notifications, and agent payment handoff |
 
 Refer to each example for its configuration and runtime requirements.
+
+## Benchmark
+
+[Alipay-PIBench](https://github.com/inclusionAI/PIBench) is a payment integration benchmark introduced by Alipay to evaluate AI coding agents on realistic project-level integration tasks.
+
+It includes nine payment product projects and 18 task instances covering functional integration and payment security hardening. The benchmark assesses functional correctness, reliability, security, and business-state consistency, with evaluation tasks, execution tools, and reproduction instructions.
+
+[View the project](https://github.com/inclusionAI/PIBench) · [Read the paper](https://arxiv.org/abs/2607.14573)
 
 ## Updates and sources
 

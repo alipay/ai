@@ -8,7 +8,7 @@
 
 通过 Agent Skills，你可以使用自然语言描述业务需求，由 AI Agent 协助完成产品选型、接入准备、代码集成和问题排查。
 
-[支付宝 AI 付官网](https://aipay.alipay.com/) · [产品与文档](https://aipay.alipay.com/llms.txt) · [Skills 总览](skills/README.md)
+[支付宝 AI 付官网](https://aipay.alipay.com/) · [产品与文档](https://aipay.alipay.com/llms.txt) · [Skills 总览](skills/README.md) · [PIBench](https://github.com/inclusionAI/PIBench)
 
 ## 产品与能力
 
@@ -106,6 +106,14 @@ git clone https://github.com/alipay/ai.git
 | [网页支付与 Agent 接管示例](code_example/page-pay-demo-with-agentpay/README.md) | Node.js 网页支付、交易查询、异步通知及 Agent 付款衔接 |
 
 运行条件和配置方式见各示例中的说明。
+
+## 评测基准
+
+[Alipay-PIBench](https://github.com/inclusionAI/PIBench) 是由支付宝提出的支付集成评测基准，用于评估 AI Coding Agent 在真实项目中完成支付接入任务的能力。
+
+基准包含 9 个支付产品项目和 18 个任务实例，覆盖基础功能集成与支付安全强化，从功能正确性、可靠性、安全性和业务状态一致性等维度评估接入质量，并提供评测任务、运行工具和复现说明。
+
+[查看项目](https://github.com/inclusionAI/PIBench) · [阅读论文](https://arxiv.org/abs/2607.14573)
 
 ## 更新与来源
 
