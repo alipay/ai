@@ -28,17 +28,17 @@ description: 支付宝 AI 付商家与开发者接入：产品选型、开通、
 - 需要比较产品、区分同一品牌下的能力，或确认表外产品能否办理或集成时，查[产品决策与能力表](references/product-decision.md)。只有当不同理解会改变答案或下一步时才追问。只问原因、规则或排查方法时直接回答。要求检查现有工程时按指定范围定位，明确要求修复时再改代码。产品和执行目标明确后再初始化对应流程。
 - 从下表直达已明确的任务。一项需求包含多个目标时分别承接，说明彼此依赖和各自待确认的条件。中途查资料沿用当前项目、环境和进度。
 
-| 用户目标 | 所属产品 | 商家办理 | 工程开发／专业资料 |
+| 业务场景 | 所属产品 | 商家办理 | 工程开发／专业资料 |
 | --- | --- | --- | --- |
-| 我已有订单，要在电脑网页或手机 H5 收款 | Vibe Pay · 基础收款 | [网页收款开通](references/onboarding/vibe-pay/web-pay.md) | [AI 网页应用收款](references/integration/vibe-pay/web-pay.md) |
-| 我已有订单，要在原生 App 内收款 | Vibe Pay · 基础收款 | [移动应用收款开通](references/onboarding/vibe-pay/app-pay.md) | [AI 移动应用收款](references/integration/vibe-pay/app-pay.md) |
-| 我提供 API、内容或算力，想按调用向使用方收费 | Machine Pay · AI 按量付费 | [按量付费开通](references/onboarding/machine-pay/flow.md) | [HTTP 402 收款接入](references/integration/machine-pay/flow.md) |
-| 我卖月会员或团队席位，需要按周期自动续费 | AI连续订阅（Token Pay） | [周期订阅办理指引](references/onboarding/token-pay/guidance.md) | [周期订阅接入](references/integration/token-pay/flow.md)、[已知故障](references/integration/token-pay/troubleshooting.md) |
-| 我希望用户余额低于约定值时自动续购 | AI连续订阅（Token Pay） | [自动续购办理指引](references/onboarding/token-pay/auto-renewal.md) | [协议与自动续购](references/integration/token-pay/auto-renewal.md) |
-| 我使用商业订单完成一次性收款 | AI连续订阅（Token Pay） | [单笔支付办理指引](references/onboarding/token-pay/single-payment.md) | [商业订单单笔支付](references/integration/token-pay/single-payment.md) |
-| 我要支持企业聚合收银、对公转账或资金对账 | AI连续订阅（Token Pay） | [B2B 办理指引](references/onboarding/token-pay/b2b.md) | [企业支付接入](references/integration/token-pay/b2b/integration-workflow.md) |
-| 我要开数电发票、合并开票或红冲 | AI连续订阅（Token Pay） | [开票准备指引](references/onboarding/token-pay/invoice.md) | [发票接入](references/integration/token-pay/invoice/integration.md)、[红冲与通知](references/integration/token-pay/invoice/lifecycle.md) |
-| 我要做企业四要素核验或对公账户打款核验 | AI连续订阅（Token Pay） | [认证准备指引](references/onboarding/token-pay/verification.md) | [企业认证接入](references/integration/token-pay/verification/integration.md)、[认证接口](references/integration/token-pay/verification/api-contract.md) |
+| 电脑网页／手机 H5 收款 | Vibe Pay · 基础收款 | [网页收款开通](references/onboarding/vibe-pay/web-pay.md) | [AI 网页应用收款](references/integration/vibe-pay/web-pay.md) |
+| 原生 App 内收款 | Vibe Pay · 基础收款 | [移动应用收款开通](references/onboarding/vibe-pay/app-pay.md) | [AI 移动应用收款](references/integration/vibe-pay/app-pay.md) |
+| API、内容或算力按调用收费 | Machine Pay · AI 按量付费 | [按量付费开通](references/onboarding/machine-pay/flow.md) | [HTTP 402 收款接入](references/integration/machine-pay/flow.md) |
+| 会员／团队席位周期订阅 | AI连续订阅（Token Pay） | [周期订阅办理指引](references/onboarding/token-pay/guidance.md) | [周期订阅接入](references/integration/token-pay/flow.md)、[已知故障](references/integration/token-pay/troubleshooting.md) |
+| 余额低于约定值时自动续购 | AI连续订阅（Token Pay） | [自动续购办理指引](references/onboarding/token-pay/auto-renewal.md) | [协议与自动续购](references/integration/token-pay/auto-renewal.md) |
+| 商业订单单笔支付 | AI连续订阅（Token Pay） | [单笔支付办理指引](references/onboarding/token-pay/single-payment.md) | [商业订单单笔支付](references/integration/token-pay/single-payment.md) |
+| 企业聚合收银、对公转账与对账 | AI连续订阅（Token Pay） | [B2B 办理指引](references/onboarding/token-pay/b2b.md) | [企业支付接入](references/integration/token-pay/b2b/integration-workflow.md) |
+| 数电发票、合并开票与红冲 | AI连续订阅（Token Pay） | [开票准备指引](references/onboarding/token-pay/invoice.md) | [发票接入](references/integration/token-pay/invoice/integration.md)、[红冲与通知](references/integration/token-pay/invoice/lifecycle.md) |
+| 企业四要素核验／对公账户打款核验 | AI连续订阅（Token Pay） | [认证准备指引](references/onboarding/token-pay/verification.md) | [企业认证接入](references/integration/token-pay/verification/integration.md)、[认证接口](references/integration/token-pay/verification/api-contract.md) |
 
 Token Pay 的商家办理仅提供指引，本包不投递线索或代签约。业务授权也不等于采集同意。仅在用户明确提出特定订阅接入身份、模式、受邀接口或生产测试客户问题时查[适用条件](references/integration/token-pay/access-modes.md)，一般问答不加载。
 
